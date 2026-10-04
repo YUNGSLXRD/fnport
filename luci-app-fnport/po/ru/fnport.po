@@ -421,3 +421,21 @@ msgstr "Статистика за 7 дней"
 
 msgid "%d connections through a passing port, %d passed as is in standby, %d without a port, %d frozen anyway, %d remapped, fake turned off %d times, fake switched %d times, %d of %d probed ports passed"
 msgstr "соединений через проходящий порт: %d, пропущено в ожидании: %d, без порта: %d, замёрзло всё равно: %d, переведено на другой порт: %d, фейк отключался: %d раз, фейк менялся: %d раз, прошли проверку %d из %d портов"
+
+msgid "no freeze"
+msgstr "заморозки нет"
+
+msgid "the fake works"
+msgstr "фейк работает"
+
+msgid "the fake kills flows"
+msgstr "фейк убивает соединения"
+
+msgid "the fake does not help"
+msgstr "фейк не помогает"
+
+msgid "unclear"
+msgstr "неясно"
+
+msgid "no fake file"
+msgstr "нет файла фейка"

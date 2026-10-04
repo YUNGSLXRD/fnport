@@ -419,3 +419,21 @@ msgstr ""
 
 msgid "%d connections through a passing port, %d passed as is in standby, %d without a port, %d frozen anyway, %d remapped, fake turned off %d times, fake switched %d times, %d of %d probed ports passed"
 msgstr ""
+
+msgid "no freeze"
+msgstr ""
+
+msgid "the fake works"
+msgstr ""
+
+msgid "the fake kills flows"
+msgstr ""
+
+msgid "the fake does not help"
+msgstr ""
+
+msgid "unclear"
+msgstr ""
+
+msgid "no fake file"
+msgstr ""

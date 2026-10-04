@@ -140,7 +140,11 @@ function report(st, log, stats) {
 	});
 	if (st.fake_check)
 		out.push('**%s**: TTL %d: %s'.format(_('Fake at the current TTL'), st.fake_check.ttl, repliesText(st.fake_check.replies)));
-	out.push('**%s**: %s'.format(_('Result'), st.verdict +
+	var short = {
+		no_freeze: _('no freeze'), fake_works: _('the fake works'), fake_kills: _('the fake kills flows'),
+		fake_fails: _('the fake does not help'), unclear: _('unclear'), no_reply: _('no reply'), freeze_no_fake: _('no fake file')
+	}[st.verdict] || st.verdict;
+	out.push('**%s**: %s'.format(_('Result'), short + ' (' + st.verdict + ')' +
 		(st.recommended_ttl ? ', TTL %d (%s %d)'.format(st.recommended_ttl, _('works from'), st.works_from || st.recommended_ttl) : '')));
 	out.push('**%s**: TTL %d, %s'.format(_('Settings'), st.now_ttl,
 		st.now_fake ? _('fake %s').format(st.fake) : _('fake off')));
