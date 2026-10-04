@@ -1,0 +1,54 @@
+name: Отчёт о провайдере
+description: Результат «Проверки провайдера» из LuCI — помогает понять, как fnport работает у разных провайдеров
+title: "Провайдер: "
+labels: [ "provider-report" ]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Отчёт делается в LuCI: **Службы → fnport → Проверка провайдера**, кнопка «Проверить провайдера»,
+        затем «Скопировать отчёт». Адресов вашей сети в нём нет: серверы показаны городами.
+        Не запускайте проверку часто: за частые проверки ТСПУ может «наказать» адрес.
+  - type: input
+    id: isp
+    attributes:
+      label: Провайдер и город
+      placeholder: "Например: МТС, домашний интернет, Москва"
+    validations:
+      required: true
+  - type: dropdown
+    id: connection
+    attributes:
+      label: Подключение
+      options:
+        - PPPoE
+        - IPoE / DHCP
+        - Мобильный интернет
+        - Другое
+    validations:
+      required: true
+  - type: dropdown
+    id: setup
+    attributes:
+      label: Где стоит fnport
+      options:
+        - Основной роутер OpenWrt
+        - OpenWrt за другим роутером
+        - OpenWrt в виртуальной машине на ПК
+        - Другое
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: Отчёт из LuCI
+      description: Вставьте текст из поля «Отчёт для разработчиков»
+    validations:
+      required: true
+  - type: textarea
+    id: game
+    attributes:
+      label: Как идёт игра
+      description: Загружаются ли матчи, бывают ли вылеты или ошибка 5, днём и вечером
+    validations:
+      required: false

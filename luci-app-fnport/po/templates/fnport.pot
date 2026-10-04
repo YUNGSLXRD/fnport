@@ -132,3 +132,200 @@ msgstr ""
 
 msgid "Must be a file in /usr/share/fnport or /etc/fnport"
 msgstr ""
+
+msgid "Frankfurt"
+msgstr ""
+
+msgid "London"
+msgstr ""
+
+msgid "Paris"
+msgstr ""
+
+msgid "Europe"
+msgstr ""
+
+msgid "Checking for the freeze without the fake…"
+msgstr ""
+
+msgid "Trying the fake with TTL %d…"
+msgstr ""
+
+msgid "Checking that the fake does no harm…"
+msgstr ""
+
+msgid "Looking up Epic's beacons…"
+msgstr ""
+
+msgid "No freeze on this network right now: every beacon answered all packets without help. fnport is not needed here, but it does no harm if left on."
+msgstr ""
+
+msgid "The ISP freezes game UDP, and the whitelist fake lifts the freeze. Recommended fake TTL: %d."
+msgstr ""
+
+msgid "The ISP freezes game UDP, and the fake kills the whole flow once it gets far enough (from TTL %d). fnport can only look for passing ports without the fake here. Please send a report."
+msgstr ""
+
+msgid "The ISP freezes game UDP, but the fake did not help with any TTL from 1 to 8. fnport will look for passing ports without it, if there are any. Please send a report: another whitelisted name may work."
+msgstr ""
+
+msgid "The ISP freezes game UDP, but the fake file is missing, so it could not be tried."
+msgstr ""
+
+msgid "Epic's beacons did not answer. UDP to them may be blocked, or a VPN on the router takes this traffic. Please send a report."
+msgstr ""
+
+msgid "Unknown result."
+msgstr ""
+
+msgid "public"
+msgstr ""
+
+msgid "private: behind another router"
+msgstr ""
+
+msgid "private: behind another router or ISP NAT"
+msgstr ""
+
+msgid "router DNS"
+msgstr ""
+
+msgid "public DNS"
+msgstr ""
+
+msgid "built-in list"
+msgstr ""
+
+msgid "ISP, city, connection type"
+msgstr ""
+
+msgid "<fill in>"
+msgstr ""
+
+msgid "Router WAN address"
+msgstr ""
+
+msgid "Beacons found via"
+msgstr ""
+
+msgid "Without the fake (replies out of 30)"
+msgstr ""
+
+msgid "With the fake"
+msgstr ""
+
+msgid "Fake at the current TTL"
+msgstr ""
+
+msgid "Result"
+msgstr ""
+
+msgid "fake %s"
+msgstr ""
+
+msgid "fake off"
+msgstr ""
+
+msgid "fnport log"
+msgstr ""
+
+msgid "%d connections through a passing port, %d without one, %d frozen anyway, %d remapped, fake turned off %d times, %d of %d probed ports passed"
+msgstr ""
+
+msgid "Recent events (addresses hidden)"
+msgstr ""
+
+msgid "Report copied."
+msgstr ""
+
+msgid "Select the text and copy it by hand."
+msgstr ""
+
+msgid "Please wait %d more seconds before the next check: probing often gets the address punished."
+msgstr ""
+
+msgid "A check is already running."
+msgstr ""
+
+msgid "Fake TTL set to %d, fnport restarted."
+msgstr ""
+
+msgid "Nothing to apply."
+msgstr ""
+
+msgid "Checking…"
+msgstr ""
+
+msgid "Check my ISP"
+msgstr ""
+
+msgid "The check stopped unexpectedly."
+msgstr ""
+
+msgid "The fake at TTL %d killed the test flows here. fnport turns the fake off by itself when it sees this; you can also clear the fake on the Advanced tab of Settings."
+msgstr ""
+
+
+msgid "Apply TTL %d"
+msgstr ""
+
+
+msgid ", fake off"
+msgstr ""
+
+msgid "Test"
+msgstr ""
+
+msgid "Replies out of 30 per port"
+msgstr ""
+
+msgid "Verdict"
+msgstr ""
+
+msgid "passes"
+msgstr ""
+
+msgid "frozen"
+msgstr ""
+
+msgid "no reply"
+msgstr ""
+
+msgid "%s, no fake"
+msgstr ""
+
+msgid "%s, fake TTL %d"
+msgstr ""
+
+msgid "fake TTL %d"
+msgstr ""
+
+msgid "More than 25 replies: the port passes. 25 or fewer: the DPI froze the flow. 0: no reply. Even where the fake works, about half of the ports pass, which is enough for fnport."
+msgstr ""
+
+msgid "Report for the developers"
+msgstr ""
+
+msgid "No addresses of your network inside: servers are shown as cities. Fill in your ISP and city and post it as an issue on GitHub; reports from different ISPs help tune the defaults."
+msgstr ""
+
+msgid "Copy report"
+msgstr ""
+
+msgid "Open an issue on GitHub"
+msgstr ""
+
+msgid "ISP check"
+msgstr ""
+
+msgid "Checks whether your ISP freezes game UDP and finds the TTL for the whitelist fake. It sends a few short bursts to Epic's public beacons in Frankfurt, London and Paris and takes 20-60 seconds. Do not run it during a match, and not often: probing a lot gets the address punished by the DPI."
+msgstr ""
+
+msgid "Your current TTL %d works as well, nothing to change."
+msgstr ""
+
+msgid "Now: TTL %d%s. fnport restarts; a match in progress is not affected."
+msgstr ""
+
+msgid "works from"
+msgstr ""

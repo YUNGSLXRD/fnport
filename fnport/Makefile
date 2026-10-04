@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=fnport
-PKG_VERSION:=0.3.3
+PKG_VERSION:=0.4.0
 PKG_RELEASE:=1
 PKG_LICENSE:=MIT
 
@@ -33,12 +33,14 @@ define Build/Compile
 endef
 
 define Package/fnport/install
-	$(INSTALL_DIR) $(1)/etc/config $(1)/etc/init.d $(1)/usr/share/fnport
+	$(INSTALL_DIR) $(1)/etc/config $(1)/etc/init.d $(1)/usr/share/fnport $(1)/usr/libexec
 	$(INSTALL_CONF) ./files/fnport.config $(1)/etc/config/fnport
 	$(INSTALL_BIN) ./files/fnport.init $(1)/etc/init.d/fnport
 	$(INSTALL_DATA) ./files/fnportd.uc $(1)/usr/share/fnport/fnportd.uc
 	$(INSTALL_DATA) ./files/quic_initial_vk_com.bin $(1)/usr/share/fnport/quic_initial_vk_com.bin
 	$(INSTALL_DATA) ./files/quic_initial_vk_com.bin.LICENSE $(1)/usr/share/fnport/quic_initial_vk_com.bin.LICENSE
+	$(INSTALL_BIN) ./files/fnport-check.uc $(1)/usr/libexec/fnport-check
+	echo "$(PKG_VERSION)-r$(PKG_RELEASE)" > $(1)/usr/share/fnport/version
 endef
 
 $(eval $(call BuildPackage,fnport))

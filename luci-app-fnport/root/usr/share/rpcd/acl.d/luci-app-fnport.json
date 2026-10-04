@@ -5,6 +5,9 @@
 			"file": {
 				"/sbin/logread -e fnport": [
 					"exec"
+				],
+				"/usr/libexec/fnport-check status": [
+					"exec"
 				]
 			},
 			"ubus": {
@@ -20,6 +23,14 @@
 			]
 		},
 		"write": {
+			"file": {
+				"/usr/libexec/fnport-check start": [
+					"exec"
+				],
+				"/usr/libexec/fnport-check apply": [
+					"exec"
+				]
+			},
 			"uci": [
 				"fnport"
 			]

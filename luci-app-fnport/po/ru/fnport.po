@@ -134,3 +134,200 @@ msgstr "Число хопов от роутера: фейк должен про�
 
 msgid "Must be a file in /usr/share/fnport or /etc/fnport"
 msgstr "Нужен файл из /usr/share/fnport или /etc/fnport"
+
+msgid "Frankfurt"
+msgstr "Франкфурт"
+
+msgid "London"
+msgstr "Лондон"
+
+msgid "Paris"
+msgstr "Париж"
+
+msgid "Europe"
+msgstr "Европа"
+
+msgid "Checking for the freeze without the fake…"
+msgstr "Проверяю, есть ли заморозка без фейка…"
+
+msgid "Trying the fake with TTL %d…"
+msgstr "Пробую фейк с TTL %d…"
+
+msgid "Checking that the fake does no harm…"
+msgstr "Проверяю, что фейк не вредит…"
+
+msgid "Looking up Epic's beacons…"
+msgstr "Ищу маяки Epic…"
+
+msgid "No freeze on this network right now: every beacon answered all packets without help. fnport is not needed here, but it does no harm if left on."
+msgstr "Сейчас заморозки в этой сети нет: все маяки ответили на все пакеты без помощи. fnport здесь не нужен, но и не мешает, если его оставить."
+
+msgid "The ISP freezes game UDP, and the whitelist fake lifts the freeze. Recommended fake TTL: %d."
+msgstr "Провайдер замораживает игровой UDP, а фейк с белым SNI заморозку снимает. Рекомендуемый TTL фейка: %d."
+
+msgid "The ISP freezes game UDP, and the fake kills the whole flow once it gets far enough (from TTL %d). fnport can only look for passing ports without the fake here. Please send a report."
+msgstr "Провайдер замораживает игровой UDP, а фейк, долетев достаточно далеко (с TTL %d), убивает соединение целиком. Здесь fnport может искать проходящие порты только без фейка. Пожалуйста, отправьте отчёт."
+
+msgid "The ISP freezes game UDP, but the fake did not help with any TTL from 1 to 8. fnport will look for passing ports without it, if there are any. Please send a report: another whitelisted name may work."
+msgstr "Провайдер замораживает игровой UDP, но фейк не помог ни с одним TTL от 1 до 8. fnport будет искать проходящие порты без него, если такие есть. Пожалуйста, отправьте отчёт: может сработать другое имя из белого списка."
+
+msgid "The ISP freezes game UDP, but the fake file is missing, so it could not be tried."
+msgstr "Провайдер замораживает игровой UDP, но файла фейка нет, поэтому его не удалось проверить."
+
+msgid "Epic's beacons did not answer. UDP to them may be blocked, or a VPN on the router takes this traffic. Please send a report."
+msgstr "Маяки Epic не ответили. Возможно, UDP к ним заблокирован или этот трафик забирает VPN на роутере. Пожалуйста, отправьте отчёт."
+
+msgid "Unknown result."
+msgstr "Неизвестный результат."
+
+msgid "public"
+msgstr "публичный"
+
+msgid "private: behind another router"
+msgstr "частный: за другим роутером"
+
+msgid "private: behind another router or ISP NAT"
+msgstr "частный: за другим роутером или NAT провайдера"
+
+msgid "router DNS"
+msgstr "DNS роутера"
+
+msgid "public DNS"
+msgstr "публичный DNS"
+
+msgid "built-in list"
+msgstr "встроенный список"
+
+msgid "ISP, city, connection type"
+msgstr "Провайдер, город, тип подключения"
+
+msgid "<fill in>"
+msgstr "<заполните>"
+
+msgid "Router WAN address"
+msgstr "WAN-адрес роутера"
+
+msgid "Beacons found via"
+msgstr "Маяки найдены через"
+
+msgid "Without the fake (replies out of 30)"
+msgstr "Без фейка (ответов из 30)"
+
+msgid "With the fake"
+msgstr "С фейком"
+
+msgid "Fake at the current TTL"
+msgstr "Фейк с текущим TTL"
+
+msgid "Result"
+msgstr "Итог"
+
+msgid "fake %s"
+msgstr "фейк %s"
+
+msgid "fake off"
+msgstr "фейк выключен"
+
+msgid "fnport log"
+msgstr "Журнал fnport"
+
+msgid "%d connections through a passing port, %d without one, %d frozen anyway, %d remapped, fake turned off %d times, %d of %d probed ports passed"
+msgstr "соединений через проходящий порт: %d, без него: %d, замёрзло всё равно: %d, переведено на другой порт: %d, фейк отключался: %d раз, прошли проверку %d из %d портов"
+
+msgid "Recent events (addresses hidden)"
+msgstr "Последние события (адреса скрыты)"
+
+msgid "Report copied."
+msgstr "Отчёт скопирован."
+
+msgid "Select the text and copy it by hand."
+msgstr "Выделите текст и скопируйте его вручную."
+
+msgid "Please wait %d more seconds before the next check: probing often gets the address punished."
+msgstr "Подождите ещё %d с до следующей проверки: за частые проверки ТСПУ может «наказать» адрес."
+
+msgid "A check is already running."
+msgstr "Проверка уже идёт."
+
+msgid "Fake TTL set to %d, fnport restarted."
+msgstr "TTL фейка установлен: %d, fnport перезапущен."
+
+msgid "Nothing to apply."
+msgstr "Нечего применять."
+
+msgid "Checking…"
+msgstr "Проверяю…"
+
+msgid "Check my ISP"
+msgstr "Проверить провайдера"
+
+msgid "The check stopped unexpectedly."
+msgstr "Проверка неожиданно прервалась."
+
+msgid "The fake at TTL %d killed the test flows here. fnport turns the fake off by itself when it sees this; you can also clear the fake on the Advanced tab of Settings."
+msgstr "Фейк с TTL %d убил здесь проверочные соединения. fnport сам отключает фейк, когда видит такое; можно и вручную очистить поле фейка на вкладке «Дополнительно» в настройках."
+
+
+msgid "Apply TTL %d"
+msgstr "Применить TTL %d"
+
+
+msgid ", fake off"
+msgstr ", фейк выключен"
+
+msgid "Test"
+msgstr "Проверка"
+
+msgid "Replies out of 30 per port"
+msgstr "Ответов из 30 на каждый порт"
+
+msgid "Verdict"
+msgstr "Вердикт"
+
+msgid "passes"
+msgstr "проходит"
+
+msgid "frozen"
+msgstr "заморозка"
+
+msgid "no reply"
+msgstr "нет ответа"
+
+msgid "%s, no fake"
+msgstr "%s, без фейка"
+
+msgid "%s, fake TTL %d"
+msgstr "%s, фейк TTL %d"
+
+msgid "fake TTL %d"
+msgstr "фейк TTL %d"
+
+msgid "More than 25 replies: the port passes. 25 or fewer: the DPI froze the flow. 0: no reply. Even where the fake works, about half of the ports pass, which is enough for fnport."
+msgstr "Больше 25 ответов: порт проходит. 25 и меньше: ТСПУ заморозил соединение. 0: ответа нет. Даже там, где фейк работает, проходит примерно половина портов, и fnport этого достаточно."
+
+msgid "Report for the developers"
+msgstr "Отчёт для разработчиков"
+
+msgid "No addresses of your network inside: servers are shown as cities. Fill in your ISP and city and post it as an issue on GitHub; reports from different ISPs help tune the defaults."
+msgstr "Адресов вашей сети в отчёте нет: серверы показаны городами. Впишите провайдера и город и отправьте как issue на GitHub: отчёты от разных провайдеров помогают подобрать настройки по умолчанию."
+
+msgid "Copy report"
+msgstr "Скопировать отчёт"
+
+msgid "Open an issue on GitHub"
+msgstr "Открыть issue на GitHub"
+
+msgid "ISP check"
+msgstr "Проверка провайдера"
+
+msgid "Checks whether your ISP freezes game UDP and finds the TTL for the whitelist fake. It sends a few short bursts to Epic's public beacons in Frankfurt, London and Paris and takes 20-60 seconds. Do not run it during a match, and not often: probing a lot gets the address punished by the DPI."
+msgstr "Проверяет, замораживает ли провайдер игровой UDP, и подбирает TTL для фейка с белым SNI. Отправляет несколько коротких серий пакетов на публичные маяки Epic во Франкфурте, Лондоне и Париже и занимает 20–60 секунд. Не запускайте во время матча и не запускайте часто: за частые проверки ТСПУ может «наказать» адрес."
+
+msgid "Your current TTL %d works as well, nothing to change."
+msgstr "Текущий TTL %d тоже подходит, менять ничего не нужно."
+
+msgid "Now: TTL %d%s. fnport restarts; a match in progress is not affected."
+msgstr "Сейчас: TTL %d%s. fnport перезапустится, идущий матч это не затронет."
+
+msgid "works from"
+msgstr "работает с"

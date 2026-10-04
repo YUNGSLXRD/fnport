@@ -26,5 +26,13 @@
 			"type": "view",
 			"path": "fnport/status"
 		}
+	},
+	"admin/services/fnport/check": {
+		"title": "ISP check",
+		"order": 30,
+		"action": {
+			"type": "view",
+			"path": "fnport/check"
+		}
 	}
 }
