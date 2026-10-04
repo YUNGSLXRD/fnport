@@ -1,9 +1,9 @@
 #!/bin/sh
 # fnport installer:
-#   wget -O /tmp/fnport-install.sh https://raw.githubusercontent.com/Shelestinskyi/fnport/main/install.sh && sh /tmp/fnport-install.sh
+#   wget -O /tmp/fnport-install.sh https://raw.githubusercontent.com/YUNGSLXRD/fnport/main/install.sh && sh /tmp/fnport-install.sh
 set -e
 
-REPO="Shelestinskyi/fnport"
+REPO="YUNGSLXRD/fnport"
 API="https://api.github.com/repos/$REPO/releases/latest"
 TMP="/tmp/fnport-install"
 

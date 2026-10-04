@@ -105,7 +105,7 @@ opkg install /tmp/fnport_*.ipk /tmp/luci-app-fnport_*.ipk /tmp/luci-i18n-fnport-
 Если репозиторий публичный, установщик сам найдёт последний релиз:
 
 ```sh
-wget -O /tmp/fnport-install.sh https://raw.githubusercontent.com/Shelestinskyi/fnport/main/install.sh && sh /tmp/fnport-install.sh
+wget -O /tmp/fnport-install.sh https://raw.githubusercontent.com/YUNGSLXRD/fnport/main/install.sh && sh /tmp/fnport-install.sh
 ```
 
 ## Настройка
