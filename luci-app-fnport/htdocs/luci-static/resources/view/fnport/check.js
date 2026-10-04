@@ -7,7 +7,7 @@
 
 var CHECK = '/usr/libexec/fnport-check';
 var ISSUE_URL = 'https://github.com/YUNGSLXRD/fnport/issues/new?template=provider-report.yml';
-var PASS = 26;
+var PASS = 26, FROZEN_MIN = 20;
 
 function run(arg) {
 	return fs.exec(CHECK, [ arg ]).then(function(res) {
@@ -19,10 +19,13 @@ function run(arg) {
 	});
 }
 
+// same thresholds as fnport-check
+function verdictOf(r) {
+	return r >= PASS ? 'pass' : (r >= FROZEN_MIN ? 'frozen' : (r > 0 ? 'limited' : 'silent'));
+}
+
 function count(replies, what) {
-	return (replies || []).filter(function(r) {
-		return what == 'pass' ? r >= PASS : (what == 'silent' ? r == 0 : (r > 0 && r < PASS));
-	}).length;
+	return (replies || []).filter(function(r) { return verdictOf(r) == what; }).length;
 }
 
 function cityName(c) {
@@ -99,6 +102,8 @@ function verdictText(st) {
 		return _('The ISP freezes game UDP, but the fake did not help with any TTL from 1 to 8. fnport will look for passing ports without it, if there are any. Please send a report: another whitelisted name may work.');
 	case 'freeze_no_fake':
 		return _('The ISP freezes game UDP, but the fake file is missing, so it could not be tried.');
+	case 'unclear':
+		return _('No clear answer: no beacon froze, but some answered only part of the packets. The beacons limit replies when asked often, or the link loses packets. Try again in 15-30 minutes.');
 	case 'no_reply':
 		return _('Epic\'s beacons did not answer. UDP to them may be blocked, or a VPN on the router takes this traffic. Please send a report.');
 	default:
@@ -129,8 +134,8 @@ function report(st, log) {
 		out.push('**%s**: TTL %d: %s'.format(_('Fake at the current TTL'), st.fake_check.ttl, repliesText(st.fake_check.replies)));
 	out.push('**%s**: %s'.format(_('Result'), st.verdict +
 		(st.recommended_ttl ? ', TTL %d (%s %d)'.format(st.recommended_ttl, _('works from'), st.works_from || st.recommended_ttl) : '')));
-	out.push('**%s**: TTL %d, %s'.format(_('Settings'), st.current_ttl,
-		st.fake_enabled ? _('fake %s').format(st.fake) : _('fake off')));
+	out.push('**%s**: TTL %d, %s'.format(_('Settings'), st.now_ttl,
+		st.now_fake ? _('fake %s').format(st.fake) : _('fake off')));
 	out.push('**%s**: %s'.format(_('fnport log'),
 		_('%d connections through a passing port, %d without one, %d frozen anyway, %d remapped, fake turned off %d times, %d of %d probed ports passed')
 			.format(ls.flows, ls.nogood, ls.frozen, ls.remaps, ls.fakeoff, ls.good, ls.tested)));
@@ -219,8 +224,8 @@ return view.extend({
 		if (st.recommended_ttl) {
 			// a pass at some TTL means every larger one gets past the DPI too: no need to chase
 			// the exact number, which differs between checks by chance
-			if (st.fake_enabled && st.current_ttl >= (st.works_from || st.recommended_ttl) && st.current_ttl <= 8)
-				nodes.push(E('p', {}, [ _('Your current TTL %d works as well, nothing to change.').format(st.current_ttl) ]));
+			if (st.now_fake && st.now_ttl >= (st.works_from || st.recommended_ttl) && st.now_ttl <= 8)
+				nodes.push(E('p', {}, [ _('Your current TTL %d works as well, nothing to change.').format(st.now_ttl) ]));
 			else
 				nodes.push(E('p', {}, [
 					E('button', {
@@ -228,7 +233,7 @@ return view.extend({
 						'click': ui.createHandlerFn(this, 'handleApply')
 					}, [ _('Apply TTL %d').format(st.recommended_ttl) ]),
 					' ',
-					_('Now: TTL %d%s. fnport restarts; a match in progress is not affected.').format(st.current_ttl, st.fake_enabled ? '' : _(', fake off'))
+					_('Now: TTL %d%s. fnport restarts; a match in progress is not affected.').format(st.now_ttl, st.now_fake ? '' : _(', fake off'))
 				]));
 		}
 
@@ -238,7 +243,8 @@ return view.extend({
 			E('th', { 'class': 'th' }, _('Verdict'))
 		]) ];
 		var row = function(name, replies) {
-			var v = count(replies, 'pass') ? _('passes') : (count(replies, 'frozen') ? _('frozen') : _('no reply'));
+			var v = count(replies, 'pass') ? _('passes') : (count(replies, 'frozen') ? _('frozen')
+				: (count(replies, 'limited') ? _('few replies') : _('no reply')));
 			rows.push(E('tr', { 'class': 'tr' }, [
 				E('td', { 'class': 'td' }, [ name ]),
 				E('td', { 'class': 'td' }, [ repliesText(replies) ]),
@@ -251,7 +257,7 @@ return view.extend({
 			row(_('fake TTL %d').format(st.fake_check.ttl), st.fake_check.replies);
 		nodes.push(E('table', { 'class': 'table' }, rows));
 		nodes.push(E('p', { 'class': 'cbi-section-descr' }, [
-			_('More than 25 replies: the port passes. 25 or fewer: the DPI froze the flow. 0: no reply. Even where the fake works, about half of the ports pass, which is enough for fnport.')
+			_('More than 25 replies: the port passes. 20-25: the DPI froze the flow. Fewer than 20: the beacon limits replies or packets get lost. Even where the fake works, about half of the ports pass, which is enough for fnport.')
 		]));
 
 		var ta = E('textarea', { 'class': 'cbi-input-textarea', 'readonly': '', 'rows': 14, 'style': 'width:100%;font-family:monospace' }, [ report(st, log) ]);

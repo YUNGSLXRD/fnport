@@ -302,9 +302,6 @@ msgstr "%s, фейк TTL %d"
 msgid "fake TTL %d"
 msgstr "фейк TTL %d"
 
-msgid "More than 25 replies: the port passes. 25 or fewer: the DPI froze the flow. 0: no reply. Even where the fake works, about half of the ports pass, which is enough for fnport."
-msgstr "Больше 25 ответов: порт проходит. 25 и меньше: ТСПУ заморозил соединение. 0: ответа нет. Даже там, где фейк работает, проходит примерно половина портов, и fnport этого достаточно."
-
 msgid "Report for the developers"
 msgstr "Отчёт для разработчиков"
 
@@ -331,3 +328,12 @@ msgstr "Сейчас: TTL %d%s. fnport перезапустится, идущи�
 
 msgid "works from"
 msgstr "работает с"
+
+msgid "More than 25 replies: the port passes. 20-25: the DPI froze the flow. Fewer than 20: the beacon limits replies or packets get lost. Even where the fake works, about half of the ports pass, which is enough for fnport."
+msgstr "Больше 25 ответов: порт проходит. 20–25: ТСПУ заморозил соединение. Меньше 20: маяк ограничивает ответы или теряются пакеты. Даже там, где фейк работает, проходит примерно половина портов, и fnport этого достаточно."
+
+msgid "No clear answer: no beacon froze, but some answered only part of the packets. The beacons limit replies when asked often, or the link loses packets. Try again in 15-30 minutes."
+msgstr "Ясного ответа нет: ни один маяк не замёрз, но некоторые ответили только на часть пакетов. Маяки ограничивают ответы, если их часто опрашивать, или связь теряет пакеты. Повторите через 15–30 минут."
+
+msgid "few replies"
+msgstr "мало ответов"

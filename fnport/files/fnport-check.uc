@@ -23,6 +23,7 @@ const BEACON_FALLBACK = [ '3.66.90.173', '3.66.90.156', '18.133.162.202', '13.37
 const PUBLIC_DNS = [ '77.88.8.8', '8.8.8.8' ];
 const DEFAULT_FAKE = '/usr/share/fnport/quic_initial_vk_com.bin';
 const PKTS = 30, PASS = 26;     // TSPU stops replies at 25, so more than 25 means no freeze
+const FROZEN_MIN = 20;          // a freeze stops at 24-25; far fewer is the echo's rate limit or loss
 const IV_MS = 30, WAIT_MS = 400, FAKE_GAP_MS = 30;
 const GAP_MS = 2000;            // pause between probe rounds
 const MAX_TTL = 8;              // the DPI sits inside the ISP, a few hops out
@@ -140,10 +141,14 @@ function probe(host, n, fake, ttl) {
 	return res;
 }
 
+function verdict(r) {
+	return r >= PASS ? 'pass' : (r >= FROZEN_MIN ? 'frozen' : (r > 0 ? 'limited' : 'silent'));
+}
+
 function count(replies, what) {
 	let n = 0;
 	for (let r in replies)
-		if (what == 'pass' ? r >= PASS : (what == 'silent' ? r == 0 : (r > 0 && r < PASS))) n++;
+		if (verdict(r) == what) n++;
 	return n;
 }
 
@@ -222,6 +227,11 @@ function run() {
 	let answered = filter(b.list, (ip, i) => count(st.control[i].replies, 'silent') < 2);
 	if (!length(answered)) return finish('no_reply');
 
+	// nothing frozen, but not every beacon answered in full: the echo limits us or the link loses
+	// packets, and a freeze can hide behind that
+	if (!host && length(filter(st.control, c => count(c.replies, 'limited') > 0)))
+		return finish('unclear');
+
 	if (!host) {
 		// no freeze here: only make sure the fake at the current TTL does not kill flows
 		if (st.fake_enabled && fake) {
@@ -277,6 +287,10 @@ if (cmd == 'status') {
 	let st = load_state() ?? { state: 'none' };
 	// a check that died (reboot, kill) must not look like it still runs
 	if (st.state == 'running' && !check_running()) st.state = 'failed';
+	// settings as they are now, not as they were during the check
+	let uci = cursor();
+	st.now_ttl = +(uci.get('fnport', 'main', 'fake_ttl') ?? 3);
+	st.now_fake = (uci.get('fnport', 'main', 'whitelist_fake') ?? '') != '';
 	printf('%J\n', st);
 }
 else if (cmd == 'start') {
@@ -287,7 +301,8 @@ else if (cmd == 'start') {
 		exit(1);
 	}
 	save({ state: 'running', step: 'start', started: time() });
-	system(`${SELF} run </dev/null >/dev/null 2>&1 &`);
+	// fully detached (own session, stdio on /dev/null): the caller, LuCI's rpcd, must not wait for it
+	system([ 'start-stop-daemon', '-S', '-b', '-x', SELF, '--', 'run' ]);
 	printf('%J\n', { started: true });
 }
 else if (cmd == 'run') {

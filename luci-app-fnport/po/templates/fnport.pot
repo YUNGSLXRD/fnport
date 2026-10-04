@@ -300,9 +300,6 @@ msgstr ""
 msgid "fake TTL %d"
 msgstr ""
 
-msgid "More than 25 replies: the port passes. 25 or fewer: the DPI froze the flow. 0: no reply. Even where the fake works, about half of the ports pass, which is enough for fnport."
-msgstr ""
-
 msgid "Report for the developers"
 msgstr ""
 
@@ -328,4 +325,13 @@ msgid "Now: TTL %d%s. fnport restarts; a match in progress is not affected."
 msgstr ""
 
 msgid "works from"
+msgstr ""
+
+msgid "More than 25 replies: the port passes. 20-25: the DPI froze the flow. Fewer than 20: the beacon limits replies or packets get lost. Even where the fake works, about half of the ports pass, which is enough for fnport."
+msgstr ""
+
+msgid "No clear answer: no beacon froze, but some answered only part of the packets. The beacons limit replies when asked often, or the link loses packets. Try again in 15-30 minutes."
+msgstr ""
+
+msgid "few replies"
 msgstr ""
