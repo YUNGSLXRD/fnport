@@ -86,7 +86,7 @@ const PORT_MIN = 20000, PORT_RANGE = 40000;
 const FAKE = load_fake(cfg('whitelist_fake', ''));
 const FAKE_TTL = num('fake_ttl', 3, 1, 16);  // hops from the router: expires past the TSPU, before the server
 const FAKE_GAP_MS = 30;                // let the fake reach the TSPU before the real packets
-const QOS_BATCH = FAKE ? 4 : 12;       // the fake lets about half of the ports pass
+const FAKE_HOLDOFF = 1800;             // seconds without the fake once it proved harmful here
 const MAX_REMAPS = 4;                  // attempts to move one frozen flow to a fresh port
 
 function game_port(p) {
@@ -107,6 +107,15 @@ let last_alive = 0;
 let last_check = 0;
 let reported = {};            // "ip|wanport" -> true, frozen flows already handled
 let remaps = {};              // "pc|cport|ip|sport" -> remap attempts
+let fake_off_until = 0;       // some ISPs kill a whole flow once their DPI sees the fake
+
+function fake_on() {
+	return FAKE != null && time() >= fake_off_until;
+}
+
+function qos_batch() {
+	return fake_on() ? 4 : 12;  // the fake lets about half of the ports pass
+}
 
 function now_ms() {
 	let c = clock();
@@ -115,7 +124,7 @@ function now_ms() {
 
 // one fake with a whitelisted SNI on this socket's flow, sent with a short TTL
 function send_fake(s, host, dport) {
-	if (!FAKE) return false;
+	if (!fake_on()) return false;
 	s.setopt(socket.IPPROTO_IP, socket.IP_TTL, FAKE_TTL);
 	s.send(FAKE, 0, { address: host, port: dport });
 	s.setopt(socket.IPPROTO_IP, socket.IP_TTL, 64);
@@ -173,7 +182,7 @@ function list_elems(kind, name) {
 }
 
 // send PROBE_PKTS packets from each source port to host:dport, count replies per port
-function probe(host, dport, ports, qos) {
+function probe(host, dport, ports, qos, nofake) {
 	let socks = [];
 	for (let p in ports) {
 		let s = socket.create(socket.AF_INET, socket.SOCK_DGRAM | socket.SOCK_NONBLOCK);
@@ -184,7 +193,7 @@ function probe(host, dport, ports, qos) {
 	let pollset = map(socks, o => [o.s, socket.POLLIN]);
 	let faked = false;
 	for (let o in socks)
-		if (send_fake(o.s, host, dport)) faked = true;
+		if (!nofake && send_fake(o.s, host, dport)) faked = true;
 	if (faked) socket.poll(FAKE_GAP_MS);
 	// count only replies from the probed server: the sockets listen on all addresses
 	let drain = () => {
@@ -230,11 +239,13 @@ function refresh_target(ip, dport, want) {
 	let t = targets[key];
 	if (!t || time() - t.ts > GOOD_TTL)
 		t = targets[key] = { ts: time(), good: [], tried: {}, silent_rounds: 0,
-			mode: time() < game_probe_off_until ? (FAKE ? 'blind' : 'qos') : 'game' };
+			mode: time() < game_probe_off_until ? (fake_on() ? 'blind' : 'qos') : 'game' };
 	if (length(t.good) >= want) return t;
 
 	// the server does not answer probes: hand out untested ports. The fake sent before
 	// the flow does the work, and a flow that freezes anyway gets remapped.
+	if (t.mode == 'blind' && !fake_on())
+		t.mode = 'qos';  // untested ports only make sense with the fake
 	if (t.mode == 'blind') {
 		let cand = fresh_ports(t, want - length(t.good));
 		for (let p in cand) { t.tried[p] = true; push(t.good, p); }
@@ -243,7 +254,7 @@ function refresh_target(ip, dport, want) {
 	}
 
 	let qos = (t.mode == 'qos');
-	let n = qos ? QOS_BATCH : GAME_BATCH;
+	let n = qos ? qos_batch() : GAME_BATCH;
 	if (time() - budget_window >= 60) { budget_window = time(); budget_used = 0; }
 	if (budget_used + n > PROBE_BUDGET) {
 		log(sprintf('probe budget exhausted (%d/min), not probing %s:%d', PROBE_BUDGET, ip, dport));
@@ -266,10 +277,26 @@ function refresh_target(ip, dport, want) {
 	log(sprintf('probe %s:%d via %s: %d good, %d frozen, %d silent (%dms)',
 		ip, dport, qos ? 'qos' : 'game port', length(fresh), frozen, silent, now_ms() - t0));
 
+	// no reply at all with the fake: maybe it is the fake that gets the flow killed (some ISPs drop
+	// flows once their DPI sees QUIC). One port without it tells this apart from a silent server.
+	if (!qos && silent == length(cand) && fake_on() && budget_used < PROBE_BUDGET) {
+		budget_used++;
+		let p = fresh_ports(t, 1)[0];
+		t.tried[p] = true;
+		let got = probe(ip, dport, [ p ], false, true)[p] ?? 0;
+		if (got > 0) {
+			fake_off_until = time() + FAKE_HOLDOFF;
+			log(sprintf('whitelist fake breaks flows on this network (%s:%d: no replies with it, %d without), fake off for %d min',
+				ip, dport, got, FAKE_HOLDOFF / 60));
+			if (got >= PROBE_PASS) push(t.good, p);
+			return t;
+		}
+	}
+
 	// server ignores handshakes: fall back to its QoS echo. With the fake a QoS verdict says
 	// nothing about the game flow, so retry the game port once, then go blind.
 	if (!qos && silent == length(cand)) {
-		if (!FAKE) t.mode = 'qos';
+		if (!fake_on()) t.mode = 'qos';
 		else if (++t.silent_rounds >= 2) t.mode = 'blind';
 	}
 	else
@@ -279,9 +306,9 @@ function refresh_target(ip, dport, want) {
 	// for our address, not the DPI (whose verdict differs per port). Stop handshake probes.
 	if (!qos && !length(fresh) && length(cand) >= 6 && frozen == length(cand) && length(keys(counts)) == 1) {
 		game_probe_off_until = time() + LIMIT_HOLDOFF;
-		t.mode = FAKE ? 'blind' : 'qos';
+		t.mode = fake_on() ? 'blind' : 'qos';
 		log(sprintf('server limits handshake replies (all ports got %s), %s for %d min',
-			keys(counts)[0], FAKE ? 'untested ports' : 'using qos echo', LIMIT_HOLDOFF / 60));
+			keys(counts)[0], fake_on() ? 'untested ports' : 'using qos echo', LIMIT_HOLDOFF / 60));
 		return refresh_target(ip, dport, want);
 	}
 	return t;
@@ -399,7 +426,7 @@ while (true) {
 			if (pick != null) {
 				used[key][pick] = true;
 				// refresh the whitelist for this very tuple: the probe may have been a while ago
-				if (FAKE) fake_from(pick, ip, sport);
+				if (fake_on()) fake_from(pick, ip, sport);
 				// the probe left a router-originated conntrack entry with the very same tuple
 				system(`conntrack -D -p udp --orig-port-src ${pick} --orig-dst ${ip} --orig-port-dst ${sport} >/dev/null 2>&1`);
 				push(cmds, `add element ip fnport assign { ${tuple} : ${wan} . ${pick} }`);

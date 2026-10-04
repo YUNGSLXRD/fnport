@@ -181,6 +181,7 @@ logread -e fnport | tail -30
 | `flow ... -> no good port, passing as is` | За все раунды не нашлось открытого порта |
 | `probe budget exhausted` | Достигнут лимит проверок в минуту, соединение пропущено без обработки |
 | `server limits handshake replies` | Epic ограничил ответы на проверки для вашего адреса |
+| `whitelist fake breaks flows on this network ... fake off for 30 min` | У вашего провайдера фейк убивает соединения: fnport выключил его на 30 минут и работает без него |
 
 ## Если не работает
 
