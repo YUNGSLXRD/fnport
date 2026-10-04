@@ -1,0 +1,35 @@
+#!/bin/sh
+# First boot of the fnport disk image. In a virtual machine on the gaming PC it sets up the
+# "option 3" layout: LAN on the host-only network, the PC gets an address but no gateway or DNS
+# (only the routes added on the PC go through this machine), fnport on for the PC. On real
+# hardware it stays a plain router, with its LAN off 192.168.1.x so it can sit behind another router.
+
+vm=0
+case "$(cat /sys/class/dmi/id/sys_vendor /sys/class/dmi/id/product_name 2>/dev/null | tr '\n' ' ')" in
+*VirtualBox*|*innotek*|*VMware*|*QEMU*|*KVM*|*Bochs*|*"Virtual Machine"*) vm=1 ;;
+esac
+
+uci set system.@system[0].hostname='fnport'
+
+if [ "$vm" = 1 ]; then
+	uci set network.lan.ipaddr='192.168.56.2'
+	uci set network.lan.netmask='255.255.255.0'
+	# the PC is the only host on the host-only network: it always gets .100
+	uci set dhcp.lan.start='100'
+	uci set dhcp.lan.limit='1'
+	uci -q delete dhcp.lan.dhcp_option
+	uci add_list dhcp.lan.dhcp_option='3'
+	uci add_list dhcp.lan.dhcp_option='6'
+	# VirtualBox gives the PC's host-only adapter a fixed 192.168.56.1, Hyper-V lets it use DHCP
+	uci -q delete fnport.main.device
+	uci add_list fnport.main.device='192.168.56.1'
+	uci add_list fnport.main.device='192.168.56.100'
+	uci set fnport.main.enabled='1'
+	# one hop further from the ISP than the home router; the ISP check in LuCI tells for sure
+	uci set fnport.main.fake_ttl='4'
+else
+	uci set network.lan.ipaddr='192.168.2.1'
+fi
+
+uci commit
+exit 0

@@ -8,6 +8,7 @@ on:
     paths:
       - 'fnport/**'
       - 'luci-app-fnport/**'
+      - 'image/**'
       - '.github/workflows/build.yml'
   workflow_dispatch:
 
@@ -49,10 +50,59 @@ jobs:
           name: openwrt-${{ matrix.release }}
           path: dist/*
 
+  # one disk image for virtual machines and x86 hardware: OpenWrt with fnport preinstalled
+  image:
+    name: Disk image (x86-64)
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      OPENWRT: '25.12.5'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: openwrt-25.12
+          path: pkgs
+
+      - name: Image Builder
+        run: |
+          base="https://downloads.openwrt.org/releases/$OPENWRT/targets/x86/64"
+          ib="openwrt-imagebuilder-$OPENWRT-x86-64.Linux-x86_64.tar.zst"
+          curl -fsSLO "$base/$ib"
+          curl -fsSL "$base/sha256sums" | grep " \*\?$ib\$" | sed 's/ \*/  /' | sha256sum -c -
+          mkdir ib && tar --zstd -xf "$ib" -C ib --strip-components=1
+
+      - name: Build
+        run: |
+          cp pkgs/fnport-*.apk pkgs/luci-app-fnport-*.apk pkgs/luci-i18n-fnport-ru-*.apk ib/packages/
+          # LuCI in Russian; drivers for the 2.5G Realtek and USB network cards of mini PCs, and VMware
+          make -C ib image PROFILE=generic ROOTFS_PARTSIZE=160 FILES="$PWD/image/files" \
+            PACKAGES="luci luci-i18n-base-ru luci-i18n-firewall-ru luci-i18n-package-manager-ru \
+              fnport luci-app-fnport luci-i18n-fnport-ru \
+              kmod-r8125 kmod-r8126 kmod-usb-net-rtl8152 kmod-vmxnet3"
+
+      - name: Convert to VHD
+        run: |
+          sudo apt-get install -y -qq qemu-utils
+          ver="$(ls pkgs/fnport-*.apk | sed -n 's#.*/fnport-\([0-9][^/]*\)\.apk#\1#p')"
+          name="fnport-$ver-openwrt-$OPENWRT-x86-64"
+          gunzip -c ib/bin/targets/x86/64/*-generic-squashfs-combined-efi.img.gz > disk.img || true
+          # a fixed VHD is the raw disk plus a footer: VirtualBox, Hyper-V and Rufus all take it
+          qemu-img convert -f raw -O vpc -o subformat=fixed,force_size disk.img "$name.vhd"
+          cp image/fnport-routes.ps1 .
+          zip -9 "$name.vhd.zip" "$name.vhd" fnport-routes.ps1
+          ls -la "$name.vhd.zip"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: disk-image
+          path: '*.vhd.zip'
+
   release:
     name: Attach to release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [ build, image ]
     runs-on: ubuntu-latest
     permissions:
       contents: write
