@@ -10,7 +10,7 @@ NFT_RUN=/var/run/fnport.nft
 
 wan_l3_device() {
 	local iface="$1" dev
-	dev="$(ubus call network.interface."$iface" status 2>/dev/null | jsonfilter -e '@.l3_device')"
+	dev="$(ubus call network.interface."$iface" status 2>/dev/null | jsonfilter -e '@.l3_device' 2>/dev/null)"
 	echo "$dev"
 }
 

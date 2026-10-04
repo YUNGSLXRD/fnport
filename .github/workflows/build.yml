@@ -88,6 +88,8 @@ jobs:
           ver="$(ls pkgs/fnport-*.apk | sed -n 's#.*/fnport-\([0-9][^/]*\)\.apk#\1#p')"
           name="fnport-$ver-openwrt-$OPENWRT-x86-64"
           gunzip -c ib/bin/targets/x86/64/*-generic-squashfs-combined-efi.img.gz > disk.img || true
+          # Hyper-V wants whole megabytes
+          truncate -s %1M disk.img
           # a fixed VHD is the raw disk plus a footer: VirtualBox, Hyper-V and Rufus all take it
           qemu-img convert -f raw -O vpc -o subformat=fixed,force_size disk.img "$name.vhd"
           cp image/fnport-routes.ps1 .
