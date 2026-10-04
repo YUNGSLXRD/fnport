@@ -26,7 +26,7 @@ rm -rf "$TMP"; mkdir -p "$TMP"
 echo "Looking up the latest release of $REPO..."
 fetch "$API" "$TMP/release.json"
 
-URLS="$(jsonfilter -i "$TMP/release.json" -e '@.assets[*].browser_download_url' | grep "\.$EXT\$" | grep -E '/(fnport|luci-app-fnport)[-_]')"
+URLS="$(jsonfilter -i "$TMP/release.json" -e '@.assets[*].browser_download_url' | grep "\.$EXT\$" | grep -E '/(fnport|luci-app-fnport|luci-i18n-fnport-ru)[-_]')"
 [ -n "$URLS" ] || { echo "No .$EXT packages in the latest release" >&2; exit 1; }
 
 for u in $URLS; do
@@ -37,10 +37,10 @@ done
 echo "Installing..."
 if [ "$PM" = apk ]; then
 	apk update >/dev/null
-	apk add --allow-untrusted "$TMP"/fnport-*.apk "$TMP"/luci-app-fnport-*.apk
+	apk add --allow-untrusted "$TMP"/fnport-*.apk "$TMP"/luci-app-fnport-*.apk "$TMP"/luci-i18n-fnport-ru-*.apk
 else
 	opkg update >/dev/null
-	opkg install "$TMP"/fnport_*.ipk "$TMP"/luci-app-fnport_*.ipk
+	opkg install "$TMP"/fnport_*.ipk "$TMP"/luci-app-fnport_*.ipk "$TMP"/luci-i18n-fnport-ru_*.ipk
 fi
 
 rm -rf "$TMP"
