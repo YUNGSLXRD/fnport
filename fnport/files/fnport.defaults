@@ -1,0 +1,10 @@
+#!/bin/sh
+# 0.4.0: configs with only the bundled vk.com fake get the bundled spares after it
+D=/usr/share/fnport
+[ "$(uci -q get fnport.main.whitelist_fake)" = "$D/quic_initial_vk_com.bin" ] || exit 0
+uci -q delete fnport.main.whitelist_fake
+for f in vk_com gosuslugi_ru ozon_ru; do
+	uci add_list fnport.main.whitelist_fake="$D/quic_initial_$f.bin"
+done
+uci commit fnport
+exit 0

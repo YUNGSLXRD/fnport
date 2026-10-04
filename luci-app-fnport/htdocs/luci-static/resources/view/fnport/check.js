@@ -84,7 +84,9 @@ function logSummary(text) {
 function stepText(st) {
 	switch (st.step) {
 	case 'control': return _('Checking for the freeze without the fake…');
-	case 'ttl': return _('Trying the fake with TTL %d…').format(st.ttl_now);
+	case 'ttl': return (st.fake_now && st.fake_now != st.fake)
+		? _('Trying the spare fake %s with TTL %d…').format(st.fake_now, st.ttl_now)
+		: _('Trying the fake with TTL %d…').format(st.ttl_now);
 	case 'fake': return _('Checking that the fake does no harm…');
 	default: return _('Looking up Epic\'s beacons…');
 	}
@@ -95,7 +97,9 @@ function verdictText(st) {
 	case 'no_freeze':
 		return _('No freeze on this network right now: every beacon answered all packets without help. fnport is not needed here, but it does no harm if left on.');
 	case 'fake_works':
-		return _('The ISP freezes game UDP, and the whitelist fake lifts the freeze. Recommended fake TTL: %d.').format(st.recommended_ttl);
+		return st.recommended_fake
+			? _('The ISP freezes game UDP. The first fake did not help, but the spare %s does. Recommended fake TTL: %d.').format(st.recommended_fake, st.recommended_ttl)
+			: _('The ISP freezes game UDP, and the whitelist fake lifts the freeze. Recommended fake TTL: %d.').format(st.recommended_ttl);
 	case 'fake_kills':
 		return _('The ISP freezes game UDP, and the fake kills the whole flow once it gets far enough (from TTL %d). fnport can only look for passing ports without the fake here. Please send a report.').format(st.fake_kills_from);
 	case 'fake_fails':
@@ -115,7 +119,7 @@ function repliesText(r) {
 	return (r || []).join(', ');
 }
 
-function report(st, log) {
+function report(st, log, stats) {
 	var ls = logSummary(log);
 	var wan = { 'public': _('public'), lan: _('private: behind another router'), 'private': _('private: behind another router or ISP NAT') }[st.wan_kind] || st.wan_kind;
 	var src = { dns: _('router DNS'), public_dns: _('public DNS'), builtin: _('built-in list') }[st.beacon_source] || st.beacon_source;
@@ -130,15 +134,32 @@ function report(st, log) {
 	if (st.ttl)
 		out.push('**%s** (%s): %s'.format(_('With the fake'), cityName(st.beacon),
 			st.ttl.map(function(e) { return 'TTL %d: %s'.format(e.ttl, repliesText(e.replies)); }).join('; ')));
+	(st.spares || []).forEach(function(sp) {
+		out.push('**%s %s**: %s'.format(_('Spare fake'), sp.fake,
+			(sp.ttl || []).map(function(e) { return 'TTL %d: %s'.format(e.ttl, repliesText(e.replies)); }).join('; ')));
+	});
 	if (st.fake_check)
 		out.push('**%s**: TTL %d: %s'.format(_('Fake at the current TTL'), st.fake_check.ttl, repliesText(st.fake_check.replies)));
 	out.push('**%s**: %s'.format(_('Result'), st.verdict +
 		(st.recommended_ttl ? ', TTL %d (%s %d)'.format(st.recommended_ttl, _('works from'), st.works_from || st.recommended_ttl) : '')));
 	out.push('**%s**: TTL %d, %s'.format(_('Settings'), st.now_ttl,
 		st.now_fake ? _('fake %s').format(st.fake) : _('fake off')));
-	out.push('**%s**: %s'.format(_('fnport log'),
-		_('%d connections through a passing port, %d without one, %d frozen anyway, %d remapped, fake turned off %d times, %d of %d probed ports passed')
-			.format(ls.flows, ls.nogood, ls.frozen, ls.remaps, ls.fakeoff, ls.good, ls.tested)));
+	if (stats && stats.hours) {
+		// a week of counters beats the few hours the system log keeps
+		var w = {};
+		Object.keys(stats.hours).forEach(function(h) {
+			Object.keys(stats.hours[h]).forEach(function(k) { w[k] = (w[k] || 0) + stats.hours[h][k]; });
+		});
+		var n = stats.now || {};
+		out.push('**%s**: %s'.format(_('Statistics, 7 days'),
+			_('%d connections through a passing port, %d passed as is in standby, %d without a port, %d frozen anyway, %d remapped, fake turned off %d times, fake switched %d times, %d of %d probed ports passed')
+				.format(w.flows || 0, w.passed || 0, w.nogood || 0, w.frozen || 0, w.remaps || 0, w.fakeoff || 0, w.fakeswitch || 0, w.good || 0, w.tested || 0)));
+		out.push('**%s**: %s'.format(_('Mode'), (n.standby ? 'standby' : 'active') + (n.fake ? ', ' + n.fake : '') + (n.fake_off_until ? ', fake off' : '')));
+	}
+	else
+		out.push('**%s**: %s'.format(_('fnport log'),
+			_('%d connections through a passing port, %d without one, %d frozen anyway, %d remapped, fake turned off %d times, %d of %d probed ports passed')
+				.format(ls.flows, ls.nogood, ls.frozen, ls.remaps, ls.fakeoff, ls.good, ls.tested)));
 	out.push('', '<details><summary>%s</summary>'.format(_('Recent events (addresses hidden)')), '', '```');
 	out = out.concat(ls.lines);
 	out.push('```', '</details>');
@@ -158,7 +179,8 @@ return view.extend({
 	load: function() {
 		return Promise.all([
 			L.resolveDefault(run('status'), { state: 'none' }),
-			L.resolveDefault(fs.exec_direct('/sbin/logread', [ '-e', 'fnport' ]), '')
+			L.resolveDefault(fs.exec_direct('/sbin/logread', [ '-e', 'fnport' ]), ''),
+			L.resolveDefault(fs.read('/var/run/fnport-stats.json').then(JSON.parse), null)
 		]);
 	},
 
@@ -188,11 +210,11 @@ return view.extend({
 
 	refresh: function() {
 		return this.load().then(L.bind(function(d) {
-			dom.content(this.container, this.renderState(d[0], d[1]));
+			dom.content(this.container, this.renderState(d[0], d[1], d[2]));
 		}, this));
 	},
 
-	renderState: function(st, log) {
+	renderState: function(st, log, stats) {
 		var running = this.running = (st.state == 'running');
 		var nodes = [
 			E('div', { 'class': 'cbi-page-actions', 'style': 'text-align:left' }, [
@@ -224,14 +246,16 @@ return view.extend({
 		if (st.recommended_ttl) {
 			// a pass at some TTL means every larger one gets past the DPI too: no need to chase
 			// the exact number, which differs between checks by chance
-			if (st.now_fake && st.now_ttl >= (st.works_from || st.recommended_ttl) && st.now_ttl <= 8)
+			if (st.now_fake && !st.recommended_fake && st.now_ttl >= (st.works_from || st.recommended_ttl) && st.now_ttl <= 8)
 				nodes.push(E('p', {}, [ _('Your current TTL %d works as well, nothing to change.').format(st.now_ttl) ]));
 			else
 				nodes.push(E('p', {}, [
 					E('button', {
 						'class': 'cbi-button cbi-button-apply',
 						'click': ui.createHandlerFn(this, 'handleApply')
-					}, [ _('Apply TTL %d').format(st.recommended_ttl) ]),
+					}, [ st.recommended_fake
+						? _('Apply TTL %d and fake %s').format(st.recommended_ttl, st.recommended_fake)
+						: _('Apply TTL %d').format(st.recommended_ttl) ]),
 					' ',
 					_('Now: TTL %d%s. fnport restarts; a match in progress is not affected.').format(st.now_ttl, st.now_fake ? '' : _(', fake off'))
 				]));
@@ -253,6 +277,9 @@ return view.extend({
 		};
 		(st.control || []).forEach(function(c) { row(_('%s, no fake').format(cityName(c.city)), c.replies); });
 		(st.ttl || []).forEach(function(e) { row(_('%s, fake TTL %d').format(cityName(st.beacon), e.ttl), e.replies); });
+		(st.spares || []).forEach(function(sp) {
+			(sp.ttl || []).forEach(function(e) { row(_('%s, spare %s, TTL %d').format(cityName(st.beacon), sp.fake, e.ttl), e.replies); });
+		});
 		if (st.fake_check)
 			row(_('fake TTL %d').format(st.fake_check.ttl), st.fake_check.replies);
 		nodes.push(E('table', { 'class': 'table' }, rows));
@@ -260,7 +287,7 @@ return view.extend({
 			_('More than 25 replies: the port passes. 20-25: the DPI froze the flow. Fewer than 20: the beacon limits replies or packets get lost. Even where the fake works, about half of the ports pass, which is enough for fnport.')
 		]));
 
-		var ta = E('textarea', { 'class': 'cbi-input-textarea', 'readonly': '', 'rows': 14, 'style': 'width:100%;font-family:monospace' }, [ report(st, log) ]);
+		var ta = E('textarea', { 'class': 'cbi-input-textarea', 'readonly': '', 'rows': 14, 'style': 'width:100%;font-family:monospace' }, [ report(st, log, stats) ]);
 		nodes.push(E('h3', {}, _('Report for the developers')));
 		nodes.push(E('p', { 'class': 'cbi-section-descr' }, [
 			_('No addresses of your network inside: servers are shown as cities. Fill in your ISP and city and post it as an issue on GitHub; reports from different ISPs help tune the defaults.')
@@ -275,7 +302,7 @@ return view.extend({
 	},
 
 	render: function(data) {
-		this.container = E('div', {}, this.renderState(data[0], data[1]));
+		this.container = E('div', {}, this.renderState(data[0], data[1], data[2]));
 
 		poll.add(L.bind(function() {
 			// only while a check runs; the log part of the report is refreshed with it

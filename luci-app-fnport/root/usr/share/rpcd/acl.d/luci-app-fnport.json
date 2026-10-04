@@ -8,6 +8,9 @@
 				],
 				"/usr/libexec/fnport-check status": [
 					"exec"
+				],
+				"/var/run/fnport-stats.json": [
+					"read"
 				]
 			},
 			"ubus": {

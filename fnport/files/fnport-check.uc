@@ -175,28 +175,80 @@ function release_info() {
 	return r;
 }
 
-// the configured fake if the service would accept it, else the bundled one
-function fake_file(uci) {
-	let p = uci.get('fnport', 'main', 'whitelist_fake') ?? '';
-	if (match(p, /^\/(usr\/share|etc)\/fnport\/[A-Za-z0-9_-][A-Za-z0-9._-]*$/)) {
+function fake_list(uci) {
+	let v = uci.get('fnport', 'main', 'whitelist_fake');
+	return v == null ? [] : (type(v) == 'array' ? v : [ v ]);
+}
+
+// the configured fakes the service would accept (the first is in use, the rest are spares),
+// else the bundled one
+function fake_files(uci) {
+	let out = [];
+	for (let p in fake_list(uci)) {
+		if (!match(p, /^\/(usr\/share|etc)\/fnport\/[A-Za-z0-9_-][A-Za-z0-9._-]*$/)) continue;
 		let d = readfile(p, 1501);
-		if (d != null && length(d) > 0 && length(d) <= 1500) return { path: p, data: d };
+		if (d != null && length(d) > 0 && length(d) <= 1500) push(out, { name: replace(p, /.*\//, ''), data: d });
 	}
-	return { path: DEFAULT_FAKE, data: readfile(DEFAULT_FAKE, 1501) };
+	if (!length(out)) {
+		let d = readfile(DEFAULT_FAKE, 1501);
+		if (d) push(out, { name: replace(DEFAULT_FAKE, /.*\//, ''), data: d });
+	}
+	return out;
+}
+
+// the fake helps once its TTL takes it past the DPI. Scan TTLs from `lo` up, 2 sockets each;
+// a TTL with a pass gets 2 more and is taken with at least 2 passes out of 4. Results go to `r`,
+// progress to `st`
+function scan_ttl(r, host, fake, lo, hi, st) {
+	st = st ?? r;
+	r.ttl = [];
+	let silent_run = 0;
+	for (let t = lo; t <= hi; t++) {
+		st.step = 'ttl'; st.ttl_now = t; st.fake_now = r.fake; save(st);
+		sleep_ms(GAP_MS);
+		let e = { ttl: t, replies: probe(host, 2, fake, t) };
+		push(r.ttl, e);
+		if (count(e.replies, 'pass') >= 1) {
+			save(st);
+			sleep_ms(GAP_MS);
+			e.replies = [ ...e.replies, ...probe(host, 2, fake, t) ];
+			if (count(e.replies, 'pass') >= 2) {
+				// any TTL from here on gets past the DPI; recommend one hop of margin against
+				// route changes, unless the fake starts killing flows there
+				r.works_from = t;
+				r.recommended_ttl = t;
+				if (t < MAX_TTL) {
+					st.ttl_now = t + 1; save(st);
+					sleep_ms(GAP_MS);
+					let m = { ttl: t + 1, replies: probe(host, 2, fake, t + 1) };
+					push(r.ttl, m);
+					if (count(m.replies, 'silent') < length(m.replies)) r.recommended_ttl = t + 1;
+				}
+				return 'fake_works';
+			}
+		}
+		// the whole flow dies once the fake reaches some DPI: going further only kills more
+		silent_run = count(e.replies, 'silent') == length(e.replies) ? silent_run + 1 : 0;
+		if (silent_run >= 2) {
+			r.fake_kills_from = t - 1;
+			return 'fake_kills';
+		}
+	}
+	return 'fake_fails';
 }
 
 function run() {
 	writefile(PIDFILE, split(readfile('/proc/self/stat') ?? '', ' ')[0]);
 	let uci = cursor();
-	let ff = fake_file(uci), fake = ff.data;
+	let fakes = fake_files(uci), fake = fakes[0]?.data;
 	let cur_ttl = +(uci.get('fnport', 'main', 'fake_ttl') ?? 3);
 	let rel = release_info();
 	let st = {
 		state: 'running', step: 'resolve', started: time(),
 		version: trim(readfile('/usr/share/fnport/version') ?? 'unknown'),
 		openwrt: rel.release, target: rel.target,
-		fake: replace(ff.path, /.*\//, ''),
-		fake_enabled: (uci.get('fnport', 'main', 'whitelist_fake') ?? '') != '',
+		fake: fakes[0]?.name,
+		fake_enabled: length(fake_list(uci)) > 0,
 		current_ttl: cur_ttl
 	};
 	// interface names only: it ends up in a shell command
@@ -244,42 +296,20 @@ function run() {
 	st.beacon = city(host);
 	if (!fake) return finish('freeze_no_fake');
 
-	// freeze: the fake helps once its TTL takes it past the DPI. Scan up from 1, 2 sockets per
-	// TTL; a TTL with a pass gets 2 more and is taken with at least 2 passes out of 4
-	st.ttl = [];
-	let silent_run = 0;
-	for (let t = 1; t <= MAX_TTL; t++) {
-		st.step = 'ttl'; st.ttl_now = t; save(st);
-		sleep_ms(GAP_MS);
-		let e = { ttl: t, replies: probe(host, 2, fake, t) };
-		push(st.ttl, e);
-		if (count(e.replies, 'pass') >= 1) {
-			save(st);
-			sleep_ms(GAP_MS);
-			e.replies = [ ...e.replies, ...probe(host, 2, fake, t) ];
-			if (count(e.replies, 'pass') >= 2) {
-				// any TTL from here on gets past the DPI; recommend one hop of margin against
-				// route changes, unless the fake starts killing flows there
-				st.works_from = t;
-				st.recommended_ttl = t;
-				if (t < MAX_TTL) {
-					st.ttl_now = t + 1; save(st);
-					sleep_ms(GAP_MS);
-					let m = { ttl: t + 1, replies: probe(host, 2, fake, t + 1) };
-					push(st.ttl, m);
-					if (count(m.replies, 'silent') < length(m.replies)) st.recommended_ttl = t + 1;
-				}
-				return finish('fake_works');
-			}
-		}
-		// the whole flow dies once the fake reaches some DPI: going further only kills more
-		silent_run = count(e.replies, 'silent') == length(e.replies) ? silent_run + 1 : 0;
-		if (silent_run >= 2) {
-			st.fake_kills_from = t - 1;
-			return finish('fake_kills');
+	// freeze: try the fake in use, then the spares on a shorter TTL range
+	let res = scan_ttl(st, host, fake, 1, MAX_TTL);
+	for (let i = 1; res == 'fake_fails' && i < length(fakes) && i <= 2; i++) {
+		st.spares = st.spares ?? [];
+		let sp = { fake: fakes[i].name };
+		push(st.spares, sp);
+		res = scan_ttl(sp, host, fakes[i].data, 2, 5, st);
+		if (res == 'fake_works') {
+			st.recommended_ttl = sp.recommended_ttl;
+			st.works_from = sp.works_from;
+			st.recommended_fake = fakes[i].name;
 		}
 	}
-	return finish('fake_fails');
+	return finish(res);
 }
 
 let cmd = ARGV[0];
@@ -319,8 +349,16 @@ else if (cmd == 'apply') {
 	if (st?.state != 'done' || t < 1 || t > 16) { printf('%J\n', { error: 'nothing to apply' }); exit(1); }
 	let uci = cursor();
 	uci.set('fnport', 'main', 'fake_ttl', `${t}`);
-	if ((uci.get('fnport', 'main', 'whitelist_fake') ?? '') == '')
-		uci.set('fnport', 'main', 'whitelist_fake', DEFAULT_FAKE);
+	let list = fake_list(uci);
+	if (!length(list))
+		list = [ DEFAULT_FAKE ];
+	// a spare that worked where the first fake did not goes first
+	let rf = st.recommended_fake;
+	if (rf && match(rf, /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/)) {
+		let p = filter(list, x => replace(x, /.*\//, '') == rf)[0];
+		if (p) list = [ p, ...filter(list, x => x != p) ];
+	}
+	uci.set('fnport', 'main', 'whitelist_fake', list);
 	uci.commit('fnport');
 	system('/etc/init.d/fnport reload >/dev/null 2>&1');
 	printf('%J\n', { applied: t });

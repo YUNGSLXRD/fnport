@@ -12,10 +12,14 @@
 // TSPU does not freeze flows in which it saw a whitelisted SNI. So each probe socket
 // and each flow handed to the PC first sends one fake QUIC Initial with such an SNI
 // and a TTL that expires after the TSPU, before reaching the server.
+//
+// Where nothing freezes (probes pass without the fake), fnport stands by: flows pass
+// as they are until a frozen one shows up. What it learnt about the network (standby,
+// a harmful fake, the fake that works) is kept per network across restarts.
 
 import * as socket from 'socket';
 import { rand } from 'math';
-import { popen, readfile } from 'fs';
+import { popen, readfile, writefile, rename, mkdir } from 'fs';
 import { cursor } from 'uci';
 
 // interface names only: it ends up in a shell command
@@ -49,6 +53,7 @@ function parse_range(r) {
 // the fake is read as root and sent to the network: only our own small files
 function load_fake(path) {
 	if (!path) return null;
+	path = `${path}`;
 	if (!match(path, /^\/(usr\/share|etc)\/fnport\/[A-Za-z0-9_-][A-Za-z0-9._-]*$/)) {
 		system([ 'logger', '-t', 'fnport', 'whitelist fake rejected: must be a file in /usr/share/fnport or /etc/fnport' ]);
 		return null;
@@ -78,16 +83,29 @@ const LIMIT_HOLDOFF = 900;                   // seconds to avoid handshake probe
 const GOOD_TTL = num('verdict_ttl', 90, 10, 900);  // verdicts drift within ~10-20 min
 const PROBE_PKTS = 30;        // TSPU stops replies at 25, so more than 25 means no freeze;
 const PROBE_PASS = 26;        // the margin is for loss on poor links, not for the DPI
+const FROZEN_MIN = 20;        // a freeze stops at 24-25; far fewer is the server limiting or loss
 const PROBE_IV_MS = 30;       // per-socket spacing; denser bursts get rate-limited by the server
 const PROBE_WAIT_MS = 400;
 const FREEZE_OUT = 60;        // flow counts as frozen: >= this many packets out ...
 const FREEZE_IN = 26;         // ... while replies stay at or below this
 const PORT_MIN = 20000, PORT_RANGE = 40000;
-const FAKE = load_fake(cfg('whitelist_fake', ''));
+// the first fake is used; the others are spares for when it stops working here
+const FAKES = map(filter(map(as_list(cfg('whitelist_fake', null)), p => ({ path: `${p}`, data: load_fake(p) })), f => f.data != null),
+	f => ({ name: replace(f.path, /.*\//, ''), data: f.data }));
 const FAKE_TTL = num('fake_ttl', 3, 1, 16);  // hops from the router: expires past the TSPU, before the server
 const FAKE_GAP_MS = 30;                // let the fake reach the TSPU before the real packets
 const FAKE_HOLDOFF = 1800;             // seconds without the fake once it proved harmful here
 const MAX_REMAPS = 4;                  // attempts to move one frozen flow to a fresh port
+const FAKE_TRIAL = 16;                 // probe sockets with one fake before judging it
+const STANDBY = cfg('standby', '1') != '0';
+const STANDBY_EVIDENCE = 6;            // probe sockets without the fake, nearly all passing, to stand by
+const CONTROL_STREAK = 8;              // passes in a row with the fake before trying once without it
+const CONTROL_HOLDOFF = 6 * 3600;      // after a control that froze, do not try again for a while
+const STATS_RUN = '/var/run/fnport-stats.json';  // read by the status page
+const STATS_SAVED = '/etc/fnport/stats.json';     // flash: written rarely
+const MEMORY = '/etc/fnport/memory.json';         // what was learnt per network
+const STATS_HOURS = 168;
+const VERSION = trim(readfile('/usr/share/fnport/version') ?? 'unknown');
 
 function game_port(p) {
 	for (let r in PORT_RANGES)
@@ -108,9 +126,18 @@ let last_check = 0;
 let reported = {};            // "ip|wanport" -> true, frozen flows already handled
 let remaps = {};              // "pc|cport|ip|sport" -> remap attempts
 let fake_off_until = 0;       // some ISPs kill a whole flow once their DPI sees the fake
+let fake_idx = 0;             // which of FAKES is in use
+let fake_tries = 0, fake_good = 0;  // probe sockets with the current fake and how many passed
+let standby = false;          // no freeze on this network: flows pass as they are
+let nofake_tries = 0, nofake_good = 0;  // probe sockets without the fake
+let pass_streak = 0;          // probe sockets in a row that passed with the fake
+let control_after = 0;
+let net_key = null;
+let stats = { hours: {} }, stats_dirty = true, stats_written = 0, stats_saved = time();
+const STARTED = time();
 
 function fake_on() {
-	return FAKE != null && time() >= fake_off_until;
+	return length(FAKES) > 0 && time() >= fake_off_until && !standby;
 }
 
 function qos_batch() {
@@ -126,7 +153,7 @@ function now_ms() {
 function send_fake(s, host, dport) {
 	if (!fake_on()) return false;
 	s.setopt(socket.IPPROTO_IP, socket.IP_TTL, FAKE_TTL);
-	s.send(FAKE, 0, { address: host, port: dport });
+	s.send(FAKES[fake_idx].data, 0, { address: host, port: dport });
 	s.setopt(socket.IPPROTO_IP, socket.IP_TTL, 64);
 	return true;
 }
@@ -164,6 +191,96 @@ function nft(cmds) {
 function wan_ip() {
 	let m = match(sh('ip -4 -o addr show dev ' + WAN_DEV), /inet ([0-9.]+)/);
 	return m ? m[1] : null;
+}
+
+function save_json(path, data) {
+	if (!writefile(path + '.tmp', sprintf('%J', data))) return false;
+	return rename(path + '.tmp', path);
+}
+
+// hourly counters for the status page; kept for a week
+function stat(name, n) {
+	let h = `${int(time() / 3600) * 3600}`;
+	if (!stats.hours[h]) stats.hours[h] = {};
+	stats.hours[h][name] = (stats.hours[h][name] ?? 0) + (n ?? 1);
+	stats_dirty = true;
+}
+
+function load_stats() {
+	// the RAM copy survives daemon restarts, the flash copy survives reboots
+	let s = json(readfile(STATS_RUN) ?? 'null') ?? json(readfile(STATS_SAVED) ?? 'null');
+	if (type(s?.hours) == 'object') stats.hours = s.hours;
+}
+
+function write_stats(to_flash) {
+	let cut = time() - STATS_HOURS * 3600;
+	for (let h in keys(stats.hours))
+		if (+h < cut) delete stats.hours[h];
+	stats.now = {
+		version: VERSION, started: STARTED, updated: time(),
+		standby, fake: length(FAKES) ? FAKES[fake_idx].name : null,
+		fake_off_until: fake_off_until > time() ? fake_off_until : 0,
+		probe_off_until: game_probe_off_until > time() ? game_probe_off_until : 0
+	};
+	save_json(STATS_RUN, stats);
+	stats_dirty = false; stats_written = time();
+	if (to_flash) {
+		mkdir('/etc/fnport');
+		save_json(STATS_SAVED, { hours: stats.hours });
+		stats_saved = time();
+	}
+}
+
+function tick_stats() {
+	if (stats_dirty && time() - stats_written >= 60) write_stats(false);
+	if (time() - stats_saved >= 6 * 3600) write_stats(true);
+}
+
+// the network behind the WAN: its gateway (or PPP peer) and the gateway's MAC
+function network_key() {
+	let gw = match(sh('ip -4 route show default dev ' + WAN_DEV), /via ([0-9.]+)/)?.[1];
+	if (!gw) gw = match(sh('ip -4 addr show dev ' + WAN_DEV), /peer ([0-9.]+)/)?.[1];
+	if (!gw) return WAN_DEV;
+	let mac = match(sh('ip neigh show ' + gw), /lladdr ([0-9a-f:]+)/)?.[1];
+	return mac ? `${gw}|${mac}` : gw;
+}
+
+function load_memory() {
+	let all = json(readfile(MEMORY) ?? 'null');
+	return type(all) == 'object' ? all : {};
+}
+
+function remember() {
+	let all = load_memory();
+	all[net_key] = { standby, fake: length(FAKES) ? FAKES[fake_idx].name : null,
+		fake_off_until: fake_off_until > time() ? fake_off_until : 0, updated: time() };
+	// a handful of networks is plenty (a router that moves between home and elsewhere)
+	let ks = sort(keys(all), (a, b) => (all[b].updated ?? 0) - (all[a].updated ?? 0));
+	for (let i = 8; i < length(ks); i++) delete all[ks[i]];
+	mkdir('/etc/fnport');
+	save_json(MEMORY, all);
+}
+
+function recall() {
+	net_key = network_key();
+	let m = load_memory()[net_key];
+	if (!m) return;
+	standby = STANDBY && !!m.standby;
+	for (let i = 0; i < length(FAKES); i++)
+		if (FAKES[i].name == m.fake) fake_idx = i;
+	if (+(m.fake_off_until ?? 0) > time()) fake_off_until = +m.fake_off_until;
+	log(sprintf('this network was seen before:%s fake %s%s', standby ? ' no freeze, standing by;' : '',
+		length(FAKES) ? FAKES[fake_idx].name : 'none', fake_off_until > time() ? ' (off for now)' : ''));
+}
+
+function set_standby(on, why) {
+	if (standby == on) return;
+	standby = on;
+	log(on ? `no freeze on this network (${why}): standing by, flows pass as they are`
+		: `freeze seen (${why}): standby off`);
+	stat(on ? 'standby_on' : 'standby_off');
+	remember();
+	write_stats(false);
 }
 
 // unwrap nft JSON set/map element into [ip, port, port]
@@ -233,6 +350,40 @@ function fresh_ports(t, n) {
 	return cand;
 }
 
+// what probes of a game port tell about the network: does the fake work, is there a freeze at all
+function learn(results, with_fake) {
+	let tried = 0, good = 0;
+	for (let got in results) {
+		if (got >= PROBE_PASS) { tried++; good++; }
+		else if (got >= FROZEN_MIN) tried++;  // 1-19 is the server limiting or loss, 0 is silence
+	}
+	if (!tried) return;
+	if (with_fake) {
+		fake_tries += tried; fake_good += good;
+		pass_streak = (good == tried) ? pass_streak + good : 0;
+		if (fake_tries >= FAKE_TRIAL && fake_good <= 1 && length(FAKES) > 1) {
+			let old = FAKES[fake_idx].name;
+			fake_idx = (fake_idx + 1) % length(FAKES);
+			log(sprintf('fake %s does not work here (%d of %d probes passed), switching to %s',
+				old, fake_good, fake_tries, FAKES[fake_idx].name));
+			stat('fakeswitch');
+			fake_tries = fake_good = 0;
+			remember();
+		}
+		else if (fake_tries >= FAKE_TRIAL * 4) {
+			// judge by recent probes only
+			fake_tries = int(fake_tries / 2); fake_good = int(fake_good / 2);
+		}
+	}
+	else {
+		// one freeze without the fake rules standby out
+		if (good < tried) nofake_tries = nofake_good = 0;
+		else { nofake_tries += tried; nofake_good += good; }
+		if (STANDBY && nofake_tries >= STANDBY_EVIDENCE)
+			set_standby(true, sprintf('%d probes without the fake passed', nofake_tries));
+	}
+}
+
 // make sure we know at least `want` good source ports for ip:dport
 function refresh_target(ip, dport, want) {
 	let key = `${ip}|${dport}`;
@@ -263,6 +414,7 @@ function refresh_target(ip, dport, want) {
 	budget_used += n;
 	let cand = fresh_ports(t, n);
 	let t0 = now_ms();
+	let with_fake = fake_on();
 	let res = probe(ip, qos ? QOS_PORT : dport, cand, qos);
 	let fresh = [], frozen = 0, silent = 0, counts = {};
 	for (let p in cand) {
@@ -276,6 +428,28 @@ function refresh_target(ip, dport, want) {
 	for (let p in fresh) push(t.good, p);
 	log(sprintf('probe %s:%d via %s: %d good, %d frozen, %d silent (%dms)',
 		ip, dport, qos ? 'qos' : 'game port', length(fresh), frozen, silent, now_ms() - t0));
+	stat('tested', length(cand));
+	stat('good', length(fresh));
+	if (!qos) learn(map(cand, p => res[p] ?? 0), with_fake);
+
+	// everything passes with the fake: maybe nothing freezes here at all. Two ports without
+	// it now and then tell; passing ports are good ports either way
+	if (!qos && STANDBY && fake_on() && pass_streak >= CONTROL_STREAK && time() >= control_after &&
+	    budget_used + 2 <= PROBE_BUDGET) {
+		pass_streak = 0;
+		budget_used += 2;
+		let cc = fresh_ports(t, 2);
+		let r = probe(ip, dport, cc, false, true);
+		let vals = map(cc, p => r[p] ?? 0);
+		for (let p in cc) {
+			t.tried[p] = true;
+			if ((r[p] ?? 0) >= PROBE_PASS) push(t.good, p);
+		}
+		log(sprintf('control without the fake %s:%d: %s replies', ip, dport, join(', ', vals)));
+		learn(vals, false);
+		if (!standby && length(filter(vals, v => v >= PROBE_PASS)) < 2)
+			control_after = time() + CONTROL_HOLDOFF;
+	}
 
 	// no reply at all with the fake: maybe it is the fake that gets the flow killed (some ISPs drop
 	// flows once their DPI sees QUIC). One port without it tells this apart from a silent server.
@@ -284,10 +458,13 @@ function refresh_target(ip, dport, want) {
 		let p = fresh_ports(t, 1)[0];
 		t.tried[p] = true;
 		let got = probe(ip, dport, [ p ], false, true)[p] ?? 0;
+		learn([ got ], false);
 		if (got > 0) {
 			fake_off_until = time() + FAKE_HOLDOFF;
 			log(sprintf('whitelist fake breaks flows on this network (%s:%d: no replies with it, %d without), fake off for %d min',
 				ip, dport, got, FAKE_HOLDOFF / 60));
+			stat('fakeoff');
+			remember();
 			if (got >= PROBE_PASS) push(t.good, p);
 			return t;
 		}
@@ -346,6 +523,7 @@ function remap(pc, cport, ip, sport) {
 	system(`conntrack -D -p udp --orig-src ${pc} --orig-port-src ${cport} --orig-dst ${ip} --orig-port-dst ${sport} >/dev/null 2>&1`);
 	log(sprintf('flow %s:%d (pc:%d) remapped -> wan port %d (attempt %d)',
 		ip, sport, cport, pick, remaps[`${pc}|${cport}|${ip}|${sport}`]));
+	stat('remaps');
 }
 
 // a mapped flow that froze anyway: stop handing out its port for that target, try another port
@@ -372,9 +550,12 @@ function check_frozen() {
 			t.tried[wport] = true;
 		}
 		log(sprintf('frozen flow %s:%d via wan port %d (out %d, in %d) - port dropped', ip, sport, wport, out, inn));
+		stat('frozen');
+		set_standby(false, sprintf('%s:%d', ip, sport));
+		nofake_tries = nofake_good = 0;
 		let fkey = `${src[1]}|${+cp[1]}|${ip}|${sport}`;
 		remaps[fkey] = (remaps[fkey] ?? 0) + 1;
-		if (FAKE && remaps[fkey] <= MAX_REMAPS)
+		if (remaps[fkey] <= MAX_REMAPS)
 			remap(src[1], +cp[1], ip, sport);
 	}
 }
@@ -392,11 +573,21 @@ if (!WAN_DEV || !length(PCS) || !length(PORT_RANGES)) {
 	exit(0);
 }
 
+load_stats();
+recall();
+// a restart or shutdown keeps the counters: procd stops the daemon with SIGTERM
+if (type(signal) == 'function')
+	for (let sig in [ 'SIGTERM', 'SIGINT' ])
+		signal(sig, () => { write_stats(true); exit(0); });
+
 log(sprintf('started: wan %s, devices %s, whitelist fake %s', WAN_DEV, join(' ', PCS),
-	FAKE ? sprintf('%d bytes, ttl %d', length(FAKE), FAKE_TTL) : 'off'));
+	length(FAKES) ? sprintf('%s, ttl %d%s', FAKES[fake_idx].name, FAKE_TTL,
+		length(FAKES) > 1 ? sprintf(' (%d spare)', length(FAKES) - 1) : '') : 'off'));
+write_stats(false);
 while (true) {
 	keep_alive();
 	check_frozen();
+	tick_stats();
 
 	let pending = map(list_elems('set', 'pending'), elem_key);
 	if (length(pending)) {
@@ -415,7 +606,7 @@ while (true) {
 			if (!used[key]) used[key] = {};
 			let pick = null;
 			// asking for one more good port than already used triggers a new probe batch when all are busy
-			for (let round = 0; round < MAX_ROUNDS && pick == null && wan; round++) {
+			for (let round = 0; round < MAX_ROUNDS && pick == null && wan && !standby; round++) {
 				let t = refresh_target(ip, sport, length(keys(used[key])) + 1 + round);
 				for (let p in t.good)
 					if (!used[key][p]) { pick = p; break; }
@@ -431,9 +622,15 @@ while (true) {
 				system(`conntrack -D -p udp --orig-port-src ${pick} --orig-dst ${ip} --orig-port-dst ${sport} >/dev/null 2>&1`);
 				push(cmds, `add element ip fnport assign { ${tuple} : ${wan} . ${pick} }`);
 				log(sprintf('flow %s:%d (pc:%d) -> wan port %d', ip, sport, cport, pick));
+				stat('flows');
+			}
+			else if (standby) {
+				log(sprintf('flow %s:%d (pc:%d) -> passing as is (standing by)', ip, sport, cport));
+				stat('passed');
 			}
 			else {
 				log(sprintf('flow %s:%d (pc:%d) -> no good port, passing as is', ip, sport, cport));
+				stat('nogood');
 			}
 			push(cmds, `add element ip fnport assigned { ${tuple} }`);
 			push(cmds, `delete element ip fnport pending { ${tuple} }`);

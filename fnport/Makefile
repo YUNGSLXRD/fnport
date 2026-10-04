@@ -33,14 +33,21 @@ define Build/Compile
 endef
 
 define Package/fnport/install
-	$(INSTALL_DIR) $(1)/etc/config $(1)/etc/init.d $(1)/usr/share/fnport $(1)/usr/libexec
+	$(INSTALL_DIR) $(1)/etc/config $(1)/etc/init.d $(1)/usr/share/fnport $(1)/usr/libexec $(1)/lib/upgrade/keep.d $(1)/etc/uci-defaults
 	$(INSTALL_CONF) ./files/fnport.config $(1)/etc/config/fnport
 	$(INSTALL_BIN) ./files/fnport.init $(1)/etc/init.d/fnport
 	$(INSTALL_DATA) ./files/fnportd.uc $(1)/usr/share/fnport/fnportd.uc
 	$(INSTALL_DATA) ./files/quic_initial_vk_com.bin $(1)/usr/share/fnport/quic_initial_vk_com.bin
 	$(INSTALL_DATA) ./files/quic_initial_vk_com.bin.LICENSE $(1)/usr/share/fnport/quic_initial_vk_com.bin.LICENSE
+	$(INSTALL_DATA) ./files/quic_initial_gosuslugi_ru.bin $(1)/usr/share/fnport/quic_initial_gosuslugi_ru.bin
+	$(INSTALL_DATA) ./files/quic_initial_gosuslugi_ru.bin.LICENSE $(1)/usr/share/fnport/quic_initial_gosuslugi_ru.bin.LICENSE
+	$(INSTALL_DATA) ./files/quic_initial_ozon_ru.bin $(1)/usr/share/fnport/quic_initial_ozon_ru.bin
+	$(INSTALL_DATA) ./files/quic_initial_ozon_ru.bin.LICENSE $(1)/usr/share/fnport/quic_initial_ozon_ru.bin.LICENSE
 	$(INSTALL_BIN) ./files/fnport-check.uc $(1)/usr/libexec/fnport-check
 	echo "$(PKG_VERSION)-r$(PKG_RELEASE)" > $(1)/usr/share/fnport/version
+	# statistics and what was learnt per network survive a sysupgrade
+	$(INSTALL_DATA) ./files/fnport.keep $(1)/lib/upgrade/keep.d/fnport
+	$(INSTALL_BIN) ./files/fnport.defaults $(1)/etc/uci-defaults/90-fnport-spare-fakes
 endef
 
 $(eval $(call BuildPackage,fnport))

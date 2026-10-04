@@ -85,17 +85,9 @@ msgstr ""
 msgid "not running"
 msgstr ""
 
-msgid "Connections sent through a passing port"
-msgstr ""
 
-msgid "Connections with no passing port found"
-msgstr ""
 
-msgid "Connections frozen anyway"
-msgstr ""
 
-msgid "Probed ports passing the DPI"
-msgstr ""
 
 msgid "Time"
 msgstr ""
@@ -103,8 +95,6 @@ msgstr ""
 msgid "Event"
 msgstr ""
 
-msgid "Summary (since the system log was last cleared)"
-msgstr ""
 
 msgid "Recent events"
 msgstr ""
@@ -121,8 +111,6 @@ msgstr ""
 msgid "Whitelist fake"
 msgstr ""
 
-msgid "File with a fake QUIC Initial carrying a whitelisted SNI. It is sent once before each probe and connection with a short TTL: the DPI stops freezing flows where it saw such a name. Empty disables it."
-msgstr ""
 
 msgid "Fake TTL"
 msgstr ""
@@ -334,4 +322,100 @@ msgid "No clear answer: no beacon froze, but some answered only part of the pack
 msgstr ""
 
 msgid "few replies"
+msgstr ""
+
+msgid "Trying the spare fake %s with TTL %d…"
+msgstr ""
+
+msgid "The ISP freezes game UDP. The first fake did not help, but the spare %s does. Recommended fake TTL: %d."
+msgstr ""
+
+msgid "Spare fake"
+msgstr ""
+
+msgid "Apply TTL %d and fake %s"
+msgstr ""
+
+msgid "%s, spare %s, TTL %d"
+msgstr ""
+
+msgid "Files with a fake QUIC Initial carrying a whitelisted SNI. One is sent before each probe and connection with a short TTL: the DPI stops freezing flows where it saw such a name. The first file is used; if it stops working, fnport switches to the next one. Empty disables the fake."
+msgstr ""
+
+msgid "Stand by where nothing freezes"
+msgstr ""
+
+msgid "If probes pass without the fake, fnport stops probing and sending the fake: connections go as they are until a frozen one shows up. What it learns is kept per network."
+msgstr ""
+
+msgid "Through a passing port"
+msgstr ""
+
+msgid "Passed as is (standby)"
+msgstr ""
+
+msgid "No passing port"
+msgstr ""
+
+msgid "Frozen anyway"
+msgstr ""
+
+msgid "Moved to a new port"
+msgstr ""
+
+msgid "Probed ports passing"
+msgstr ""
+
+msgid "No connections yet."
+msgstr ""
+
+msgid "By day (last 7 days)"
+msgstr ""
+
+msgid "Day"
+msgstr ""
+
+msgid "Last 24 hours"
+msgstr ""
+
+msgid "Hour"
+msgstr ""
+
+msgid "Mode"
+msgstr ""
+
+msgid "standing by: nothing freezes on this network, connections pass as they are"
+msgstr ""
+
+msgid "active: probing ports for new connections"
+msgstr ""
+
+msgid "off"
+msgstr ""
+
+msgid "%s, off until %s: it breaks connections on this network"
+msgstr ""
+
+msgid "%s, not needed while standing by"
+msgstr ""
+
+msgid "Handshake probes"
+msgstr ""
+
+msgid "paused until %s: the server limits replies to this address"
+msgstr ""
+
+msgid "Version"
+msgstr ""
+
+msgid "started at"
+msgstr ""
+
+msgid "Now"
+msgstr ""
+
+msgid "Statistics, 7 days"
+msgstr ""
+
+msgid "%d connections through a passing port, %d passed as is in standby, %d without a port, %d frozen anyway, %d remapped, fake turned off %d times, fake switched %d times, %d of %d probed ports passed"
 msgstr ""

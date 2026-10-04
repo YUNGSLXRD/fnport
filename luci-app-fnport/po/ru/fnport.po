@@ -87,17 +87,9 @@ msgstr "работает"
 msgid "not running"
 msgstr "не работает"
 
-msgid "Connections sent through a passing port"
-msgstr "Соединений отправлено через проходящий порт"
 
-msgid "Connections with no passing port found"
-msgstr "Соединений без найденного проходящего порта"
 
-msgid "Connections frozen anyway"
-msgstr "Соединений, замёрзших несмотря на проверку"
 
-msgid "Probed ports passing the DPI"
-msgstr "Проверенных портов, проходящих ТСПУ"
 
 msgid "Time"
 msgstr "Время"
@@ -105,8 +97,6 @@ msgstr "Время"
 msgid "Event"
 msgstr "Событие"
 
-msgid "Summary (since the system log was last cleared)"
-msgstr "Сводка (с момента последней очистки системного журнала)"
 
 msgid "Recent events"
 msgstr "Последние события"
@@ -123,8 +113,6 @@ msgstr "Верхний предел проверяемых портов в ми�
 msgid "Whitelist fake"
 msgstr "Фейк с белым SNI"
 
-msgid "File with a fake QUIC Initial carrying a whitelisted SNI. It is sent once before each probe and connection with a short TTL: the DPI stops freezing flows where it saw such a name. Empty disables it."
-msgstr "Файл с фейковым QUIC Initial с доменом из белого списка. Отправляется один раз перед каждой проверкой и подключением с коротким TTL: ТСПУ не замораживает соединения, в которых увидел такое имя. Пусто — выключено."
 
 msgid "Fake TTL"
 msgstr "TTL фейка"
@@ -337,3 +325,99 @@ msgstr "Ясного ответа нет: ни один маяк не замёр
 
 msgid "few replies"
 msgstr "мало ответов"
+
+msgid "Trying the spare fake %s with TTL %d…"
+msgstr "Пробую запасной фейк %s с TTL %d…"
+
+msgid "The ISP freezes game UDP. The first fake did not help, but the spare %s does. Recommended fake TTL: %d."
+msgstr "Провайдер замораживает игровой UDP. Первый фейк не помог, а запасной %s помогает. Рекомендуемый TTL фейка: %d."
+
+msgid "Spare fake"
+msgstr "Запасной фейк"
+
+msgid "Apply TTL %d and fake %s"
+msgstr "Применить TTL %d и фейк %s"
+
+msgid "%s, spare %s, TTL %d"
+msgstr "%s, запасной %s, TTL %d"
+
+msgid "Files with a fake QUIC Initial carrying a whitelisted SNI. One is sent before each probe and connection with a short TTL: the DPI stops freezing flows where it saw such a name. The first file is used; if it stops working, fnport switches to the next one. Empty disables the fake."
+msgstr "Файлы с фейковым QUIC Initial с именем из белого списка (SNI). Фейк отправляется перед каждой проверкой и соединением с маленьким TTL: ТСПУ перестаёт замораживать соединения, в которых видел такое имя. Используется первый файл; если он перестаёт работать, fnport переходит к следующему. Пустой список выключает фейк."
+
+msgid "Stand by where nothing freezes"
+msgstr "Режим ожидания, если заморозки нет"
+
+msgid "If probes pass without the fake, fnport stops probing and sending the fake: connections go as they are until a frozen one shows up. What it learns is kept per network."
+msgstr "Если проверки проходят и без фейка, fnport перестаёт проверять порты и слать фейк: соединения идут как есть, пока не замёрзнет хоть одно. Выводы запоминаются для каждой сети."
+
+msgid "Through a passing port"
+msgstr "Через проходящий порт"
+
+msgid "Passed as is (standby)"
+msgstr "Пропущено как есть (ожидание)"
+
+msgid "No passing port"
+msgstr "Без проходящего порта"
+
+msgid "Frozen anyway"
+msgstr "Замёрзло всё равно"
+
+msgid "Moved to a new port"
+msgstr "Переведено на новый порт"
+
+msgid "Probed ports passing"
+msgstr "Прошли проверку"
+
+msgid "No connections yet."
+msgstr "Соединений пока не было."
+
+msgid "By day (last 7 days)"
+msgstr "По дням (за 7 дней)"
+
+msgid "Day"
+msgstr "День"
+
+msgid "Last 24 hours"
+msgstr "За последние 24 часа"
+
+msgid "Hour"
+msgstr "Час"
+
+msgid "Mode"
+msgstr "Режим"
+
+msgid "standing by: nothing freezes on this network, connections pass as they are"
+msgstr "ожидание: в этой сети нет заморозки, соединения идут как есть"
+
+msgid "active: probing ports for new connections"
+msgstr "работает: проверяет порты для новых соединений"
+
+msgid "off"
+msgstr "выключен"
+
+msgid "%s, off until %s: it breaks connections on this network"
+msgstr "%s, выключен до %s: в этой сети ломает соединения"
+
+msgid "%s, not needed while standing by"
+msgstr "%s, в режиме ожидания не нужен"
+
+msgid "Handshake probes"
+msgstr "Проверки рукопожатием"
+
+msgid "paused until %s: the server limits replies to this address"
+msgstr "приостановлены до %s: сервер ограничивает ответы на этот адрес"
+
+msgid "Version"
+msgstr "Версия"
+
+msgid "started at"
+msgstr "запущен в"
+
+msgid "Now"
+msgstr "Сейчас"
+
+msgid "Statistics, 7 days"
+msgstr "Статистика за 7 дней"
+
+msgid "%d connections through a passing port, %d passed as is in standby, %d without a port, %d frozen anyway, %d remapped, fake turned off %d times, fake switched %d times, %d of %d probed ports passed"
+msgstr "соединений через проходящий порт: %d, пропущено в ожидании: %d, без порта: %d, замёрзло всё равно: %d, переведено на другой порт: %d, фейк отключался: %d раз, фейк менялся: %d раз, прошли проверку %d из %d портов"

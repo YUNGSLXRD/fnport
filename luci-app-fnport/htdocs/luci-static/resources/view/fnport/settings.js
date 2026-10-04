@@ -79,8 +79,8 @@ return view.extend({
 		o.datatype = 'range(10,900)';
 		o.placeholder = '90';
 
-		o = s.taboption('advanced', form.Value, 'whitelist_fake', _('Whitelist fake'),
-			_('File with a fake QUIC Initial carrying a whitelisted SNI. It is sent once before each probe and connection with a short TTL: the DPI stops freezing flows where it saw such a name. Empty disables it.'));
+		o = s.taboption('advanced', form.DynamicList, 'whitelist_fake', _('Whitelist fake'),
+			_('Files with a fake QUIC Initial carrying a whitelisted SNI. One is sent before each probe and connection with a short TTL: the DPI stops freezing flows where it saw such a name. The first file is used; if it stops working, fnport switches to the next one. Empty disables the fake.'));
 		o.placeholder = '/usr/share/fnport/quic_initial_vk_com.bin';
 		o.validate = function(section_id, value) {
 			// the service reads only its own directories, see fnportd.uc
@@ -88,6 +88,11 @@ return view.extend({
 				return true;
 			return _('Must be a file in /usr/share/fnport or /etc/fnport');
 		};
+
+		o = s.taboption('advanced', form.Flag, 'standby', _('Stand by where nothing freezes'),
+			_('If probes pass without the fake, fnport stops probing and sending the fake: connections go as they are until a frozen one shows up. What it learns is kept per network.'));
+		o.default = '1';
+		o.rmempty = false;
 
 		o = s.taboption('advanced', form.Value, 'fake_ttl', _('Fake TTL'),
 			_('Hops from the router: the fake must pass the DPI and expire before reaching the server.'));
