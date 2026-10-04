@@ -459,13 +459,15 @@ function refresh_target(ip, dport, want) {
 		t.tried[p] = true;
 		let got = probe(ip, dport, [ p ], false, true)[p] ?? 0;
 		learn([ got ], false);
-		if (got > 0) {
+		// only a port passing without the fake proves the fake is the problem. A freeze without it
+		// (20-25 replies) says the fake is needed, and the silence with it was the server's pause
+		if (got >= PROBE_PASS) {
 			fake_off_until = time() + FAKE_HOLDOFF;
 			log(sprintf('whitelist fake breaks flows on this network (%s:%d: no replies with it, %d without), fake off for %d min',
 				ip, dport, got, FAKE_HOLDOFF / 60));
 			stat('fakeoff');
 			remember();
-			if (got >= PROBE_PASS) push(t.good, p);
+			push(t.good, p);
 			return t;
 		}
 	}
