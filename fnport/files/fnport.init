@@ -1,0 +1,109 @@
+#!/bin/sh /etc/rc.common
+# fnport: pick source ports that pass the ISP's DPI for game UDP flows
+
+USE_PROCD=1
+START=99
+STOP=10
+
+DAEMON=/usr/share/fnport/fnportd.uc
+NFT_RUN=/var/run/fnport.nft
+
+wan_l3_device() {
+	local iface="$1" dev
+	dev="$(ubus call network.interface."$iface" status 2>/dev/null | jsonfilter -e '@.l3_device')"
+	echo "$dev"
+}
+
+append_range() {
+	PORTS="${PORTS:+$PORTS, }$1"
+}
+
+# fail-open by design: flows are held only while the daemon keeps @alive populated
+write_nft() {
+	local wan_dev="$1"
+	cat > "$NFT_RUN" <<EOF
+table ip fnport {
+	set alive {
+		type ipv4_addr
+		flags timeout
+		timeout 5s
+	}
+	set pending {
+		type ipv4_addr . inet_service . inet_service
+		flags timeout
+		timeout 20s
+	}
+	set assigned {
+		type ipv4_addr . inet_service . inet_service
+		flags timeout
+		timeout 2h
+	}
+	map assign {
+		type ipv4_addr . inet_service . inet_service : ipv4_addr . inet_service
+		flags timeout
+		timeout 2h
+	}
+	chain fn_hold {
+		type filter hook forward priority filter - 2; policy accept;
+		ct state new ip saddr @alive udp dport { $PORTS } ip daddr . udp sport . udp dport != @assigned add @pending { ip daddr . udp sport . udp dport } counter drop
+	}
+	chain fn_nat {
+		type nat hook postrouting priority srcnat - 1; policy accept;
+		oifname "$wan_dev" ip saddr @alive udp dport { $PORTS } counter snat ip to ip daddr . udp sport . udp dport map @assign
+	}
+}
+EOF
+}
+
+start_service() {
+	config_load fnport
+	local enabled wan_iface wan_dev
+	config_get_bool enabled main enabled 0
+	if [ "$enabled" != 1 ]; then
+		nft delete table ip fnport 2>/dev/null
+		return 0
+	fi
+
+	local devices
+	config_get devices main device
+	if [ -z "$devices" ]; then
+		logger -t fnport "no devices configured, not starting"
+		return 0
+	fi
+
+	config_get wan_iface main wan_interface wan
+	wan_dev="$(wan_l3_device "$wan_iface")"
+	if [ -z "$wan_dev" ]; then
+		logger -t fnport "interface $wan_iface is not up, not starting"
+		return 0
+	fi
+
+	PORTS=""
+	config_list_foreach main port_range append_range
+	[ -n "$PORTS" ] || PORTS="9000-9999, 15000-15999"
+
+	nft delete table ip fnport 2>/dev/null
+	write_nft "$wan_dev"
+	nft -f "$NFT_RUN" || { logger -t fnport "failed to load nftables rules"; return 1; }
+
+	procd_open_instance
+	procd_set_param command ucode "$DAEMON" "$wan_dev"
+	# restart the daemon on reload when the config changed
+	procd_set_param file /etc/config/fnport
+	procd_set_param respawn 3600 5 0
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
+
+stop_service() {
+	nft delete table ip fnport 2>/dev/null
+}
+
+service_triggers() {
+	local wan_iface
+	config_load fnport
+	config_get wan_iface main wan_interface wan
+	procd_add_reload_trigger fnport
+	procd_add_interface_trigger "interface.*.up" "$wan_iface" /etc/init.d/fnport restart
+}

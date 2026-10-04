@@ -1,0 +1,133 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: ru\n"
+
+msgid "fnport"
+msgstr "fnport"
+
+msgid "Settings"
+msgstr "Настройки"
+
+msgid "Status"
+msgstr "Статус"
+
+msgid "Some ISP DPI boxes freeze game UDP flows after 25 packets, and which flows get frozen depends on the source port. fnport probes the game server from several source ports and sends each new game connection through one that passes. No VPN: traffic goes directly to the server."
+msgstr "ТСПУ у некоторых провайдеров «замораживают» игровые UDP-соединения после 25 пакетов, и какие именно, зависит от исходящего порта. fnport проверяет игровой сервер с нескольких исходящих портов и отправляет каждое новое соединение игры через тот, что проходит. Без VPN: трафик идёт на сервер напрямую."
+
+msgid "General"
+msgstr "Основные"
+
+msgid "Advanced"
+msgstr "Дополнительно"
+
+msgid "Enable"
+msgstr "Включить"
+
+msgid "WAN interface"
+msgstr "WAN-интерфейс"
+
+msgid "Interface facing the ISP."
+msgstr "Интерфейс, смотрящий к провайдеру."
+
+msgid "Devices"
+msgstr "Устройства"
+
+msgid "Game devices (PC, console). Give them static DHCP leases so the address does not change."
+msgstr "Игровые устройства (ПК, консоль). Закрепите за ними постоянный адрес в DHCP, чтобы он не менялся."
+
+msgid "Game server ports"
+msgstr "Порты игровых серверов"
+
+msgid "UDP ports of the game servers. Defaults are Fortnite: 9000-9999 (match) and 15000-15999 (control)."
+msgstr "UDP-порты игровых серверов. По умолчанию Fortnite: 9000-9999 (матч) и 15000-15999 (служебные)."
+
+msgid "Paired port range"
+msgstr "Диапазон парных портов"
+
+msgid "When a connection to this range is seen, the paired match port is probed in advance. Empty disables it."
+msgstr "При подключении к порту из этого диапазона парный порт матча проверяется заранее. Пусто — отключено."
+
+msgid "Paired port offset"
+msgstr "Смещение парного порта"
+
+msgid "Offset from the control port to the match port (Fortnite: 15062 → 9062 = -6000)."
+msgstr "Смещение от служебного порта к порту матча (Fortnite: 15062 → 9062 = -6000)."
+
+msgid "Fallback echo port"
+msgstr "Запасной эхо-порт"
+
+msgid "Server UDP echo port used when the game port does not answer."
+msgstr "UDP-эхо порт сервера, который используется, если игровой порт не отвечает."
+
+msgid "Ports per probe round"
+msgstr "Портов за одну проверку"
+
+msgid "Probed in parallel. More may trigger the server's rate limit."
+msgstr "Проверяются параллельно. Больше — сервер может начать ограничивать ответы."
+
+msgid "Probe rounds"
+msgstr "Раундов проверки"
+
+msgid "Extra rounds when no port passes. Each round adds about 1.3 seconds to connecting."
+msgstr "Дополнительные раунды, если ни один порт не прошёл. Каждый раунд добавляет около 1.3 секунды к подключению."
+
+msgid "Reuse probe results (seconds)"
+msgstr "Хранить результаты проверки (секунд)"
+
+msgid "Results drift after 10-20 minutes, keep this short."
+msgstr "Через 10–20 минут результаты устаревают, держите значение небольшим."
+
+msgid "Service"
+msgstr "Служба"
+
+msgid "running"
+msgstr "работает"
+
+msgid "not running"
+msgstr "не работает"
+
+msgid "Connections sent through a passing port"
+msgstr "Соединений отправлено через проходящий порт"
+
+msgid "Connections with no passing port found"
+msgstr "Соединений без найденного проходящего порта"
+
+msgid "Connections frozen anyway"
+msgstr "Соединений, замёрзших несмотря на проверку"
+
+msgid "Probed ports passing the DPI"
+msgstr "Проверенных портов, проходящих ТСПУ"
+
+msgid "Time"
+msgstr "Время"
+
+msgid "Event"
+msgstr "Событие"
+
+msgid "Summary (since the system log was last cleared)"
+msgstr "Сводка (с момента последней очистки системного журнала)"
+
+msgid "Recent events"
+msgstr "Последние события"
+
+msgid "fnport status"
+msgstr "Статус fnport"
+
+msgid "Probe budget per minute"
+msgstr "Лимит проверок в минуту"
+
+msgid "Upper limit of probe ports per minute for all servers together. Probing too much gets the address punished by the DPI."
+msgstr "Верхний предел проверяемых портов в минуту для всех серверов вместе. Слишком частые проверки приводят к «наказанию» адреса со стороны ТСПУ."
+
+msgid "Whitelist fake"
+msgstr "Фейк с белым SNI"
+
+msgid "File with a fake QUIC Initial carrying a whitelisted SNI. It is sent once before each probe and connection with a short TTL: the DPI stops freezing flows where it saw such a name. Empty disables it."
+msgstr "Файл с фейковым QUIC Initial с доменом из белого списка. Отправляется один раз перед каждой проверкой и подключением с коротким TTL: ТСПУ не замораживает соединения, в которых увидел такое имя. Пусто — выключено."
+
+msgid "Fake TTL"
+msgstr "TTL фейка"
+
+msgid "Hops from the router: the fake must pass the DPI and expire before reaching the server."
+msgstr "Число хопов от роутера: фейк должен пройти ТСПУ и истечь, не дойдя до сервера."

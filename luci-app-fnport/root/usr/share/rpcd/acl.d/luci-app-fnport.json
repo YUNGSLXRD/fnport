@@ -1,0 +1,28 @@
+{
+	"luci-app-fnport": {
+		"description": "Grant access to fnport configuration and status",
+		"read": {
+			"file": {
+				"/sbin/logread": [
+					"exec"
+				]
+			},
+			"ubus": {
+				"luci-rpc": [
+					"getHostHints"
+				],
+				"service": [
+					"list"
+				]
+			},
+			"uci": [
+				"fnport"
+			]
+		},
+		"write": {
+			"uci": [
+				"fnport"
+			]
+		}
+	}
+}

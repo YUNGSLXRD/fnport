@@ -1,0 +1,30 @@
+{
+	"admin/services/fnport": {
+		"title": "fnport",
+		"order": 60,
+		"action": {
+			"type": "alias",
+			"path": "admin/services/fnport/settings"
+		},
+		"depends": {
+			"acl": [ "luci-app-fnport" ],
+			"uci": { "fnport": true }
+		}
+	},
+	"admin/services/fnport/settings": {
+		"title": "Settings",
+		"order": 10,
+		"action": {
+			"type": "view",
+			"path": "fnport/settings"
+		}
+	},
+	"admin/services/fnport/status": {
+		"title": "Status",
+		"order": 20,
+		"action": {
+			"type": "view",
+			"path": "fnport/status"
+		}
+	}
+}

@@ -1,0 +1,131 @@
+msgid ""
+msgstr "Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "fnport"
+msgstr ""
+
+msgid "Settings"
+msgstr ""
+
+msgid "Status"
+msgstr ""
+
+msgid "Some ISP DPI boxes freeze game UDP flows after 25 packets, and which flows get frozen depends on the source port. fnport probes the game server from several source ports and sends each new game connection through one that passes. No VPN: traffic goes directly to the server."
+msgstr ""
+
+msgid "General"
+msgstr ""
+
+msgid "Advanced"
+msgstr ""
+
+msgid "Enable"
+msgstr ""
+
+msgid "WAN interface"
+msgstr ""
+
+msgid "Interface facing the ISP."
+msgstr ""
+
+msgid "Devices"
+msgstr ""
+
+msgid "Game devices (PC, console). Give them static DHCP leases so the address does not change."
+msgstr ""
+
+msgid "Game server ports"
+msgstr ""
+
+msgid "UDP ports of the game servers. Defaults are Fortnite: 9000-9999 (match) and 15000-15999 (control)."
+msgstr ""
+
+msgid "Paired port range"
+msgstr ""
+
+msgid "When a connection to this range is seen, the paired match port is probed in advance. Empty disables it."
+msgstr ""
+
+msgid "Paired port offset"
+msgstr ""
+
+msgid "Offset from the control port to the match port (Fortnite: 15062 → 9062 = -6000)."
+msgstr ""
+
+msgid "Fallback echo port"
+msgstr ""
+
+msgid "Server UDP echo port used when the game port does not answer."
+msgstr ""
+
+msgid "Ports per probe round"
+msgstr ""
+
+msgid "Probed in parallel. More may trigger the server's rate limit."
+msgstr ""
+
+msgid "Probe rounds"
+msgstr ""
+
+msgid "Extra rounds when no port passes. Each round adds about 1.3 seconds to connecting."
+msgstr ""
+
+msgid "Reuse probe results (seconds)"
+msgstr ""
+
+msgid "Results drift after 10-20 minutes, keep this short."
+msgstr ""
+
+msgid "Service"
+msgstr ""
+
+msgid "running"
+msgstr ""
+
+msgid "not running"
+msgstr ""
+
+msgid "Connections sent through a passing port"
+msgstr ""
+
+msgid "Connections with no passing port found"
+msgstr ""
+
+msgid "Connections frozen anyway"
+msgstr ""
+
+msgid "Probed ports passing the DPI"
+msgstr ""
+
+msgid "Time"
+msgstr ""
+
+msgid "Event"
+msgstr ""
+
+msgid "Summary (since the system log was last cleared)"
+msgstr ""
+
+msgid "Recent events"
+msgstr ""
+
+msgid "fnport status"
+msgstr ""
+
+msgid "Probe budget per minute"
+msgstr ""
+
+msgid "Upper limit of probe ports per minute for all servers together. Probing too much gets the address punished by the DPI."
+msgstr ""
+
+msgid "Whitelist fake"
+msgstr ""
+
+msgid "File with a fake QUIC Initial carrying a whitelisted SNI. It is sent once before each probe and connection with a short TTL: the DPI stops freezing flows where it saw such a name. Empty disables it."
+msgstr ""
+
+msgid "Fake TTL"
+msgstr ""
+
+msgid "Hops from the router: the fake must pass the DPI and expire before reaching the server."
+msgstr ""
