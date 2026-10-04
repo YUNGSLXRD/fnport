@@ -36,7 +36,7 @@ return view.extend({
 		hosts.getMACHints(false).forEach(function(hint) {
 			var ip = hosts.getIPAddrByMACAddr(hint[0]);
 			if (ip)
-				o.value(ip, '%s (%s)'.format(ip, hint[1] || hint[0]));
+				o.value(ip, '%h (%h)'.format(ip, hint[1] || hint[0]));  // host names come from DHCP clients
 		});
 
 		o = s.taboption('advanced', form.DynamicList, 'port_range', _('Game server ports'),
@@ -82,6 +82,12 @@ return view.extend({
 		o = s.taboption('advanced', form.Value, 'whitelist_fake', _('Whitelist fake'),
 			_('File with a fake QUIC Initial carrying a whitelisted SNI. It is sent once before each probe and connection with a short TTL: the DPI stops freezing flows where it saw such a name. Empty disables it.'));
 		o.placeholder = '/usr/share/fnport/quic_initial_vk_com.bin';
+		o.validate = function(section_id, value) {
+			// the service reads only its own directories, see fnportd.uc
+			if (value == '' || /^\/(usr\/share|etc)\/fnport\/[A-Za-z0-9_-][A-Za-z0-9._-]*$/.test(value))
+				return true;
+			return _('Must be a file in /usr/share/fnport or /etc/fnport');
+		};
 
 		o = s.taboption('advanced', form.Value, 'fake_ttl', _('Fake TTL'),
 			_('Hops from the router: the fake must pass the DPI and expire before reaching the server.'));

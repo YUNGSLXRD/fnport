@@ -3,7 +3,7 @@
 		"description": "Grant access to fnport configuration and status",
 		"read": {
 			"file": {
-				"/sbin/logread": [
+				"/sbin/logread -e fnport": [
 					"exec"
 				]
 			},

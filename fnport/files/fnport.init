@@ -14,7 +14,14 @@ wan_l3_device() {
 	echo "$dev"
 }
 
+# values go into the nftables ruleset applied as root: accept plain ports and ranges only
 append_range() {
+	case "$1" in
+	''|*[!0-9-]*|-*|*-|*-*-*)
+		logger -t fnport "ignoring an invalid port_range value"
+		return 0
+		;;
+	esac
 	PORTS="${PORTS:+$PORTS, }$1"
 }
 
@@ -73,6 +80,9 @@ start_service() {
 
 	config_get wan_iface main wan_interface wan
 	wan_dev="$(wan_l3_device "$wan_iface")"
+	case "$wan_dev" in
+	*[!A-Za-z0-9._@-]*) wan_dev="" ;;
+	esac
 	if [ -z "$wan_dev" ]; then
 		logger -t fnport "interface $wan_iface is not up, not starting"
 		return 0

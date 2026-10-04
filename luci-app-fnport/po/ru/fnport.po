@@ -131,3 +131,6 @@ msgstr "TTL фейка"
 
 msgid "Hops from the router: the fake must pass the DPI and expire before reaching the server."
 msgstr "Число хопов от роутера: фейк должен пройти ТСПУ и истечь, не дойдя до сервера."
+
+msgid "Must be a file in /usr/share/fnport or /etc/fnport"
+msgstr "Нужен файл из /usr/share/fnport или /etc/fnport"

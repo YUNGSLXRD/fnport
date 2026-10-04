@@ -18,7 +18,8 @@ import { rand } from 'math';
 import { popen, readfile } from 'fs';
 import { cursor } from 'uci';
 
-const WAN_DEV = ARGV[0];
+// interface names only: it ends up in a shell command
+const WAN_DEV = match(ARGV[0] ?? '', /^[A-Za-z0-9._@-]{1,15}$/) ? ARGV[0] : null;
 const uci = cursor();
 
 function cfg(opt, dflt) {
@@ -26,25 +27,55 @@ function cfg(opt, dflt) {
 	return (v == null || v == '') ? dflt : v;
 }
 
+// numeric option clamped to [lo, hi]; anything else falls back to the default
+function num(opt, dflt, lo, hi) {
+	let v = cfg(opt, null);
+	if (v == null || !match(`${v}`, /^-?[0-9]+$/)) return dflt;
+	v = +v;
+	return (v < lo || v > hi) ? dflt : v;
+}
+
 function as_list(v) {
 	return v == null ? [] : (type(v) == 'array' ? v : [ v ]);
 }
 
 function parse_range(r) {
-	let m = match(`${r}`, /^([0-9]+)(-([0-9]+))?$/);
-	return m ? [ +m[1], +(m[3] ?? m[1]) ] : null;
+	let m = match(`${r}`, /^([0-9]{1,5})(-([0-9]{1,5}))?$/);
+	if (!m) return null;
+	let lo = +m[1], hi = +(m[3] ?? m[1]);
+	return (lo >= 1 && hi <= 65535 && lo <= hi) ? [ lo, hi ] : null;
 }
 
-const PCS = filter(as_list(cfg('device')), a => match(a, /^[0-9.]+$/));
+// the fake is read as root and sent to the network: only our own small files
+function load_fake(path) {
+	if (!path) return null;
+	if (!match(path, /^\/(usr\/share|etc)\/fnport\/[A-Za-z0-9_-][A-Za-z0-9._-]*$/)) {
+		system([ 'logger', '-t', 'fnport', 'whitelist fake rejected: must be a file in /usr/share/fnport or /etc/fnport' ]);
+		return null;
+	}
+	let d = readfile(path, 1501);
+	if (d == null || length(d) == 0 || length(d) > 1500) {
+		system([ 'logger', '-t', 'fnport', 'whitelist fake rejected: missing, empty or larger than 1500 bytes' ]);
+		return null;
+	}
+	return d;
+}
+
+function ipv4(a) {
+	let m = match(`${a}`, /^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$/);
+	return m && +m[1] <= 255 && +m[2] <= 255 && +m[3] <= 255 && +m[4] <= 255;
+}
+
+const PCS = filter(as_list(cfg('device')), ipv4);
 const PORT_RANGES = filter(map(as_list(cfg('port_range', [ '9000-9999', '15000-15999' ])), parse_range), r => r);
 const PAIR_FROM = parse_range(cfg('pair_from', ''));
-const PAIR_OFFSET = +cfg('pair_offset', 0);
-const QOS_PORT = +cfg('qos_port', 22222);
-const GAME_BATCH = +cfg('probe_batch', 2);   // parallel handshake probes per round
-const MAX_ROUNDS = +cfg('max_rounds', 8);    // rounds per flow when most ports freeze
-const PROBE_BUDGET = +cfg('probe_budget', 24);  // probe sockets per minute, all servers together
+const PAIR_OFFSET = num('pair_offset', 0, -65535, 65535);
+const QOS_PORT = num('qos_port', 22222, 1, 65535);
+const GAME_BATCH = num('probe_batch', 2, 1, 12);     // parallel handshake probes per round
+const MAX_ROUNDS = num('max_rounds', 8, 1, 16);      // rounds per flow when most ports freeze
+const PROBE_BUDGET = num('probe_budget', 24, 4, 120);  // probe sockets per minute, all servers together
 const LIMIT_HOLDOFF = 900;                   // seconds to avoid handshake probes after the server limited us
-const GOOD_TTL = +cfg('verdict_ttl', 90);    // verdicts drift within ~10-20 min
+const GOOD_TTL = num('verdict_ttl', 90, 10, 900);  // verdicts drift within ~10-20 min
 const PROBE_PKTS = 30;        // TSPU freezes after 25, so >= 28 replies == pass
 const PROBE_PASS = 28;
 const PROBE_IV_MS = 30;       // per-socket spacing; denser bursts get rate-limited by the server
@@ -52,8 +83,8 @@ const PROBE_WAIT_MS = 400;
 const FREEZE_OUT = 60;        // flow counts as frozen: >= this many packets out ...
 const FREEZE_IN = 26;         // ... while replies stay at or below this
 const PORT_MIN = 20000, PORT_RANGE = 40000;
-const FAKE = cfg('whitelist_fake', '') ? readfile(cfg('whitelist_fake', '')) : null;
-const FAKE_TTL = +cfg('fake_ttl', 3);  // hops from the router: expires past the TSPU, before the server
+const FAKE = load_fake(cfg('whitelist_fake', ''));
+const FAKE_TTL = num('fake_ttl', 3, 1, 16);  // hops from the router: expires past the TSPU, before the server
 const FAKE_GAP_MS = 30;                // let the fake reach the TSPU before the real packets
 const QOS_BATCH = FAKE ? 4 : 12;       // the fake lets about half of the ports pass
 const MAX_REMAPS = 4;                  // attempts to move one frozen flow to a fresh port
@@ -155,11 +186,13 @@ function probe(host, dport, ports, qos) {
 	for (let o in socks)
 		if (send_fake(o.s, host, dport)) faked = true;
 	if (faked) socket.poll(FAKE_GAP_MS);
+	// count only replies from the probed server: the sockets listen on all addresses
 	let drain = () => {
 		for (let o in socks) {
-			let d;
-			while ((d = o.s.recv(2048)) != null && length(d) > 0)
-				if (!qos || substr(d, 0, 2) == o.tag) o.got++;
+			let d, from = {};
+			while ((d = o.s.recv(2048, 0, from)) != null && length(d) > 0)
+				if (from.address == host && from.port == dport && (!qos || substr(d, 0, 2) == o.tag))
+					o.got++;
 		}
 	};
 	for (let i = 0; i < PROBE_PKTS; i++) {

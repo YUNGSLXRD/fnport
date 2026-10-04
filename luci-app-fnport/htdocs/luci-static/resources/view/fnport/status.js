@@ -22,26 +22,30 @@ function isRunning(res) {
 	}
 }
 
+// only lines logged under the fnport tag: `logread -e` matches the word anywhere in any line
+var LINE_RE = /^\w{3} (\w{3} +\d+ [\d:]+) \d{4} [\w.]+ fnport(?:\[\d+\])?: (.*)$/;
+
 function parseLog(text) {
-	var lines = (text || '').trim().split(/\n/).filter(function(l) { return l.indexOf('fnport:') >= 0; });
 	var st = { flows: 0, nogood: 0, frozen: 0, probes: 0, good: 0, tested: 0, rows: [] };
 
-	lines.forEach(function(l) {
-		var msg = l.replace(/^.*fnport: /, ''), m;
+	(text || '').trim().split(/\n/).forEach(function(l) {
+		var lm = l.match(LINE_RE), m;
+		if (!lm)
+			return;
+		var msg = lm[2];
 		if ((m = msg.match(/^probe \S+ via \S+(?: port)?: (\d+) good, (\d+) frozen, (\d+) silent/))) {
 			st.probes++;
 			st.good += +m[1];
 			st.tested += +m[1] + +m[2] + +m[3];
 		}
-		else if (/^flow .* -> wan port/.test(msg))
+		else if (/^flow .* -> wan port/.test(msg) && !/ remapped /.test(msg))
 			st.flows++;
 		else if (/no good port/.test(msg))
 			st.nogood++;
 		else if (/^frozen flow/.test(msg))
 			st.frozen++;
 
-		var t = l.match(/^\w{3} (\w{3} +\d+ [\d:]+)/);
-		st.rows.push([ t ? t[1] : '', msg ]);
+		st.rows.push([ lm[1], msg ]);
 	});
 
 	st.rows = st.rows.slice(-40).reverse();
@@ -93,8 +97,9 @@ return view.extend({
 			])
 		].concat(st.rows.map(function(r) {
 			return E('tr', { 'class': 'tr' }, [
-				E('td', { 'class': 'td' }, r[0]),
-				E('td', { 'class': 'td' }, r[1])
+				// arrays become text nodes; a plain string would be set as innerHTML
+				E('td', { 'class': 'td' }, [ r[0] ]),
+				E('td', { 'class': 'td' }, [ r[1] ])
 			]);
 		})));
 
