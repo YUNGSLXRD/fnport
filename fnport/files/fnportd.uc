@@ -76,8 +76,8 @@ const MAX_ROUNDS = num('max_rounds', 8, 1, 16);      // rounds per flow when mos
 const PROBE_BUDGET = num('probe_budget', 24, 4, 120);  // probe sockets per minute, all servers together
 const LIMIT_HOLDOFF = 900;                   // seconds to avoid handshake probes after the server limited us
 const GOOD_TTL = num('verdict_ttl', 90, 10, 900);  // verdicts drift within ~10-20 min
-const PROBE_PKTS = 30;        // TSPU freezes after 25, so >= 28 replies == pass
-const PROBE_PASS = 28;
+const PROBE_PKTS = 30;        // TSPU stops replies at 25, so more than 25 means no freeze;
+const PROBE_PASS = 26;        // the margin is for loss on poor links, not for the DPI
 const PROBE_IV_MS = 30;       // per-socket spacing; denser bursts get rate-limited by the server
 const PROBE_WAIT_MS = 400;
 const FREEZE_OUT = 60;        // flow counts as frozen: >= this many packets out ...
