@@ -57,7 +57,8 @@
 
 ### Чем это отличается от zapret
 
-Идея фейка с маленьким TTL взята из [zapret](https://github.com/bol-van/zapret). Остальное устроено иначе:
+Идея фейка с маленьким TTL взята из [zapret](https://github.com/bol-van/zapret), оттуда же сам файл фейка
+(см. [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)). Остальное устроено иначе:
 
 | | zapret на ПК (Flowseal, ALT11) | fnport на роутере |
 |---|---|---|
@@ -200,4 +201,5 @@ apk del luci-i18n-fnport-ru luci-app-fnport fnport     # или: opkg remove luc
 
 ## Лицензия
 
-MIT
+[MIT](LICENSE). Файл фейка `quic_initial_vk_com.bin` взят из zapret и распространяется по его лицензии MIT,
+подробности в [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

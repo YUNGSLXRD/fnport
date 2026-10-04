@@ -38,6 +38,7 @@ define Package/fnport/install
 	$(INSTALL_BIN) ./files/fnport.init $(1)/etc/init.d/fnport
 	$(INSTALL_DATA) ./files/fnportd.uc $(1)/usr/share/fnport/fnportd.uc
 	$(INSTALL_DATA) ./files/quic_initial_vk_com.bin $(1)/usr/share/fnport/quic_initial_vk_com.bin
+	$(INSTALL_DATA) ./files/quic_initial_vk_com.bin.LICENSE $(1)/usr/share/fnport/quic_initial_vk_com.bin.LICENSE
 endef
 
 $(eval $(call BuildPackage,fnport))
