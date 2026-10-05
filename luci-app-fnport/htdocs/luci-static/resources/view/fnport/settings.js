@@ -31,8 +31,8 @@ return view.extend({
 		o.default = 'wan';
 
 		o = s.taboption('general', form.DynamicList, 'device', _('Devices'),
-			_('Game devices (PC, console). Give them static DHCP leases so the address does not change.'));
-		o.datatype = 'ip4addr("nomask")';
+			_('Game devices (PC, console): an address, or a subnet such as 192.168.56.0/24 (from /16). Give them static DHCP leases so the address does not change.'));
+		o.datatype = 'ip4addr';
 		hosts.getMACHints(false).forEach(function(hint) {
 			var ip = hosts.getIPAddrByMACAddr(hint[0]);
 			if (ip)

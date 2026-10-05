@@ -17,3 +17,13 @@
 скриптом [`tools/make_quic_fake.py`](tools/make_quic_fake.py): тот же ClientHello с другим именем сервера,
 заново зашифрованный ключами QUIC Initial. Как производные от файла zapret, они распространяются по его
 лицензии (MIT), текст лежит рядом с каждым файлом (`*.bin.LICENSE`) и ставится вместе с ними в `/usr/share/fnport/`.
+
+## Образ диска (`fnport-…-x86-64.vhd.zip`)
+
+Образ собран из официального [OpenWrt Image Builder](https://openwrt.org/docs/guide-user/additional-software/imagebuilder)
+(x86/64, версия указана в имени файла) с пакетами fnport. Входящие в него программы OpenWrt распространяются
+по своим лицензиям, в основном GPL-2.0; исходный код каждой версии доступен на
+[git.openwrt.org](https://git.openwrt.org/?p=openwrt/openwrt.git) (тег `v<версия>`) и
+[github.com/openwrt](https://github.com/openwrt), исходники пакетов — в
+[downloads.openwrt.org](https://downloads.openwrt.org/releases/). Настройки первого запуска образа —
+в [`image/`](image/) этого репозитория.

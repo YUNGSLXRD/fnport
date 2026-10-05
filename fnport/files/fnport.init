@@ -10,7 +10,7 @@ NFT_RUN=/var/run/fnport.nft
 
 wan_l3_device() {
 	local iface="$1" dev
-	dev="$(ubus call network.interface."$iface" status 2>/dev/null | jsonfilter -e '@.l3_device')"
+	dev="$(ubus call network.interface."$iface" status 2>/dev/null | jsonfilter -e '@.l3_device' 2>/dev/null)"
 	echo "$dev"
 }
 
@@ -32,7 +32,9 @@ write_nft() {
 table ip fnport {
 	set alive {
 		type ipv4_addr
-		flags timeout
+		flags interval, timeout
+		# a device address inside a device subnet is fine
+		auto-merge
 		timeout 5s
 	}
 	set pending {
