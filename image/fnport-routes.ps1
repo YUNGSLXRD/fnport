@@ -38,6 +38,13 @@ if (-not $if) {
 	exit 1
 }
 
+# routes to a machine that is off would cut the game off: the adapter alone proves nothing,
+# VirtualBox keeps its host-only adapter up with the machine stopped
+if (-not (Test-Connection -ComputerName $Gateway -Count 2 -Quiet)) {
+	Write-Host "The fnport machine ($Gateway) does not answer: start it first. No routes were added." -ForegroundColor Red
+	exit 1
+}
+
 foreach ($p in $prefixes) {
 	# without -PolicyStore a route goes into both stores: in use now and after a restart
 	if ($Persist) {

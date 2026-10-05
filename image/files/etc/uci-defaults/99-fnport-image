@@ -35,10 +35,10 @@ if [ "$vm" = 1 ]; then
 	uci -q delete dhcp.lan.dhcp_option
 	uci add_list dhcp.lan.dhcp_option='3'
 	uci add_list dhcp.lan.dhcp_option='6'
-	# VirtualBox gives the PC's host-only adapter a fixed 192.168.56.1, Hyper-V lets it use DHCP
+	# the PC is the only host on this network, whatever address it took there (VirtualBox gives
+	# the host-only adapter a fixed one, Hyper-V lets it use DHCP, an older lease may linger)
 	uci -q delete fnport.main.device
-	uci add_list fnport.main.device='192.168.56.1'
-	uci add_list fnport.main.device='192.168.56.100'
+	uci add_list fnport.main.device='192.168.56.0/24'
 	uci set fnport.main.enabled='1'
 	# one hop further from the ISP than the home router; the ISP check in LuCI tells for sure
 	uci set fnport.main.fake_ttl='4'

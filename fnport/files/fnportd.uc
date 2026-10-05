@@ -71,7 +71,39 @@ function ipv4(a) {
 	return m && +m[1] <= 255 && +m[2] <= 255 && +m[3] <= 255 && +m[4] <= 255;
 }
 
-const PCS = filter(as_list(cfg('device')), ipv4);
+function ip2int(a) {
+	let o = map(split(a, '.'), x => +x);
+	return ((o[0] << 24) | (o[1] << 16) | (o[2] << 8) | o[3]) & 0xffffffff;
+}
+
+function int2ip(n) {
+	return sprintf('%d.%d.%d.%d', (n >> 24) & 255, (n >> 16) & 255, (n >> 8) & 255, n & 255);
+}
+
+// a game device is an address or a subnet (a virtual machine's host-only network: whatever
+// address the PC took there). Wider than /16 is a typo, not a set of game devices
+function device_spec(a) {
+	let m = match(`${a}`, /^([0-9.]+)(\/([0-9]{1,2}))?$/);
+	if (!m || !ipv4(m[1])) return null;
+	let len = m[3] != null ? +m[3] : 32;
+	if (len < 16 || len > 32) return null;
+	let mask = (0xffffffff << (32 - len)) & 0xffffffff;
+	let net = ip2int(m[1]) & mask;
+	return { text: len == 32 ? m[1] : `${int2ip(net)}/${len}`, net, mask, len };
+}
+
+// duplicates would make the interval set refuse the whole element list
+let seen_dev = {};
+const DEVICES = filter(map(as_list(cfg('device')), device_spec), d => d && !seen_dev[d.text] && (seen_dev[d.text] = true));
+const PCS = map(DEVICES, d => d.text);
+
+function is_device(a) {
+	if (!ipv4(a)) return false;
+	let n = ip2int(a);
+	for (let d in DEVICES)
+		if ((n & d.mask) == d.net) return true;
+	return false;
+}
 const PORT_RANGES = filter(map(as_list(cfg('port_range', [ '9000-9999', '15000-15999' ])), parse_range), r => r);
 const PAIR_FROM = parse_range(cfg('pair_from', ''));
 const PAIR_OFFSET = num('pair_offset', 0, -65535, 65535);
@@ -532,14 +564,16 @@ function remap(pc, cport, ip, sport) {
 function check_frozen() {
 	if (time() - last_check < 2) return;
 	last_check = time();
-	let pat = join('|', map(PCS, a => `src=${a} `));
+	// grep narrows by whole octets, is_device() decides
+	let pat = join('|', map(DEVICES, d => d.len == 32 ? `src=${d.text} `
+		: 'src=' + join('.', slice(split(int2ip(d.net), '.'), 0, int(d.len / 8))) + '.'));
 	for (let line in split(sh(`grep -E "${pat}" /proc/net/nf_conntrack`), '\n')) {
 		if (index(line, ' udp ') < 0) continue;
 		let src = match(line, /src=([0-9.]+)/), cp = match(line, /sport=([0-9]+)/);
 		let dst = match(line, /dst=([0-9.]+)/), sp = match(line, /dport=([0-9]+)/);
 		let pk = match(line, /packets=([0-9]+).*packets=([0-9]+)/);
 		let wp = match(line, /dport=[0-9]+ .*dport=([0-9]+)/);
-		if (!src || !cp || !dst || !sp || !pk || !wp) continue;
+		if (!src || !cp || !dst || !sp || !pk || !wp || !is_device(src[1])) continue;
 		let sport = +sp[1];
 		if (!game_port(sport)) continue;
 		let ip = dst[1], wport = +wp[1], out = +pk[1], inn = +pk[2];
