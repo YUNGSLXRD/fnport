@@ -92,8 +92,8 @@ jobs:
           truncate -s %1M disk.img
           # a fixed VHD is the raw disk plus a footer: VirtualBox, Hyper-V and Rufus all take it
           qemu-img convert -f raw -O vpc -o subformat=fixed,force_size disk.img "$name.vhd"
-          cp image/fnport-routes.ps1 .
-          zip -9 "$name.vhd.zip" "$name.vhd" fnport-routes.ps1
+          cp image/fnport-routes.cmd .
+          zip -9 "$name.vhd.zip" "$name.vhd" fnport-routes.cmd
           ls -la "$name.vhd.zip"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
