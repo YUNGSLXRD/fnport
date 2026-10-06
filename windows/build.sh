@@ -1,0 +1,37 @@
+#!/bin/sh
+# Builds dist/fnport-probe-<version>.zip for Windows x64: fnport-probe.exe and wintun.dll.
+# Needs Go (the version in go.mod or newer) and zip; runs on Linux and macOS.
+set -eu
+cd "$(dirname "$0")"
+VER=${1:-$(git describe --tags --always 2>/dev/null || echo dev)}
+export GOTOOLCHAIN=local CGO_ENABLED=0
+
+# the fakes are the package's own files, embedded into the program
+mkdir -p probe/fakes
+cp ../fnport/files/quic_initial_*.bin probe/fakes/
+
+go vet ./...
+GOOS=windows GOARCH=amd64 go vet ./...
+go test -count=1 ./...
+
+# wintun.dll 0.14.1, signed by WireGuard LLC, taken unmodified from the sing-tun Go module:
+# the Go checksum database vouches for the module, the hash pins the file
+WINTUN_MOD=github.com/sagernet/sing-tun@v0.9.6
+WINTUN_SHA256=e5da8447dc2c320edc0fc52fa01885c103de8c118481f683643cacc3220dafce
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+# (the module's zip: extracting it would need the module's newer Go)
+modzip=$(cd "$tmp" && GOFLAGS= go mod download -json "$WINTUN_MOD" | sed -n 's/^[[:space:]]*"Zip": "\(.*\)",$/\1/p')
+dll="$tmp/wintun.dll"
+unzip -p "$modzip" "$WINTUN_MOD/internal/wintun/amd64/wintun.dll" > "$dll"
+echo "$WINTUN_SHA256  $dll" | sha256sum -c - >/dev/null
+
+out="$tmp/fnport-probe"
+mkdir -p "$out" dist
+GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=$VER" -o "$out/fnport-probe.exe" ./probe
+cp "$dll" "$out/wintun.dll"
+cp third_party/wintun-LICENSE.txt "$out/wintun-LICENSE.txt"
+cp ../fnport/files/quic_initial_vk_com.bin.LICENSE "$out/quic-fakes-LICENSE.txt"
+rm -f "dist/fnport-probe-$VER.zip"
+(cd "$tmp" && zip -qr - fnport-probe) > "dist/fnport-probe-$VER.zip"
+ls -l "dist/fnport-probe-$VER.zip"
