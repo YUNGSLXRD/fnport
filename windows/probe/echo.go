@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
+	"github.com/YUNGSLXRD/fnport/windows/internal/wnet"
 	mrand "math/rand/v2"
 	"net"
 	"net/netip"
@@ -94,7 +95,7 @@ func openDirect() (*net.UDPConn, error) {
 	var last error
 	for i := 0; i < 20; i++ {
 		port := 20000 + mrand.IntN(40000)
-		c, err := listenUDP(port, true)
+		c, err := wnet.ListenUDP(port, true)
 		if err == nil {
 			return c, nil
 		}
@@ -140,7 +141,7 @@ func probe(cs []*net.UDPConn, host netip.Addr, fake []byte, ttl int) []sockResul
 	}
 	if fake != nil && ttl > 0 {
 		for _, c := range cs {
-			if err := sendWithTTL(c, fake, dst, ttl); err != nil {
+			if err := wnet.SendWithTTL(c, fake, dst, ttl); err != nil {
 				logf("  (фейк не отправлен: %v)", err)
 			}
 		}

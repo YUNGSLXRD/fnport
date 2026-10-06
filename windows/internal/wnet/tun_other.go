@@ -1,12 +1,12 @@
 //go:build !windows
 
-package main
+package wnet
 
 import (
 	"errors"
 	"net/netip"
 )
 
-func openTun(hosts []netip.Addr) (packetDev, netip.Addr, error) {
+func OpenTun(name string, routes []netip.Prefix) (Dev, netip.Addr, error) {
 	return nil, netip.Addr{}, errors.New("адаптер Wintun есть только в Windows")
 }

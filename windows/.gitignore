@@ -1,2 +1,2 @@
 /dist/
-/probe/fakes/
+/internal/fakes/*.bin

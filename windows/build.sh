@@ -1,5 +1,6 @@
 #!/bin/sh
-# Builds dist/fnport-probe-<version>.zip for Windows x64: fnport-probe.exe and wintun.dll.
+# Builds dist/fnport-<version>.zip (the program) and dist/fnport-probe-<version>.zip (the probe)
+# for Windows x64, each with wintun.dll.
 # Needs Go (the version in go.mod or newer) and zip; runs on Linux and macOS.
 set -eu
 cd "$(dirname "$0")"
@@ -7,8 +8,7 @@ VER=${1:-$(git describe --tags --always 2>/dev/null || echo dev)}
 export GOTOOLCHAIN=local CGO_ENABLED=0
 
 # the fakes are the package's own files, embedded into the program
-mkdir -p probe/fakes
-cp ../fnport/files/quic_initial_*.bin probe/fakes/
+cp ../fnport/files/quic_initial_*.bin internal/fakes/
 
 go vet ./...
 GOOS=windows GOARCH=amd64 go vet ./...
@@ -26,12 +26,17 @@ dll="$tmp/wintun.dll"
 unzip -p "$modzip" "$WINTUN_MOD/internal/wintun/amd64/wintun.dll" > "$dll"
 echo "$WINTUN_SHA256  $dll" | sha256sum -c - >/dev/null
 
-out="$tmp/fnport-probe"
-mkdir -p "$out" dist
-GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=$VER" -o "$out/fnport-probe.exe" ./probe
-cp "$dll" "$out/wintun.dll"
-cp third_party/wintun-LICENSE.txt "$out/wintun-LICENSE.txt"
-cp ../fnport/files/quic_initial_vk_com.bin.LICENSE "$out/quic-fakes-LICENSE.txt"
-rm -f "dist/fnport-probe-$VER.zip"
-(cd "$tmp" && zip -qr - fnport-probe) > "dist/fnport-probe-$VER.zip"
-ls -l "dist/fnport-probe-$VER.zip"
+# pack NAME PKG: dist/NAME-<version>.zip with NAME.exe, wintun.dll and the notices
+pack() {
+	out="$tmp/$1"
+	mkdir -p "$out" dist
+	GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=$VER" -o "$out/$1.exe" "./$2"
+	cp "$dll" "$out/wintun.dll"
+	cp third_party/wintun-LICENSE.txt "$out/wintun-LICENSE.txt"
+	cp ../fnport/files/quic_initial_vk_com.bin.LICENSE "$out/quic-fakes-LICENSE.txt"
+	rm -f "dist/$1-$VER.zip"
+	(cd "$tmp" && zip -qr - "$1") > "dist/$1-$VER.zip"
+	ls -l "dist/$1-$VER.zip"
+}
+pack fnport-probe probe
+pack fnport fnport

@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"github.com/YUNGSLXRD/fnport/windows/internal/wnet"
 	"net"
 	"net/netip"
 	"sync"
@@ -13,12 +14,6 @@ import (
 // through ordinary sockets on the physical interface, one per flow, from a port this program
 // picks (with the fake before the first packet); replies are written back into the adapter as if
 // they came straight from the server.
-
-type packetDev interface {
-	ReadPacket(buf []byte) (int, error)
-	WritePacket(pkt []byte) error
-	Close() error
-}
 
 type flowPlan struct {
 	fake []byte
@@ -71,7 +66,7 @@ func (f *flow) timeIn(payload []byte, got, written time.Time) {
 }
 
 type relay struct {
-	dev      packetDev
+	dev      wnet.Dev
 	clientIP netip.Addr
 	open     func() (*net.UDPConn, error)
 	routed   map[netip.Addr]bool // servers routed into the adapter; nil = any
@@ -80,11 +75,10 @@ type relay struct {
 	mu    sync.Mutex
 	plans map[uint16]flowPlan // by client source port
 	flows map[flowKey]*flow
-	wmu   sync.Mutex // the adapter takes one writer at a time
 	ipID  atomic.Uint32
 }
 
-func newRelay(dev packetDev, clientIP netip.Addr, open func() (*net.UDPConn, error)) *relay {
+func newRelay(dev wnet.Dev, clientIP netip.Addr, open func() (*net.UDPConn, error)) *relay {
 	return &relay{dev: dev, clientIP: clientIP, open: open, plans: map[uint16]flowPlan{}, flows: map[flowKey]*flow{}}
 }
 
@@ -114,30 +108,30 @@ func (r *relay) run() {
 			return
 		}
 		read := time.Now()
-		p, err := parseUDP4(buf[:n])
-		if err != nil || p.src.Addr() != r.clientIP {
+		p, err := wnet.ParseUDP4(buf[:n])
+		if err != nil || p.Src.Addr() != r.clientIP {
 			continue // IPv6, ICMP, IGMP and other chatter Windows sends to any adapter
 		}
-		if r.routed != nil && !r.routed[p.dst.Addr()] {
+		if r.routed != nil && !r.routed[p.Dst.Addr()] {
 			continue // broadcasts and multicast of network discovery (NetBIOS, LLMNR, SSDP, mDNS)
 		}
-		key := flowKey{p.src.Port(), p.dst}
+		key := flowKey{p.Src.Port(), p.Dst}
 		r.mu.Lock()
 		f := r.flows[key]
-		plan := r.plans[p.src.Port()]
+		plan := r.plans[p.Src.Port()]
 		r.mu.Unlock()
 		if f == nil {
 			c, err := r.open()
 			if err != nil {
 				if time.Since(r.failLog) > 5*time.Second {
 					r.failLog = time.Now()
-					logf("  (relay: нет сокета для %s: %v)", p.dst, err)
+					logf("  (relay: нет сокета для %s: %v)", p.Dst, err)
 				}
 				continue
 			}
 			f = &flow{conn: c, port: c.LocalAddr().(*net.UDPAddr).Port, sent: map[string]time.Time{}}
 			if plan.fake != nil && plan.ttl > 0 {
-				sendWithTTL(c, plan.fake, p.dst, plan.ttl)
+				wnet.SendWithTTL(c, plan.fake, p.Dst, plan.ttl)
 				time.Sleep(fakeGap)
 			}
 			r.mu.Lock()
@@ -150,8 +144,8 @@ func (r *relay) run() {
 		if plan.fake != nil && f.out.Load() == 1 {
 			read2 = time.Now() // the pause after the fake is not the relay's speed
 		}
-		f.conn.WriteToUDPAddrPort(p.payload, p.dst)
-		f.timeOut(p.payload, read2)
+		f.conn.WriteToUDPAddrPort(p.Payload, p.Dst)
+		f.timeOut(p.Payload, read2)
 	}
 }
 
@@ -173,10 +167,8 @@ func (r *relay) back(f *flow, key flowKey) {
 			continue
 		}
 		f.in.Add(1)
-		pkt := buildUDP4(from, client, buf[:n], uint16(r.ipID.Add(1)))
-		r.wmu.Lock()
+		pkt := wnet.BuildUDP4(from, client, buf[:n], uint16(r.ipID.Add(1)))
 		err = r.dev.WritePacket(pkt)
-		r.wmu.Unlock()
 		if err != nil {
 			return
 		}

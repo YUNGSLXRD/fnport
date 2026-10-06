@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/YUNGSLXRD/fnport/windows/internal/wnet"
 	"net"
 	"net/netip"
 	"sort"
@@ -41,7 +42,7 @@ func fmtStats(s durStats) string {
 func checkLatency(bs []netip.Addr) {
 	host := bs[0]
 	logf("Задержка через адаптер: маяк %s (%s), 4 раунда по 2 потока без фейка", host, cityRU[city(host)])
-	dev, clientIP, err := openTun([]netip.Addr{host})
+	dev, clientIP, err := wnet.OpenTun("fnport-probe", []netip.Prefix{netip.PrefixFrom(host, 32)})
 	if err != nil {
 		logf("  %v", err)
 		return
@@ -59,14 +60,14 @@ func checkLatency(bs []netip.Addr) {
 	var rows []row
 	for round := 1; round <= 4; round++ {
 		hires := round > 2
-		setTimerHighRes(hires)
+		wnet.SetTimerHighRes(hires)
 		time.Sleep(roundGap)
 		d, err := openDirect()
 		if err != nil {
 			logf("  ошибка сокета: %v", err)
 			return
 		}
-		c, err := listenUDP(0, false)
+		c, err := wnet.ListenUDP(0, false)
 		if err != nil {
 			d.Close()
 			logf("  ошибка сокета: %v", err)
@@ -97,7 +98,7 @@ func checkLatency(bs []netip.Addr) {
 		logf("    сервер (сокет программы): %s", fmtStats(r.server))
 		logf("    программа: адаптер→сеть %s; сеть→адаптер %s", fmtStats(fwd), fmtStats(back))
 	}
-	setTimerHighRes(false)
+	wnet.SetTimerHighRes(false)
 
 	logf("")
 	logf("ИТОГ (по минимальному пингу, он меньше всего зависит от сети)")

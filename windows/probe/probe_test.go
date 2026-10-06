@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	"github.com/YUNGSLXRD/fnport/windows/internal/wnet"
 	"net"
 	"net/netip"
 	"strings"
@@ -16,23 +17,23 @@ func TestUDP4RoundTrip(t *testing.T) {
 	src := netip.MustParseAddrPort("3.66.90.173:22222")
 	dst := netip.MustParseAddrPort("10.254.77.2:50123")
 	for _, payload := range [][]byte{nil, []byte("x"), bytes.Repeat([]byte{0xab}, 1201)} {
-		pkt := buildUDP4(src, dst, payload, 7)
-		if checksumFold(checksumAdd(0, pkt[:20])) != 0 {
+		pkt := wnet.BuildUDP4(src, dst, payload, 7)
+		if wnet.ChecksumFold(wnet.ChecksumAdd(0, pkt[:20])) != 0 {
 			t.Fatal("bad IPv4 header checksum")
 		}
 		// UDP checksum over the pseudo header and the datagram sums to all ones
 		s4, d4 := src.Addr().As4(), dst.Addr().As4()
-		sum := checksumAdd(checksumAdd(0, s4[:]), d4[:]) + 17 + uint32(len(pkt)-20)
-		if checksumFold(checksumAdd(sum, pkt[20:])) != 0 {
+		sum := wnet.ChecksumAdd(wnet.ChecksumAdd(0, s4[:]), d4[:]) + 17 + uint32(len(pkt)-20)
+		if wnet.ChecksumFold(wnet.ChecksumAdd(sum, pkt[20:])) != 0 {
 			t.Fatal("bad UDP checksum")
 		}
-		p, err := parseUDP4(pkt)
-		if err != nil || p.src != src || p.dst != dst || !bytes.Equal(p.payload, payload) {
+		p, err := wnet.ParseUDP4(pkt)
+		if err != nil || p.Src != src || p.Dst != dst || !bytes.Equal(p.Payload, payload) {
 			t.Fatalf("round trip: %+v %v", p, err)
 		}
 	}
 	// odd length: the checksum must match the textbook computation
-	pkt := buildUDP4(netip.MustParseAddrPort("192.168.1.137:5000"), netip.MustParseAddrPort("3.66.90.173:22222"), []byte("hello"), 0x1234)
+	pkt := wnet.BuildUDP4(netip.MustParseAddrPort("192.168.1.137:5000"), netip.MustParseAddrPort("3.66.90.173:22222"), []byte("hello"), 0x1234)
 	if got := hex.EncodeToString(pkt[26:28]); got != udpCheck(pkt) {
 		t.Fatalf("UDP checksum %s, want %s", got, udpCheck(pkt))
 	}
@@ -61,18 +62,18 @@ func udpCheck(pkt []byte) string {
 }
 
 func TestParseRejects(t *testing.T) {
-	pkt := buildUDP4(netip.MustParseAddrPort("1.2.3.4:1"), netip.MustParseAddrPort("5.6.7.8:2"), []byte("abc"), 1)
+	pkt := wnet.BuildUDP4(netip.MustParseAddrPort("1.2.3.4:1"), netip.MustParseAddrPort("5.6.7.8:2"), []byte("abc"), 1)
 	bad := append([]byte{}, pkt...)
 	bad[9] = 6 // TCP
-	if _, err := parseUDP4(bad); err == nil {
+	if _, err := wnet.ParseUDP4(bad); err == nil {
 		t.Fatal("TCP accepted")
 	}
 	frag := append([]byte{}, pkt...)
 	frag[6] = 0x20 // more fragments
-	if _, err := parseUDP4(frag); err == nil {
+	if _, err := wnet.ParseUDP4(frag); err == nil {
 		t.Fatal("fragment accepted")
 	}
-	if _, err := parseUDP4(pkt[:25]); err == nil {
+	if _, err := wnet.ParseUDP4(pkt[:25]); err == nil {
 		t.Fatal("truncated packet accepted")
 	}
 }
@@ -222,7 +223,7 @@ func TestRelay(t *testing.T) {
 	for seq := 0; seq < pkts; seq++ {
 		for _, sp := range []uint16{40001, 40002} {
 			payload := binary.BigEndian.AppendUint16([]byte("tg"), uint16(seq))
-			dev.in <- buildUDP4(netip.AddrPortFrom(client, sp), server, payload, 1)
+			dev.in <- wnet.BuildUDP4(netip.AddrPortFrom(client, sp), server, payload, 1)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -232,11 +233,11 @@ loop:
 	for {
 		select {
 		case p := <-dev.out:
-			u, err := parseUDP4(p)
-			if err != nil || u.src != server || u.dst.Addr() != client || !bytes.HasPrefix(u.payload, []byte("tg")) {
+			u, err := wnet.ParseUDP4(p)
+			if err != nil || u.Src != server || u.Dst.Addr() != client || !bytes.HasPrefix(u.Payload, []byte("tg")) {
 				t.Fatalf("bad reply %+v %v", u, err)
 			}
-			got[u.dst.Port()]++
+			got[u.Dst.Port()]++
 		case <-deadline:
 			break loop
 		}

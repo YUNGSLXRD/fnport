@@ -13,8 +13,9 @@ package main
 import (
 	"bufio"
 	"context"
-	"embed"
 	"fmt"
+	"github.com/YUNGSLXRD/fnport/windows/internal/fakes"
+	"github.com/YUNGSLXRD/fnport/windows/internal/wnet"
 	"net"
 	"net/netip"
 	"os"
@@ -28,22 +29,17 @@ import (
 
 var version = "dev"
 
-//go:embed fakes/*.bin
-var fakesFS embed.FS
+func loadFakes() []fakeFile {
+	var out []fakeFile
+	for _, f := range fakes.Load() {
+		out = append(out, fakeFile{f.Name, f.Data})
+	}
+	return out
+}
 
 type fakeFile struct {
 	name string
 	data []byte
-}
-
-func loadFakes() []fakeFile {
-	var out []fakeFile
-	for _, n := range []string{"quic_initial_vk_com.bin", "quic_initial_gosuslugi_ru.bin", "quic_initial_ozon_ru.bin"} {
-		if b, err := fakesFS.ReadFile("fakes/" + n); err == nil {
-			out = append(out, fakeFile{n, b})
-		}
-	}
-	return out
 }
 
 var (
@@ -89,11 +85,11 @@ func waitEnter() {
 }
 
 func main() {
-	consoleUTF8()
+	wnet.ConsoleUTF8()
 	noTun := false
-	if !isElevated() {
+	if !wnet.IsElevated() {
 		fmt.Println("Для проверки адаптера Wintun нужны права администратора. Сейчас Windows спросит разрешение.")
-		if relaunchElevated() {
+		if wnet.RelaunchElevated() {
 			return
 		}
 		fmt.Println("Без прав администратора: проверка адаптера будет пропущена.")
@@ -133,9 +129,9 @@ func main() {
 		} else {
 			bs, source := beacons()
 			logf("Маяки Epic (%s)", source)
-			if info, err := routeInterface(bs[0]); err == nil && info.index != 0 {
-				physIndex = info.index
-				logf("Интернет идёт через адаптер «%s» (%s)", info.alias, info.desc)
+			if info, err := wnet.RouteInterface(bs[0]); err == nil && info.Index != 0 {
+				wnet.PhysIndex = info.Index
+				logf("Интернет идёт через адаптер «%s» (%s)", info.Alias, info.Desc)
 			}
 			checkLatency(bs)
 		}
@@ -173,11 +169,11 @@ func run(noTun bool) {
 		names = append(names, fmt.Sprintf("%s (%s)", b, cityRU[city(b)]))
 	}
 	logf("Маяки Epic (%s): %s", source, strings.Join(names, ", "))
-	if info, err := routeInterface(bs[0]); err == nil && info.index != 0 {
-		physIndex = info.index
-		logf("Интернет идёт через адаптер «%s» (%s)", info.alias, info.desc)
-		if info.tunnel {
-			s.vpnWarning = info.alias
+	if info, err := wnet.RouteInterface(bs[0]); err == nil && info.Index != 0 {
+		wnet.PhysIndex = info.Index
+		logf("Интернет идёт через адаптер «%s» (%s)", info.Alias, info.Desc)
+		if info.Tunnel {
+			s.vpnWarning = info.Alias
 			logf("ВНИМАНИЕ: похоже, это VPN. Выключите VPN/WARP и запустите проверку снова.")
 		}
 	}
@@ -369,7 +365,7 @@ func resolveAll(name string) []netip.Addr {
 // checkTun routes one beacon into a Wintun adapter and probes it from ordinary sockets of this
 // PC, the way the game will send: the relay re-sends from its own ports, with the fake on one flow
 func checkTun(s *summary, host netip.Addr, fakes []fakeFile) {
-	dev, clientIP, err := openTun([]netip.Addr{host})
+	dev, clientIP, err := wnet.OpenTun("fnport-probe", []netip.Prefix{netip.PrefixFrom(host, 32)})
 	if err != nil {
 		s.tun, s.tunDetail = "failed", err.Error()
 		logf("  %v", err)
@@ -382,7 +378,7 @@ func checkTun(s *summary, host netip.Addr, fakes []fakeFile) {
 
 	var cs []*net.UDPConn
 	for i := 0; i < 2; i++ {
-		c, err := listenUDP(0, false)
+		c, err := wnet.ListenUDP(0, false)
 		if err != nil {
 			s.tun, s.tunDetail = "failed", err.Error()
 			logf("  ошибка сокета: %v", err)
