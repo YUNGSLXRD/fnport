@@ -165,6 +165,7 @@ let nofake_tries = 0, nofake_good = 0;  // probe sockets without the fake
 let pass_streak = 0;          // probe sockets in a row that passed with the fake
 let control_after = 0;
 let net_key = null;
+let vpn_seen = null, last_vpn_check = 0;  // a VPN spotted on a game device
 let stats = { hours: {} }, stats_dirty = true, stats_written = 0, stats_saved = time();
 const STARTED = time();
 
@@ -252,7 +253,8 @@ function write_stats(to_flash) {
 		version: VERSION, started: STARTED, updated: time(),
 		standby, fake: length(FAKES) ? FAKES[fake_idx].name : null,
 		fake_off_until: fake_off_until > time() ? fake_off_until : 0,
-		probe_off_until: game_probe_off_until > time() ? game_probe_off_until : 0
+		probe_off_until: game_probe_off_until > time() ? game_probe_off_until : 0,
+		vpn: vpn_seen
 	};
 	save_json(STATS_RUN, stats);
 	stats_dirty = false; stats_written = time();
@@ -560,14 +562,41 @@ function remap(pc, cport, ip, sport) {
 	stat('remaps');
 }
 
+// conntrack lines of the game devices: grep narrows by whole octets, is_device() decides
+function device_pattern() {
+	return join('|', map(DEVICES, d => d.len == 32 ? `src=${d.text} `
+		: 'src=' + join('.', slice(split(int2ip(d.net), '.'), 0, int(d.len / 8))) + '.'));
+}
+
+// a VPN on the game device sends the game past fnport: spot one so the status page can say so
+const VPN_PORTS = { '51820': 'WireGuard', '2408': 'WARP', '500': 'IPsec', '4500': 'IPsec', '1194': 'OpenVPN', '1701': 'L2TP' };
+function check_vpn() {
+	if (time() - last_vpn_check < 60) return;
+	last_vpn_check = time();
+	let found = null;
+	for (let line in split(sh(`grep -E "${device_pattern()}" /proc/net/nf_conntrack`), '\n')) {
+		if (index(line, ' udp ') < 0) continue;
+		let src = match(line, /src=([0-9.]+)/), dst = match(line, /dst=([0-9.]+)/);
+		let dp = match(line, /dport=([0-9]+)/), by = match(line, /bytes=([0-9]+).*bytes=([0-9]+)/);
+		// a VPN in use moves megabytes; phones keep an idle IPsec link to the operator for Wi-Fi calls
+		if (!src || !dst || !dp || !by || +by[1] + +by[2] < 2000000 || !is_device(src[1])) continue;
+		// WARP also runs over QUIC (443) to its own addresses
+		let kind = VPN_PORTS[dp[1]] ?? ((dp[1] == '443' && match(dst[1], /^162\.159\.(19[2-9])\./)) ? 'WARP' : null);
+		if (kind) { found = { device: src[1], kind }; break; }
+	}
+	if (sprintf('%J', found) != sprintf('%J', vpn_seen)) {
+		vpn_seen = found;
+		if (found) log(sprintf('device %s seems to use a VPN (%s): game traffic may bypass fnport', found.device, found.kind));
+		stats_dirty = true;
+		stats_written = 0;
+	}
+}
+
 // a mapped flow that froze anyway: stop handing out its port for that target, try another port
 function check_frozen() {
 	if (time() - last_check < 2) return;
 	last_check = time();
-	// grep narrows by whole octets, is_device() decides
-	let pat = join('|', map(DEVICES, d => d.len == 32 ? `src=${d.text} `
-		: 'src=' + join('.', slice(split(int2ip(d.net), '.'), 0, int(d.len / 8))) + '.'));
-	for (let line in split(sh(`grep -E "${pat}" /proc/net/nf_conntrack`), '\n')) {
+	for (let line in split(sh(`grep -E "${device_pattern()}" /proc/net/nf_conntrack`), '\n')) {
 		if (index(line, ' udp ') < 0) continue;
 		let src = match(line, /src=([0-9.]+)/), cp = match(line, /sport=([0-9]+)/);
 		let dst = match(line, /dst=([0-9.]+)/), sp = match(line, /dport=([0-9]+)/);
@@ -623,6 +652,7 @@ write_stats(false);
 while (true) {
 	keep_alive();
 	check_frozen();
+	check_vpn();
 	tick_stats();
 
 	let pending = map(list_elems('set', 'pending'), elem_key);

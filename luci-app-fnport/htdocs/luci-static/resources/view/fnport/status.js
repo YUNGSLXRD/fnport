@@ -38,6 +38,40 @@ function parseLog(text) {
 	return st;
 }
 
+var RELEASES = 'https://api.github.com/repos/YUNGSLXRD/fnport/releases/latest';
+
+function versionParts(v) {
+	return String(v || '').replace(/^v/, '').replace(/-.*$/, '').split('.').map(Number);
+}
+
+function newer(a, b) {
+	var x = versionParts(a), y = versionParts(b);
+	for (var i = 0; i < 3; i++)
+		if ((x[i] || 0) != (y[i] || 0))
+			return (x[i] || 0) > (y[i] || 0);
+	return false;
+}
+
+// what the user should do, from the service's own state and the last hours of statistics
+function hints(running, stats) {
+	var out = [], n = (stats && stats.now) || {};
+	if (!running || !n.updated)
+		return out;
+	if (n.vpn)
+		out.push(_('Device %s seems to use a VPN (%s): its game traffic may go past fnport. Turn the VPN off while playing.').format(n.vpn.device, n.vpn.kind));
+	if (n.fake_off_until)
+		out.push(_('The whitelist fake is off until %s: on this network it breaks connections. If connections freeze, run the ISP check.').format(clock(n.fake_off_until)));
+	var recent = {}, now = Date.now() / 1000;
+	Object.keys((stats && stats.hours) || {}).forEach(function(h) {
+		if (+h > now - 3 * 3600)
+			sumInto(recent, stats.hours[h]);
+	});
+	var conns = (recent.flows || 0) + (recent.passed || 0) + (recent.nogood || 0);
+	if (conns >= 5 && ((recent.frozen || 0) + (recent.nogood || 0)) * 3 >= conns)
+		out.push(_('Many connections froze or found no passing port in the last hours. Run the ISP check: the fake TTL may need a change.'));
+	return out;
+}
+
 var COLS = [
 	[ 'flows', _('Through a passing port') ],
 	[ 'passed', _('Passed as is (standby)') ],
@@ -159,13 +193,55 @@ return view.extend({
 			]);
 		})));
 
-		return E('div', {}, [
+		var tips = hints(running, stats);
+		return E('div', {}, (tips.length ? [
+			E('h3', {}, _('Hints')),
+			E('ul', {}, tips.map(function(t) { return E('li', {}, [ t ]); }))
+		] : []).concat([
 			E('h3', {}, _('Now')),
 			renderNow(running, stats)
-		].concat(renderStats(stats)).concat([
+		]).concat(renderStats(stats)).concat([
 			E('h3', {}, _('Recent events')),
 			log
 		]));
+	},
+
+	// a newer release: offer the installer, the same one the README runs
+	renderUpdate: function(stats) {
+		var box = E('div', {}), cur = stats && stats.now && stats.now.version;
+		if (!cur)
+			return box;
+		fetch(RELEASES).then(function(r) { return r.json(); }).then(function(rel) {
+			if (!rel || !rel.tag_name || !newer(rel.tag_name, cur))
+				return;
+			var log = E('pre', { 'style': 'display:none;max-height:12em;overflow:auto' });
+			var btn = E('button', { 'class': 'cbi-button cbi-button-apply' }, [ _('Update') ]);
+			btn.addEventListener('click', function() {
+				btn.disabled = true;
+				fs.exec('/usr/libexec/fnport-update', [ 'start' ]).then(function() {
+					log.style.display = '';
+					var timer = window.setInterval(function() {
+						fs.exec('/usr/libexec/fnport-update', [ 'status' ]).then(function(res) {
+							var st = JSON.parse(res.stdout || '{}');
+							log.textContent = st.log || '';
+							if (!st.running && /exit \d+/.test(st.log || '')) {
+								window.clearInterval(timer);
+								if (/exit 0/.test(st.log))
+									ui.addNotification(null, E('p', _('fnport updated. Reload the page to see the new version.')), 'info');
+								else
+									ui.addNotification(null, E('p', _('The update failed, see the log below.')), 'danger');
+							}
+						});
+					}, 2000);
+				});
+			});
+			dom.content(box, E('div', { 'class': 'alert-message notice' }, [
+				E('p', {}, [ _('fnport %s is out (installed: %s).').format(rel.tag_name.replace(/^v/, ''), cur.replace(/-.*$/, '')), ' ',
+					E('a', { 'href': rel.html_url, 'target': '_blank', 'rel': 'noopener noreferrer' }, [ _('What is new') ]) ]),
+				btn, log
+			]));
+		}).catch(function() {});
+		return box;
 	},
 
 	render: function(data) {
@@ -179,6 +255,7 @@ return view.extend({
 
 		return E('div', {}, [
 			E('h2', {}, _('fnport status')),
+			this.renderUpdate(data[2]),
 			container
 		]);
 	},

@@ -11,6 +11,9 @@
 				],
 				"/var/run/fnport-stats.json": [
 					"read"
+				],
+				"/usr/libexec/fnport-update status": [
+					"exec"
 				]
 			},
 			"ubus": {
@@ -31,6 +34,9 @@
 					"exec"
 				],
 				"/usr/libexec/fnport-check apply": [
+					"exec"
+				],
+				"/usr/libexec/fnport-update start": [
 					"exec"
 				]
 			},

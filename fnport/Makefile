@@ -44,6 +44,7 @@ define Package/fnport/install
 	$(INSTALL_DATA) ./files/quic_initial_ozon_ru.bin $(1)/usr/share/fnport/quic_initial_ozon_ru.bin
 	$(INSTALL_DATA) ./files/quic_initial_ozon_ru.bin.LICENSE $(1)/usr/share/fnport/quic_initial_ozon_ru.bin.LICENSE
 	$(INSTALL_BIN) ./files/fnport-check.uc $(1)/usr/libexec/fnport-check
+	$(INSTALL_BIN) ./files/fnport-update.uc $(1)/usr/libexec/fnport-update
 	echo "$(PKG_VERSION)-r$(PKG_RELEASE)" > $(1)/usr/share/fnport/version
 	# statistics and what was learnt per network survive a sysupgrade
 	$(INSTALL_DATA) ./files/fnport.keep $(1)/lib/upgrade/keep.d/fnport

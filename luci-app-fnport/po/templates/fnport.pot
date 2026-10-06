@@ -437,3 +437,30 @@ msgstr ""
 
 msgid "no fake file"
 msgstr ""
+
+msgid "Device %s seems to use a VPN (%s): its game traffic may go past fnport. Turn the VPN off while playing."
+msgstr ""
+
+msgid "The whitelist fake is off until %s: on this network it breaks connections. If connections freeze, run the ISP check."
+msgstr ""
+
+msgid "Many connections froze or found no passing port in the last hours. Run the ISP check: the fake TTL may need a change."
+msgstr ""
+
+msgid "Hints"
+msgstr ""
+
+msgid "Update"
+msgstr ""
+
+msgid "fnport updated. Reload the page to see the new version."
+msgstr ""
+
+msgid "The update failed, see the log below."
+msgstr ""
+
+msgid "fnport %s is out (installed: %s)."
+msgstr ""
+
+msgid "What is new"
+msgstr ""

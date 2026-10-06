@@ -439,3 +439,30 @@ msgstr "неясно"
 
 msgid "no fake file"
 msgstr "нет файла фейка"
+
+msgid "Device %s seems to use a VPN (%s): its game traffic may go past fnport. Turn the VPN off while playing."
+msgstr "Похоже, на устройстве %s включён VPN (%s): его игровой трафик может идти мимо fnport. Выключите VPN на время игры."
+
+msgid "The whitelist fake is off until %s: on this network it breaks connections. If connections freeze, run the ISP check."
+msgstr "Фейк с белым SNI выключен до %s: в этой сети он ломает соединения. Если соединения замерзают, запустите проверку провайдера."
+
+msgid "Many connections froze or found no passing port in the last hours. Run the ISP check: the fake TTL may need a change."
+msgstr "За последние часы много соединений замёрзло или осталось без проходящего порта. Запустите проверку провайдера: возможно, нужно поменять TTL фейка."
+
+msgid "Hints"
+msgstr "Подсказки"
+
+msgid "Update"
+msgstr "Обновить"
+
+msgid "fnport updated. Reload the page to see the new version."
+msgstr "fnport обновлён. Обновите страницу, чтобы увидеть новую версию."
+
+msgid "The update failed, see the log below."
+msgstr "Обновление не удалось, подробности в журнале ниже."
+
+msgid "fnport %s is out (installed: %s)."
+msgstr "Вышла версия fnport %s (установлена %s)."
+
+msgid "What is new"
+msgstr "Что нового"
