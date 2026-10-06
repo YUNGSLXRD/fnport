@@ -19,9 +19,9 @@ import (
 var physIndex uint32
 
 const (
-	ipUnicastIf     = 31         // IP_UNICAST_IF
-	sioUDPNetReset  = 0x9800000F // SIO_UDP_NETRESET: no errors on recv after ICMP "TTL exceeded"
-	defaultTTLWin   = 128
+	ipUnicastIf    = 31         // IP_UNICAST_IF
+	sioUDPNetReset = 0x9800000F // SIO_UDP_NETRESET: no errors on recv after ICMP "TTL exceeded"
+	defaultTTLWin  = 128
 )
 
 func sockControl(physical bool) func(network, address string, c syscall.RawConn) error {
@@ -132,4 +132,21 @@ func relaunchElevated() bool {
 func consoleUTF8() {
 	windows.SetConsoleOutputCP(65001)
 	windows.SetConsoleCP(65001)
+}
+
+var winmm = windows.NewLazySystemDLL("winmm.dll")
+
+var timerHighRes bool
+
+// setTimerHighRes asks Windows for 1 ms timer resolution (timeBeginPeriod) or gives it back
+func setTimerHighRes(on bool) {
+	if on == timerHighRes {
+		return
+	}
+	proc := "timeEndPeriod"
+	if on {
+		proc = "timeBeginPeriod"
+	}
+	winmm.NewProc(proc).Call(1)
+	timerHighRes = on
 }

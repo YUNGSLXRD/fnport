@@ -41,6 +41,8 @@ type ifaceInfo struct {
 }
 
 func routeInterface(dst netip.Addr) (ifaceInfo, error) { return ifaceInfo{}, nil }
-func isElevated() bool                                { return true }
-func relaunchElevated() bool                          { return false }
-func consoleUTF8()                                    {}
+func isElevated() bool                                 { return true }
+func relaunchElevated() bool                           { return false }
+func consoleUTF8()                                     {}
+
+func setTimerHighRes(on bool) {}

@@ -34,6 +34,40 @@ type flow struct {
 	conn    *net.UDPConn
 	port    int
 	out, in atomic.Int64
+
+	// timing: the server's RTT on the program's socket (by the first 4 payload bytes, the probe's
+	// tag and sequence number) and the program's own time per datagram each way
+	mu        sync.Mutex
+	sent      map[string]time.Time
+	rtts      []time.Duration
+	fwd, back []time.Duration
+}
+
+const maxTimed = 256
+
+func (f *flow) timeOut(payload []byte, read time.Time) {
+	now := time.Now()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.fwd) < maxTimed {
+		f.fwd = append(f.fwd, now.Sub(read))
+	}
+	if len(payload) >= 4 && len(f.sent) < maxTimed {
+		f.sent[string(payload[:4])] = now
+	}
+}
+
+func (f *flow) timeIn(payload []byte, got, written time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.back) < maxTimed {
+		f.back = append(f.back, written.Sub(got))
+	}
+	if len(payload) >= 4 {
+		if t, ok := f.sent[string(payload[:4])]; ok && len(f.rtts) < maxTimed {
+			f.rtts = append(f.rtts, got.Sub(t))
+		}
+	}
 }
 
 type relay struct {
@@ -77,6 +111,7 @@ func (r *relay) run() {
 		if err != nil {
 			return
 		}
+		read := time.Now()
 		p, err := parseUDP4(buf[:n])
 		if err != nil || p.src.Addr() != r.clientIP {
 			continue // IPv6, ICMP, IGMP and other chatter Windows sends to any adapter
@@ -92,7 +127,7 @@ func (r *relay) run() {
 				logf("  (relay: нет сокета: %v)", err)
 				continue
 			}
-			f = &flow{conn: c, port: c.LocalAddr().(*net.UDPAddr).Port}
+			f = &flow{conn: c, port: c.LocalAddr().(*net.UDPAddr).Port, sent: map[string]time.Time{}}
 			if plan.fake != nil && plan.ttl > 0 {
 				sendWithTTL(c, plan.fake, p.dst, plan.ttl)
 				time.Sleep(fakeGap)
@@ -103,7 +138,12 @@ func (r *relay) run() {
 			go r.back(f, key)
 		}
 		f.out.Add(1)
+		read2 := read
+		if plan.fake != nil && f.out.Load() == 1 {
+			read2 = time.Now() // the pause after the fake is not the relay's speed
+		}
 		f.conn.WriteToUDPAddrPort(p.payload, p.dst)
+		f.timeOut(p.payload, read2)
 	}
 }
 
@@ -113,6 +153,7 @@ func (r *relay) back(f *flow, key flowKey) {
 	client := netip.AddrPortFrom(r.clientIP, key.srcPort)
 	for {
 		n, from, err := f.conn.ReadFromUDPAddrPort(buf)
+		got := time.Now()
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return
@@ -131,6 +172,7 @@ func (r *relay) back(f *flow, key flowKey) {
 		if err != nil {
 			return
 		}
+		f.timeIn(buf[:n], got, time.Now())
 	}
 }
 

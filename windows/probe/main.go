@@ -119,10 +119,29 @@ func main() {
 		os.Exit(1)
 	}()
 
-	logf("fnport-probe %s, %s, %s/%s", version, time.Now().Format("2006-01-02 15:04"), runtime.GOOS, runtime.GOARCH)
-	logf("Перед запуском выключите VPN и WARP на этом ПК. Проверка займёт 2-4 минуты.")
+	logf("fnport-probe %s, %s, %s/%s, ядер: %d", version, time.Now().Format("2006-01-02 15:04"), runtime.GOOS, runtime.GOARCH, runtime.NumCPU())
+	fmt.Println()
+	fmt.Println("1 — полная проверка (2-4 минуты)")
+	fmt.Println("2 — только задержка через адаптер (около минуты)")
+	fmt.Print("Выбор [1]: ")
+	choice, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	logf("Перед запуском выключите VPN и WARP на этом ПК.")
 	logf("")
-	run(noTun)
+	if strings.TrimSpace(choice) == "2" {
+		if noTun {
+			logf("Без прав администратора адаптер не создать.")
+		} else {
+			bs, source := beacons()
+			logf("Маяки Epic (%s)", source)
+			if info, err := routeInterface(bs[0]); err == nil && info.index != 0 {
+				physIndex = info.index
+				logf("Интернет идёт через адаптер «%s» (%s)", info.alias, info.desc)
+			}
+			checkLatency(bs)
+		}
+	} else {
+		run(noTun)
+	}
 	runCleanup()
 	if logFile != nil {
 		logf("\nОтчёт сохранён: %s", name)

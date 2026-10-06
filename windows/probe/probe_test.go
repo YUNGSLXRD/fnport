@@ -248,4 +248,9 @@ loop:
 	if f == nil || f.out.Load() != pkts || f.in.Load() != pkts || f.port < 20000 {
 		t.Fatalf("flow %+v", f)
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.rtts) != pkts || len(f.fwd) != pkts || len(f.back) != pkts || stats(f.rtts).min <= 0 {
+		t.Fatalf("timing: %d rtts, %d fwd, %d back", len(f.rtts), len(f.fwd), len(f.back))
+	}
 }

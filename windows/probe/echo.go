@@ -31,6 +31,7 @@ type sockResult struct {
 	port int
 	got  int
 	rtt  time.Duration // median, 0 without replies
+	rtts []time.Duration
 }
 
 func verdict(got int) string {
@@ -202,6 +203,7 @@ func probe(cs []*net.UDPConn, host netip.Addr, fake []byte, ttl int) []sockResul
 		if len(s.rtts) > 0 {
 			sort.Slice(s.rtts, func(a, b int) bool { return s.rtts[a] < s.rtts[b] })
 			res[i].rtt = s.rtts[len(s.rtts)/2]
+			res[i].rtts = s.rtts
 		}
 	}
 	return res
