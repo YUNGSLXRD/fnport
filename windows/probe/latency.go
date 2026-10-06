@@ -47,6 +47,7 @@ func checkLatency(bs []netip.Addr) {
 		return
 	}
 	rl := newRelay(dev, clientIP, openDirect)
+	rl.routed = map[netip.Addr]bool{host: true}
 	setCleanup(rl.close)
 	defer func() { rl.close(); setCleanup(nil) }()
 	go rl.run()

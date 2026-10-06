@@ -376,6 +376,7 @@ func checkTun(s *summary, host netip.Addr, fakes []fakeFile) {
 		return
 	}
 	rl := newRelay(dev, clientIP, openDirect)
+	rl.routed = map[netip.Addr]bool{host: true}
 	setCleanup(rl.close)
 	go rl.run()
 

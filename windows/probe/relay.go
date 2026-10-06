@@ -74,6 +74,8 @@ type relay struct {
 	dev      packetDev
 	clientIP netip.Addr
 	open     func() (*net.UDPConn, error)
+	routed   map[netip.Addr]bool // servers routed into the adapter; nil = any
+	failLog  time.Time
 
 	mu    sync.Mutex
 	plans map[uint16]flowPlan // by client source port
@@ -116,6 +118,9 @@ func (r *relay) run() {
 		if err != nil || p.src.Addr() != r.clientIP {
 			continue // IPv6, ICMP, IGMP and other chatter Windows sends to any adapter
 		}
+		if r.routed != nil && !r.routed[p.dst.Addr()] {
+			continue // broadcasts and multicast of network discovery (NetBIOS, LLMNR, SSDP, mDNS)
+		}
 		key := flowKey{p.src.Port(), p.dst}
 		r.mu.Lock()
 		f := r.flows[key]
@@ -124,7 +129,10 @@ func (r *relay) run() {
 		if f == nil {
 			c, err := r.open()
 			if err != nil {
-				logf("  (relay: нет сокета: %v)", err)
+				if time.Since(r.failLog) > 5*time.Second {
+					r.failLog = time.Now()
+					logf("  (relay: нет сокета для %s: %v)", p.dst, err)
+				}
 				continue
 			}
 			f = &flow{conn: c, port: c.LocalAddr().(*net.UDPAddr).Port, sent: map[string]time.Time{}}
