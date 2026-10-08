@@ -17,10 +17,10 @@ import (
 
 	"gioui.org/gpu/headless"
 
-	"github.com/YUNGSLXRD/fnport/windows/internal/fakes"
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/unit"
+	"github.com/YUNGSLXRD/fnport/windows/internal/fakes"
 )
 
 func TestPreview(t *testing.T) {
