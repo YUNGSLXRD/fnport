@@ -33,8 +33,10 @@ func TestPreview(t *testing.T) {
 	ctl.st = stateOn
 	ctl.stats = statSnapshot{GameFlows: 12, Tested: 30, Good: 12, Frozen: 1, Remaps: 1}
 	now := time.Now()
+	game := uint16(60320)
 	add := func(srv string, port int, out, in int64, ago time.Duration, active, frozen bool, remaps int) {
-		ctl.history = append(ctl.history, flowInfo{Server: netip.MustParseAddrPort(srv), Port: port, Out: out, In: in,
+		game++
+		ctl.history = append(ctl.history, flowInfo{Server: netip.MustParseAddrPort(srv), GamePort: game, Port: port, Out: out, In: in,
 			Started: now.Add(-ago), Last: now, Active: active, Frozen: frozen, Remaps: remaps})
 	}
 	add("18.157.38.117:15036", 42844, 1204, 1187, 14*time.Minute, false, false, 0)
@@ -72,6 +74,7 @@ func TestPreview(t *testing.T) {
 	rec.FakeTTL = 4
 	chk.result = finish(&checkResult{PortKept: "yes", Freeze: "yes", Fake: "works", TTL: 4, FakeFile: fakes.Default()}, defaultSettings())
 	chk.result.Recommend = &rec
+	chk.finished = time.Now()
 
 	const scale = 1.25
 	w, h := int(880*scale), int(660*scale)
@@ -82,11 +85,15 @@ func TestPreview(t *testing.T) {
 	defer win.Release()
 	v := newView(ctl, ping, chk, nil, func() {})
 	for _, tc := range []struct {
-		name string
-		tab  tab
-		st   state
-	}{{"main-on", tabMain, stateOn}, {"main-off", tabMain, stateOff}, {"summary", tabSummary, stateOn}, {"log", tabLog, stateOn}, {"settings", tabSettings, stateOff}, {"settings2", tabSettings, stateOff}} {
-		v.tab, ctl.st = tc.tab, tc.st
+		name  string
+		tab   tab
+		st    state
+		theme string
+	}{{"main-on", tabMain, stateOn, "dark"}, {"main-off", tabMain, stateOff, "dark"}, {"summary", tabSummary, stateOn, "dark"},
+		{"log", tabLog, stateOn, "dark"}, {"settings", tabSettings, stateOff, "dark"}, {"settings2", tabSettings, stateOff, "dark"},
+		{"main-light", tabMain, stateOn, "light"}, {"main-starting", tabMain, stateStarting, "dark"}, {"summary-light", tabSummary, stateOn, "light"}} {
+		v.tab, ctl.st, ctl.set.Theme = tc.tab, tc.st, tc.theme
+		v.ringAnim, v.glyphAnim, v.fillAnim, v.titleAnim = colorAnim{}, colorAnim{}, colorAnim{}, colorAnim{}
 		if tc.name == "settings2" {
 			v.page.Position.First, v.page.Position.Offset = 1, 0
 		}

@@ -30,6 +30,7 @@ type settings struct {
 	ProbeBudget int      `json:"probe_budget"` // probe sockets per minute, all servers together
 	VerdictTTL  int      `json:"verdict_ttl"`  // seconds a good port is trusted
 	Passthrough bool     `json:"passthrough"`  // no probes, no fake: fnport on the router does the work
+	Theme       string   `json:"theme"`        // "system", "dark", "light"
 }
 
 func defaultSettings() settings {
@@ -45,6 +46,7 @@ func defaultSettings() settings {
 		MaxRounds:   8,
 		ProbeBudget: 24,
 		VerdictTTL:  90,
+		Theme:       "system",
 	}
 }
 

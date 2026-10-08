@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -146,11 +147,15 @@ func (c *controller) apply(s settings) error {
 		return errorf("не сохранить fnport.json: %v", err)
 	}
 	c.mu.Lock()
+	old := c.set
 	c.set = s
 	st := c.st
 	c.mu.Unlock()
 	logf("настройки сохранены")
-	if st == stateOn {
+	// the theme alone does not need fnport restarted
+	same := s
+	same.Theme = old.Theme
+	if st == stateOn && !reflect.DeepEqual(same, old) {
 		c.stop()
 		c.start()
 	} else {

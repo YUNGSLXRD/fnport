@@ -47,4 +47,5 @@ pack fnport-probe probe
 # the program has a window, not a console; its fakes sit in a folder next to it
 mkdir -p "$tmp/fnport/fakes"
 cp internal/fakes/*.bin internal/fakes/LICENSE.txt "$tmp/fnport/fakes/"
+cp internal/fonts/OFL.txt "$tmp/fnport/font-Inter-OFL.txt"
 pack fnport fnport "-H windowsgui"

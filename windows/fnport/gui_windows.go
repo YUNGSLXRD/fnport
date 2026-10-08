@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 
 	"gioui.org/app"
 	"gioui.org/io/system"
@@ -74,7 +75,7 @@ func (win *window) run() {
 			st, _ := win.g.ctl.state()
 			running, _, _, wait := win.g.check.state()
 			if c := changes.Load(); c != last || (st == stateOn && win.v.tab == tabSummary && n%2 == 0) ||
-				(win.v.tab == tabSettings && (running || wait > 0) && n%2 == 0) {
+				(win.v.tab == tabMain && (running || wait > 0) && n%2 == 0) {
 				last = c
 				win.w.Invalidate()
 			}
@@ -86,7 +87,9 @@ func (win *window) run() {
 		switch e := win.w.Event().(type) {
 		case app.Win32ViewEvent:
 			if e.HWND != 0 {
-				darkTitleBar(e.HWND)
+				hwnd := e.HWND
+				win.v.onTheme = func(dark bool) { titleBar(hwnd, dark) }
+				titleBar(hwnd, win.v.dark)
 			}
 		case app.DestroyEvent:
 			cancel()
@@ -122,18 +125,35 @@ var (
 	pDwmSetWindowAttribute = dwmapi.NewProc("DwmSetWindowAttribute")
 )
 
-// darkTitleBar paints the window's title bar in the app's colours (Windows 10 2004+, 11)
-func darkTitleBar(hwnd uintptr) {
+// titleBar paints the window's title bar for the theme (Windows 10 2004+, 11): dark or light
+// mode, and on Windows 11 a caption a shade apart from the window
+func titleBar(hwnd uintptr, dark bool) {
 	set := func(attr uint32, v uint32) {
 		pDwmSetWindowAttribute.Call(hwnd, uintptr(attr), uintptr(unsafe.Pointer(&v)), 4)
 	}
-	set(20, 1) // DWMWA_USE_IMMERSIVE_DARK_MODE
-	set(19, 1) // the same attribute on Windows 10 before 20H1
-	// Windows 11: exactly the window's background and text colours (COLORREF is 0x00BBGGRR)
-	cref := func(c color.NRGBA) uint32 { return uint32(c.B)<<16 | uint32(c.G)<<8 | uint32(c.R) }
-	set(35, cref(colBg))   // DWMWA_CAPTION_COLOR
-	set(36, cref(colText)) // DWMWA_TEXT_COLOR
-	set(34, cref(colBg))   // DWMWA_BORDER_COLOR
+	d := uint32(0)
+	if dark {
+		d = 1
+	}
+	set(20, d)                                                                                   // DWMWA_USE_IMMERSIVE_DARK_MODE
+	set(19, d)                                                                                   // the same attribute on Windows 10 before 20H1
+	cref := func(c color.NRGBA) uint32 { return uint32(c.B)<<16 | uint32(c.G)<<8 | uint32(c.R) } // COLORREF
+	set(35, cref(colTitle))                                                                      // DWMWA_CAPTION_COLOR
+	set(36, cref(colText))                                                                       // DWMWA_TEXT_COLOR
+	set(34, cref(colLine))                                                                       // DWMWA_BORDER_COLOR
+}
+
+func init() {
+	// Windows remembers the apps' theme as AppsUseLightTheme = 1 or 0
+	systemLight = func() bool {
+		k, err := registry.OpenKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\Themes\Personalize`, registry.QUERY_VALUE)
+		if err != nil {
+			return false
+		}
+		defer k.Close()
+		v, _, err := k.GetIntegerValue("AppsUseLightTheme")
+		return err == nil && v == 1
+	}
 }
 
 // openPath opens a file or folder the way Explorer would
