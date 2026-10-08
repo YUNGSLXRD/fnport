@@ -26,11 +26,15 @@ dll="$tmp/wintun.dll"
 unzip -p "$modzip" "$WINTUN_MOD/internal/wintun/amd64/wintun.dll" > "$dll"
 echo "$WINTUN_SHA256  $dll" | sha256sum -c - >/dev/null
 
-# pack NAME PKG: dist/NAME-<version>.zip with NAME.exe, wintun.dll and the notices
+# the program's icon and manifest (administrator rights, sharp on scaled screens) into the exe
+go run ./tools/mkicon fnport/winres
+(cd fnport && go run github.com/tc-hib/go-winres@v0.3.3 make --in winres/winres.json --arch amd64)
+
+# pack NAME PKG [LDFLAGS]: dist/NAME-<version>.zip with NAME.exe, wintun.dll and the notices
 pack() {
 	out="$tmp/$1"
 	mkdir -p "$out" dist
-	GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=$VER" -o "$out/$1.exe" "./$2"
+	GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=$VER ${3:-}" -o "$out/$1.exe" "./$2"
 	cp "$dll" "$out/wintun.dll"
 	cp third_party/wintun-LICENSE.txt "$out/wintun-LICENSE.txt"
 	cp ../fnport/files/quic_initial_vk_com.bin.LICENSE "$out/quic-fakes-LICENSE.txt"
@@ -39,4 +43,5 @@ pack() {
 	ls -l "dist/$1-$VER.zip"
 }
 pack fnport-probe probe
-pack fnport fnport
+# the program has a window, not a console
+pack fnport fnport "-H windowsgui"

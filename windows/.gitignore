@@ -1,2 +1,4 @@
 /dist/
 /internal/fakes/*.bin
+/fnport/winres/*.png
+/fnport/*.syso

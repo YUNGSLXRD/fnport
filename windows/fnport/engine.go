@@ -83,8 +83,29 @@ type uflow struct {
 	remaps  int
 	frozen  bool // reported, waiting for a remap
 	last    time.Time
+	started time.Time
 
-	out, in atomic.Int64 // since the current port
+	out, in           atomic.Int64 // since the current port
+	totalOut, totalIn atomic.Int64
+}
+
+// flowInfo: a game flow for the summary
+type flowInfo struct {
+	Server        netip.AddrPort
+	GamePort      uint16 // the game's own source port
+	Port          int    // the port the server sees
+	Out, In       int64
+	Remaps        int
+	Frozen        bool
+	Started, Last time.Time
+	Active        bool
+}
+
+func (f *uflow) info(active bool) flowInfo {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return flowInfo{Server: f.key.dst, GamePort: f.key.cport, Port: f.port, Out: f.totalOut.Load(), In: f.totalIn.Load(),
+		Remaps: f.remaps, Frozen: f.frozen, Started: f.started, Last: f.last, Active: active}
 }
 
 type engine struct {
@@ -99,6 +120,8 @@ type engine struct {
 	flows map[flowKey]*uflow
 	ipID  atomic.Uint32
 	done  chan struct{}
+
+	gone func(flowInfo) // a game flow ended (idle), for the summary
 }
 
 func newEngine(cfg *config, dev wnet.Dev, clientIP netip.Addr, tcp *tcpRelay) *engine {
@@ -161,10 +184,13 @@ func (e *engine) udp(p wnet.UDPPacket) {
 	f := e.flows[key]
 	isNew := f == nil
 	if isNew {
-		f = &uflow{key: key, game: e.cfg.gamePort(p.Dst.Port()), last: time.Now()}
+		f = &uflow{key: key, game: e.cfg.gamePort(p.Dst.Port()), last: time.Now(), started: time.Now()}
 		e.flows[key] = f
 	}
 	e.mu.Unlock()
+	if isNew {
+		e.stat.add(&e.stat.flows, 1)
+	}
 
 	f.mu.Lock()
 	f.last = time.Now()
@@ -181,6 +207,7 @@ func (e *engine) udp(p wnet.UDPPacket) {
 	}
 	f.mu.Unlock()
 	f.out.Add(1)
+	f.totalOut.Add(1)
 	c.WriteToUDPAddrPort(p.Payload, p.Dst)
 }
 
@@ -216,7 +243,6 @@ func (e *engine) assign(f *uflow) {
 		}
 		e.stat.add(&e.stat.gameFlows, 1)
 	}
-	e.stat.add(&e.stat.flows, 1)
 	c, port, err := openPort(port)
 	if err != nil {
 		logf("соединение %s: нет сокета: %v", dst, err)
@@ -243,6 +269,7 @@ func (e *engine) assign(f *uflow) {
 	f.mu.Unlock()
 	for _, b := range held {
 		f.out.Add(1)
+		f.totalOut.Add(1)
 		c.WriteToUDPAddrPort(b, dst)
 	}
 	go e.back(f, c)
@@ -273,6 +300,7 @@ func (e *engine) back(f *uflow, c *net.UDPConn) {
 			continue
 		}
 		f.in.Add(1)
+		f.totalIn.Add(1)
 		f.mu.Lock()
 		f.last = time.Now()
 		f.mu.Unlock()
@@ -310,6 +338,9 @@ func (e *engine) watch() {
 				e.mu.Lock()
 				delete(e.flows, f.key)
 				e.mu.Unlock()
+				if f.game && e.gone != nil {
+					e.gone(f.info(false))
+				}
 				continue
 			}
 			out, in := f.out.Load(), f.in.Load()
@@ -366,6 +397,33 @@ func (e *engine) remap(f *uflow) {
 	go e.back(f, c)
 	e.stat.add(&e.stat.remaps, 1)
 	logf("соединение %s переведено на порт %d (попытка %d)", dst, port, n)
+}
+
+// gameFlows: the game flows now
+func (e *engine) gameFlows() []flowInfo {
+	e.mu.Lock()
+	var fs []*uflow
+	for _, f := range e.flows {
+		if f.game {
+			fs = append(fs, f)
+		}
+	}
+	e.mu.Unlock()
+	out := make([]flowInfo, 0, len(fs))
+	for _, f := range fs {
+		out = append(out, f.info(true))
+	}
+	return out
+}
+
+type statSnapshot struct {
+	Flows, GameFlows, NoGood, Frozen, Remaps, Tested, Good, FakeOff, FakeSwitch int
+}
+
+func (c *counters) snapshot() statSnapshot {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return statSnapshot{c.flows, c.gameFlows, c.nogood, c.frozen, c.remaps, c.tested, c.good, c.fakeOff, c.fakeSwitch}
 }
 
 func (e *engine) close() {
