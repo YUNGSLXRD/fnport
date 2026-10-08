@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"gioui.org/gpu/headless"
+
+	"github.com/YUNGSLXRD/fnport/windows/internal/fakes"
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/unit"
@@ -26,7 +28,8 @@ func TestPreview(t *testing.T) {
 	if dir == "" {
 		dir = t.TempDir()
 	}
-	ctl := newController(defaultConfig())
+	fakes.Ensure(fakesDir())
+	ctl := newController(defaultSettings())
 	ctl.st = stateOn
 	ctl.stats = statSnapshot{GameFlows: 12, Tested: 30, Good: 12, Frozen: 1, Remaps: 1}
 	now := time.Now()
@@ -57,20 +60,36 @@ func TestPreview(t *testing.T) {
 		logf("%s", l)
 	}
 
+	chk := &checker{lines: []string{
+		"Сохраняет ли роутер исходящий порт…", "  да, порт сохраняется",
+		"Заморозка у провайдера: по 2 пробы без фейка на маяк Epic",
+		"  Франкфурт: 25/30 заморозка, 25/30 заморозка", "  Лондон: 25/30 заморозка, 24/30 заморозка",
+		"  Париж: 25/30 заморозка, 25/30 заморозка", "Фейк vk.com: подбор TTL 2–9 на маяке Франкфурт",
+		"  TTL 2: 25/30 заморозка, 25/30 заморозка", "  TTL 3: 30/30 проходит, 25/30 заморозка",
+		"  TTL 3 ещё раз: 25/30 заморозка, 30/30 проходит", "  TTL 4 (запас): 30/30 проходит, 25/30 заморозка",
+		"  срабатывает с TTL 3, рекомендую 4"}}
+	rec := defaultSettings()
+	rec.FakeTTL = 4
+	chk.result = finish(&checkResult{PortKept: "yes", Freeze: "yes", Fake: "works", TTL: 4, FakeFile: fakes.Default()}, defaultSettings())
+	chk.result.Recommend = &rec
+
 	const scale = 1.25
-	w, h := int(660*scale), int(600*scale)
+	w, h := int(880*scale), int(660*scale)
 	win, err := headless.NewWindow(w, h)
 	if err != nil {
 		t.Skipf("no headless GPU: %v", err)
 	}
 	defer win.Release()
-	v := newView(ctl, ping, func() {})
+	v := newView(ctl, ping, chk, nil, func() {})
 	for _, tc := range []struct {
 		name string
 		tab  tab
 		st   state
-	}{{"main-on", tabMain, stateOn}, {"main-off", tabMain, stateOff}, {"summary", tabSummary, stateOn}, {"log", tabLog, stateOn}} {
+	}{{"main-on", tabMain, stateOn}, {"main-off", tabMain, stateOff}, {"summary", tabSummary, stateOn}, {"log", tabLog, stateOn}, {"settings", tabSettings, stateOff}, {"settings2", tabSettings, stateOff}} {
 		v.tab, ctl.st = tc.tab, tc.st
+		if tc.name == "settings2" {
+			v.page.Position.First, v.page.Position.Offset = 1, 0
+		}
 		var ops op.Ops
 		// two frames: lists settle their scroll position in the first
 		for i := 0; i < 2; i++ {

@@ -187,3 +187,45 @@ func SetTimerHighRes(on bool) {
 	winmm.NewProc(proc).Call(1)
 	timerHighRes = on
 }
+
+// Interfaces: network adapters that are up and have an IPv4 address, except fnport's own
+func Interfaces() []IfaceInfo {
+	ifs, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	var out []IfaceInfo
+	for _, ifc := range ifs {
+		if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 || strings.HasPrefix(ifc.Name, "fnport") {
+			continue
+		}
+		info := IfaceInfo{Index: uint32(ifc.Index), Alias: ifc.Name}
+		if addrs, err := ifc.Addrs(); err == nil {
+			for _, a := range addrs {
+				if pn, ok := a.(*net.IPNet); ok && pn.IP.To4() != nil {
+					if ip, ok := netip.AddrFromSlice(pn.IP.To4()); ok && !ip.IsLinkLocalUnicast() {
+						info.Addr = ip
+						break
+					}
+				}
+			}
+		}
+		if !info.Addr.IsValid() {
+			continue
+		}
+		if luid, err := winipcfg.LUIDFromIndex(info.Index); err == nil {
+			if row, err := luid.Interface(); err == nil {
+				info.Desc = row.Description()
+				info.Tunnel = row.Type == winipcfg.IfTypePropVirtual || row.Type == winipcfg.IfTypeTunnel
+			}
+		}
+		d := strings.ToLower(info.Alias + " " + info.Desc)
+		for _, s := range []string{"warp", "wireguard", "wintun", "amnezia", "openvpn", "tap-windows", "vpn", "outline"} {
+			if strings.Contains(d, s) {
+				info.Tunnel = true
+			}
+		}
+		out = append(out, info)
+	}
+	return out
+}

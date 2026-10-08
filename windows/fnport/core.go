@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,25 +21,6 @@ var version = "dev"
 
 // AWS in Europe where Epic's game servers and beacons live (the same list as fnport-routes.cmd)
 var awsEU = []string{"3.0.0.0/8", "13.32.0.0/11", "15.0.0.0/8", "18.0.0.0/8", "35.156.0.0/14", "35.176.0.0/13"}
-
-func defaultConfig() *config {
-	cfg := &config{
-		gameRanges: [][2]uint16{{9000, 9999}, {15000, 15999}},
-		pairFrom:   [2]uint16{15000, 15999},
-		pairOffset: -6000,
-		qosPort:    22222,
-		batch:      2,
-		maxRounds:  8,
-		budget:     24,
-		verdictTTL: 90 * time.Second,
-		fakes:      fakes.Load(),
-		fakeTTL:    5,
-	}
-	for _, r := range awsEU {
-		cfg.routes = append(cfg.routes, netip.MustParsePrefix(r))
-	}
-	return cfg
-}
 
 func errorf(format string, a ...any) error { return fmt.Errorf(format, a...) }
 
@@ -108,9 +88,9 @@ const (
 )
 
 type controller struct {
-	cfg *config
-
 	mu      sync.Mutex
+	set     settings
+	cfg     *config // what the engine runs with while on
 	st      state
 	err     string
 	iface   wnet.IfaceInfo
@@ -125,7 +105,60 @@ type controller struct {
 
 const historyKeep = 60
 
-func newController(cfg *config) *controller { return &controller{cfg: cfg} }
+func newController(s settings) *controller { return &controller{set: s} }
+
+func (c *controller) settings() settings {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.set
+}
+
+// physical picks the adapter toward the internet: the chosen one, or the one Windows uses
+func physical(name string) (wnet.IfaceInfo, error) {
+	if name != "" {
+		for _, i := range wnet.Interfaces() {
+			if i.Alias == name {
+				return i, nil
+			}
+		}
+		return wnet.IfaceInfo{}, errorf("адаптер «%s» не найден или отключён", name)
+	}
+	info, err := wnet.RouteInterface(netip.MustParseAddr("3.66.90.173"))
+	if err != nil || info.Index == 0 {
+		return info, errorf("не найден сетевой адаптер с выходом в интернет")
+	}
+	return info, nil
+}
+
+// usePhysical points this program's own sockets (pings, checks) at the chosen adapter
+func usePhysical(name string) {
+	if info, err := physical(name); err == nil {
+		wnet.PhysIndex, wnet.PhysAddr = info.Index, info.Addr
+	}
+}
+
+// apply checks and saves new settings; if fnport is on, it restarts with them
+func (c *controller) apply(s settings) error {
+	if _, err := s.config(); err != nil {
+		return err
+	}
+	if err := s.save(); err != nil {
+		return errorf("не сохранить fnport.json: %v", err)
+	}
+	c.mu.Lock()
+	c.set = s
+	st := c.st
+	c.mu.Unlock()
+	logf("настройки сохранены")
+	if st == stateOn {
+		c.stop()
+		c.start()
+	} else {
+		usePhysical(s.Adapter)
+	}
+	changes.Add(1)
+	return nil
+}
 
 func (c *controller) state() (state, string) {
 	c.mu.Lock()
@@ -151,10 +184,16 @@ func (c *controller) start() {
 		c.mu.Unlock()
 		changes.Add(1)
 	}
+	set := c.settings()
+	cfg, err := set.config()
+	if err != nil {
+		fail(err)
+		return
+	}
 	// the physical way out, before the routes point into the adapter
-	info, err := wnet.RouteInterface(netip.MustParseAddr("3.66.90.173"))
-	if err != nil || info.Index == 0 {
-		fail(errorf("не найден сетевой адаптер с выходом в интернет"))
+	info, err := physical(set.Adapter)
+	if err != nil {
+		fail(err)
 		return
 	}
 	wnet.PhysIndex, wnet.PhysAddr = info.Index, info.Addr
@@ -162,7 +201,7 @@ func (c *controller) start() {
 	if info.Tunnel {
 		logf("ВНИМАНИЕ: похоже, это VPN. Игра пойдёт через него, а не напрямую: выключите VPN/WARP.")
 	}
-	dev, clientIP, err := wnet.OpenTun("fnport", c.cfg.routes)
+	dev, clientIP, err := wnet.OpenTun("fnport", cfg.routes)
 	if err != nil {
 		fail(err)
 		return
@@ -173,23 +212,15 @@ func (c *controller) start() {
 		fail(err)
 		return
 	}
-	e := newEngine(c.cfg, dev, clientIP, tcp)
+	e := newEngine(cfg, dev, clientIP, tcp)
 	e.gone = c.addHistory
 	go e.run()
 
 	stop := make(chan struct{})
 	c.mu.Lock()
-	c.st, c.iface, c.dev, c.tcp, c.eng, c.since, c.ticker = stateOn, info, dev, tcp, e, time.Now(), stop
+	c.st, c.cfg, c.iface, c.dev, c.tcp, c.eng, c.since, c.ticker = stateOn, cfg, info, dev, tcp, e, time.Now(), stop
 	c.mu.Unlock()
-	if c.cfg.passthrough {
-		logf("включено: только пропуск через адаптер, без проверок и фейка")
-	} else {
-		fake := "выключен"
-		if len(c.cfg.fakes) > 0 {
-			fake = fmt.Sprintf("%s, TTL %d", c.cfg.fakes[0].Name, c.cfg.fakeTTL)
-		}
-		logf("включено: адаптер «fnport», маршруты на AWS в Европе; фейк %s", fake)
-	}
+	logf("включено: адаптер «fnport», %d сетей; %s", len(cfg.routes), c.fakeLabel())
 	go func() {
 		t := time.NewTicker(5 * time.Minute)
 		defer t.Stop()
@@ -295,15 +326,14 @@ func addStats(a, b statSnapshot) statSnapshot {
 		a.Remaps + b.Remaps, a.Tested + b.Tested, a.Good + b.Good, a.FakeOff + b.FakeOff, a.FakeSwitch + b.FakeSwitch}
 }
 
-// fakeLabel: "vk.com, TTL 5" for the window
+// fakeLabel: "фейк vk.com, TTL 5" for the window and the log
 func (c *controller) fakeLabel() string {
-	if c.cfg.passthrough {
-		return "без проверок и фейка (работает fnport на роутере)"
+	s := c.settings()
+	switch {
+	case s.Passthrough:
+		return "без проверок и фейка (их делает fnport на роутере)"
+	case s.Fake == "":
+		return "без фейка"
 	}
-	if len(c.cfg.fakes) == 0 {
-		return "фейк выключен"
-	}
-	n := strings.TrimSuffix(strings.TrimPrefix(c.cfg.fakes[0].Name, "quic_initial_"), ".bin")
-	n = strings.ReplaceAll(n, "_", ".")
-	return fmt.Sprintf("фейк %s, TTL %d", n, c.cfg.fakeTTL)
+	return fmt.Sprintf("фейк %s, TTL %d", fakes.Label(s.Fake), s.FakeTTL)
 }

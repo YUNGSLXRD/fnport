@@ -9,13 +9,12 @@
 package main
 
 import (
-	"net/netip"
 	"os"
-	"strconv"
 	"time"
 
 	"gioui.org/app"
 
+	"github.com/YUNGSLXRD/fnport/windows/internal/fakes"
 	"github.com/YUNGSLXRD/fnport/windows/internal/icon"
 	"github.com/YUNGSLXRD/fnport/windows/internal/wnet"
 )
@@ -25,32 +24,21 @@ func main() {
 	if otherInstance() {
 		return
 	}
-	cfg := defaultConfig()
-	for i := 1; i < len(os.Args); i++ {
-		switch os.Args[i] {
-		case "-ttl":
-			if i+1 < len(os.Args) {
-				if v, err := strconv.Atoi(os.Args[i+1]); err == nil && v >= 1 && v <= 16 {
-					cfg.fakeTTL = v
-				}
-				i++
-			}
-		case "-passthrough":
-			cfg.passthrough = true
-		}
-	}
 	openLog()
 	logf("fnport для Windows %s запущен", version)
+	// the fakes live in a folder next to the program; a new or empty one gets the package's own
+	if err := fakes.Ensure(fakesDir()); err != nil {
+		logf("папка fakes не создана: %v", err)
+	}
+	set := loadSettings()
 	if !wnet.IsElevated() {
 		// the manifest asks for administrator rights; without them the adapter cannot be made
 		logf("нет прав администратора: включить fnport не получится")
 	}
 	// pings to the beacons leave by the physical interface even while the adapter is up
-	if info, err := wnet.RouteInterface(netip.MustParseAddr("3.66.90.173")); err == nil {
-		wnet.PhysIndex, wnet.PhysAddr = info.Index, info.Addr
-	}
+	usePhysical(set.Adapter)
 
-	ctl := newController(cfg)
+	ctl := newController(set)
 	g := &gui{ctl: ctl}
 	t := &tray{onOpen: g.show, onToggle: ctl.toggle, onQuit: g.quitApp, accent: icon.Gray, tip: "fnport: выключен",
 		isOn: func() bool { st, _ := ctl.state(); return st == stateOn }}

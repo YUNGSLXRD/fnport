@@ -219,7 +219,7 @@ func (t *tray) run() {
 		t.accent = icon.Gray
 	}
 	t.icon = makeIcon(smallIconSize(), t.accent)
-	t.large = makeIcon(64, icon.Green)
+	t.large = makeIcon(64, icon.None)
 	t.mu.Unlock()
 	t.notify(nimAdd, nifMessage|nifIcon|nifTip, "", "")
 	close(t.ready)

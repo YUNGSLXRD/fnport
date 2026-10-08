@@ -12,7 +12,7 @@ import (
 func main() {
 	dir := os.Args[1]
 	for _, s := range []int{256, 64, 48, 32, 16} {
-		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("icon%d.png", s)), icon.PNG(s, icon.Green), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("icon%d.png", s)), icon.PNG(s, icon.None), 0o644); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}

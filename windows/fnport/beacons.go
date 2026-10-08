@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"net"
 	"net/netip"
 	"sort"
@@ -10,7 +9,7 @@ import (
 	"time"
 
 	"github.com/YUNGSLXRD/fnport/windows/internal/geo"
-	"github.com/YUNGSLXRD/fnport/windows/internal/wnet"
+	"github.com/YUNGSLXRD/fnport/windows/internal/qos"
 )
 
 // Ping to Epic's QoS beacons (UDP echo on 22222), one per city, while the window is open:
@@ -41,6 +40,17 @@ func (p *pinger) snapshot() []beacon {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return append([]beacon(nil), p.list...)
+}
+
+// resolveName: addresses of a name from Windows' DNS (fakeip included, to be spotted)
+func resolveName(name string) []netip.Addr {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	ips, _ := net.DefaultResolver.LookupNetIP(ctx, "ip4", name)
+	for i := range ips {
+		ips[i] = ips[i].Unmap()
+	}
+	return ips
 }
 
 func resolveBeacons() []netip.Addr {
@@ -105,7 +115,7 @@ func (p *pinger) run(ctx context.Context, onUpdate func()) {
 			wg.Add(1)
 			go func(i int, a netip.Addr) {
 				defer wg.Done()
-				rtt := pingOnce(a)
+				rtt := qos.Ping(a, pingPackets)
 				p.mu.Lock()
 				p.list[i].RTT, p.list[i].Checked = rtt, true
 				p.mu.Unlock()
@@ -117,44 +127,6 @@ func (p *pinger) run(ctx context.Context, onUpdate func()) {
 		case <-ctx.Done():
 			return
 		case <-time.After(pingEvery):
-		}
-	}
-}
-
-// pingOnce: best RTT of a few echo packets from a fresh socket on the physical interface
-// (the beacons' addresses are routed into the adapter while fnport is on); 0 without replies
-func pingOnce(a netip.Addr) time.Duration {
-	c, err := wnet.ListenUDP(0, true)
-	if err != nil {
-		return 0
-	}
-	defer c.Close()
-	dst := netip.AddrPortFrom(a, 22222)
-	var tag [2]byte
-	rand.Read(tag[:])
-	sent := make([]time.Time, pingPackets)
-	for i := range sent {
-		pkt := []byte{tag[0], tag[1], 0, byte(i), 0xaa, 0xaa, 0xaa, 0xaa, 0xbb, 0xbb, 0xbb, 0xbb}
-		sent[i] = time.Now()
-		c.WriteToUDPAddrPort(pkt, dst)
-		time.Sleep(20 * time.Millisecond)
-	}
-	var best time.Duration
-	buf := make([]byte, 512)
-	c.SetReadDeadline(time.Now().Add(time.Second))
-	for {
-		n, from, err := c.ReadFromUDPAddrPort(buf)
-		if err != nil {
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
-				return best
-			}
-			continue
-		}
-		if from.Addr().Unmap() != a || n < 4 || buf[0] != tag[0] || buf[1] != tag[1] || int(buf[3]) >= pingPackets {
-			continue
-		}
-		if rtt := time.Since(sent[buf[3]]); best == 0 || rtt < best {
-			best = rtt
 		}
 	}
 }

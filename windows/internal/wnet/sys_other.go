@@ -53,3 +53,5 @@ func IsElevated() bool                                 { return true }
 func RelaunchElevated() bool                           { return false }
 func ConsoleUTF8()                                     {}
 func SetTimerHighRes(on bool)                          {}
+
+func Interfaces() []IfaceInfo { return nil }

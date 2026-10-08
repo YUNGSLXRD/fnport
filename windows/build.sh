@@ -9,6 +9,7 @@ export GOTOOLCHAIN=local CGO_ENABLED=0
 
 # the fakes are the package's own files, embedded into the program
 cp ../fnport/files/quic_initial_*.bin internal/fakes/
+cp ../fnport/files/quic_initial_vk_com.bin.LICENSE internal/fakes/LICENSE.txt
 
 go vet ./...
 GOOS=windows GOARCH=amd64 go vet ./...
@@ -43,5 +44,7 @@ pack() {
 	ls -l "dist/$1-$VER.zip"
 }
 pack fnport-probe probe
-# the program has a window, not a console
+# the program has a window, not a console; its fakes sit in a folder next to it
+mkdir -p "$tmp/fnport/fakes"
+cp internal/fakes/*.bin internal/fakes/LICENSE.txt "$tmp/fnport/fakes/"
 pack fnport fnport "-H windowsgui"
