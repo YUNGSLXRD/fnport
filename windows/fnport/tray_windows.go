@@ -65,9 +65,8 @@ const (
 	nifTip     = 0x4
 	nifInfo    = 0x10
 
-	niifUser    = 0x4
+	niifInfo    = 0x1
 	niifNoSound = 0x10
-	niifLarge   = 0x20
 
 	mfString    = 0x0
 	mfSeparator = 0x800
@@ -219,7 +218,6 @@ func (t *tray) run() {
 		t.accent = icon.Gray
 	}
 	t.icon = makeIcon(smallIconSize(), t.accent)
-	t.large = makeIcon(64, icon.None)
 	t.mu.Unlock()
 	t.notify(nimAdd, nifMessage|nifIcon|nifTip, "", "")
 	close(t.ready)
@@ -242,8 +240,8 @@ func (t *tray) notify(op uint32, flags uint32, title, text string) {
 	if flags&nifInfo != 0 {
 		copyUTF16(nid.InfoTitle[:], title)
 		copyUTF16(nid.Info[:], text)
-		nid.InfoFlags = niifUser | niifLarge | niifNoSound
-		nid.BalloonIcon = t.large
+		// Windows' own information icon: the app's icon is in the notification's header already
+		nid.InfoFlags = niifInfo | niifNoSound
 	}
 	t.mu.Unlock()
 	nid.Size = uint32(unsafe.Sizeof(nid))
