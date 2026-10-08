@@ -26,7 +26,30 @@ const (
 	checkMaxTTL   = 9 // from the PC: one hop more than from the router
 )
 
+type cityReplies struct {
+	City    string
+	Replies []int
+}
+
+type ttlReplies struct {
+	TTL     int
+	Replies []int
+}
+
+type fakeScan struct {
+	Fake  string
+	Steps []ttlReplies
+}
+
 type checkResult struct {
+	// raw results, for the report
+	Control   []cityReplies
+	Scans     []fakeScan
+	FakeCheck *ttlReplies // no freeze: the fake at the current TTL
+	FakeCity  string      // where the TTL was scanned
+	WorksFrom int
+	Settings  settings // what the check ran with
+
 	PortKept  string // "yes", "no", "unknown"
 	Freeze    string // "yes", "no", "no_reply", "unclear"
 	Fake      string // "works", "kills", "fails", "harmless", ""
@@ -102,7 +125,7 @@ func (k *checker) probe(host netip.Addr, fake []byte, ttl int) []int {
 }
 
 func (k *checker) run(cur settings) *checkResult {
-	r := &checkResult{PortKept: "unknown"}
+	r := &checkResult{PortKept: "unknown", Settings: cur}
 	usePhysical(cur.Adapter)
 
 	k.say("Сохраняет ли роутер исходящий порт…")
@@ -120,6 +143,7 @@ func (k *checker) run(cur settings) *checkResult {
 	for _, b := range bs {
 		rs := k.probe(b, nil, 0)
 		k.say("  %s: %s", geo.CityRU(b), fmtReplies(rs))
+		r.Control = append(r.Control, cityReplies{geo.CityRU(b), rs})
 		if qos.Count(rs, "silent") < len(rs) {
 			answered = append(answered, b)
 		}
@@ -153,6 +177,7 @@ func (k *checker) run(cur settings) *checkResult {
 			k.say("Заморозки нет. Не ломает ли фейк соединения (TTL %d):", cur.FakeTTL)
 			rs := k.probe(answered[0], d, cur.FakeTTL)
 			k.say("  %s: %s", geo.CityRU(answered[0]), fmtReplies(rs))
+			r.FakeCheck = &ttlReplies{cur.FakeTTL, rs}
 			r.Fake = "harmless"
 			if qos.Count(rs, "silent") == len(rs) {
 				r.Fake = "kills"
@@ -161,6 +186,7 @@ func (k *checker) run(cur settings) *checkResult {
 		return finish(r, cur)
 	}
 	r.Freeze = "yes"
+	r.FakeCity = geo.CityRU(host)
 
 	// the fake in use first (or the default), then up to two spares on a shorter TTL range
 	order := []string{cur.Fake}
@@ -182,8 +208,10 @@ func (k *checker) run(cur settings) *checkResult {
 			lo, hi = 3, 6
 		}
 		k.say("Фейк %s: подбор TTL %d–%d на маяке %s", fakes.Label(name), lo, hi, geo.CityRU(host))
-		verdict, works, rec := k.scanTTL(host, d, lo, hi)
-		r.Fake, r.FakeFile = verdict, name
+		scan := fakeScan{Fake: name}
+		verdict, works, rec := k.scanTTL(host, d, lo, hi, &scan)
+		r.Scans = append(r.Scans, scan)
+		r.Fake, r.FakeFile, r.WorksFrom = verdict, name, works
 		if verdict == "works" {
 			r.TTL = rec
 			k.say("  срабатывает с TTL %d, рекомендую %d", works, rec)
@@ -198,19 +226,22 @@ func (k *checker) run(cur settings) *checkResult {
 
 // scanTTL: TTLs from lo up, 2 sockets each; a TTL with a pass gets 2 more and is taken with
 // at least 2 passes of 4; then one hop of margin unless the fake starts killing flows there
-func (k *checker) scanTTL(host netip.Addr, fake []byte, lo, hi int) (verdict string, works, rec int) {
+func (k *checker) scanTTL(host netip.Addr, fake []byte, lo, hi int, scan *fakeScan) (verdict string, works, rec int) {
 	silentRun := 0
 	for t := lo; t <= hi; t++ {
 		rs := k.probe(host, fake, t)
 		k.say("  TTL %d: %s", t, fmtReplies(rs))
+		scan.Steps = append(scan.Steps, ttlReplies{t, rs})
 		if qos.Count(rs, "pass") >= 1 {
 			more := k.probe(host, fake, t)
 			k.say("  TTL %d ещё раз: %s", t, fmtReplies(more))
+			scan.Steps[len(scan.Steps)-1].Replies = append(append([]int(nil), rs...), more...)
 			if qos.Count(append(rs, more...), "pass") >= 2 {
 				rec = t
 				if t < hi {
 					m := k.probe(host, fake, t+1)
 					k.say("  TTL %d (запас): %s", t+1, fmtReplies(m))
+					scan.Steps = append(scan.Steps, ttlReplies{t + 1, m})
 					if qos.Count(m, "silent") < len(m) {
 						rec = t + 1
 					}

@@ -9,6 +9,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -31,6 +32,14 @@ func main() {
 	openLog()
 	logf("fnport для Windows %s запущен", version)
 	registerAppID()
+	winVersion = func() string {
+		v := windows.RtlGetVersion()
+		name := "Windows 10"
+		if v.MajorVersion == 10 && v.BuildNumber >= 22000 {
+			name = "Windows 11"
+		}
+		return fmt.Sprintf("%s (сборка %d)", name, v.BuildNumber)
+	}
 	// the fakes live in a folder next to the program; a new or empty one gets the package's own
 	if err := fakes.Ensure(fakesDir()); err != nil {
 		logf("папка fakes не создана: %v", err)

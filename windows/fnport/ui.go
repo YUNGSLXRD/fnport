@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"io"
 	"math"
 	"strconv"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"gioui.org/f32"
 	"gioui.org/font"
+	"gioui.org/io/clipboard"
 	"gioui.org/io/event"
 	"gioui.org/io/pointer"
 	"gioui.org/layout"
@@ -121,6 +123,9 @@ type view struct {
 	fillAnim   colorAnim
 	titleAnim  colorAnim
 	pingNow    widget.Clickable
+	copyReport widget.Clickable
+	openIssue  widget.Clickable
+	reportMsg  string
 	scrolls    map[*widget.List]*smoothScroll
 	theme      widget.Enum
 
@@ -1005,6 +1010,14 @@ func (v *view) settingsTab(gtx C) D {
 	running, lines, res, wait := v.check.state()
 	if v.runCheck.Clicked(gtx) && !running && wait <= 0 {
 		v.check.start(v.ctl.settings())
+		v.reportMsg = ""
+	}
+	if v.copyReport.Clicked(gtx) && res != nil {
+		gtx.Execute(clipboard.WriteCmd{Type: "application/text", Data: io.NopCloser(strings.NewReader(v.ctl.report(res)))})
+		v.reportMsg = "Отчёт скопирован."
+	}
+	if v.openIssue.Clicked(gtx) && v.open != nil {
+		v.open(issueURL)
 	}
 	if v.applyCheck.Clicked(gtx) && res != nil && res.Recommend != nil {
 		rec := *res.Recommend
@@ -1099,6 +1112,17 @@ func (v *view) checkCard(gtx C, running bool, lines []string, res *checkResult, 
 				kids = append(kids, layout.Rigid(func(gtx C) D {
 					return layout.Inset{Bottom: 3}.Layout(gtx, v.label(13, c, "• "+l).Layout)
 				}))
+			}
+			if !running {
+				kids = append(kids, vspace(12), layout.Rigid(func(gtx C) D {
+					return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+						layout.Rigid(func(gtx C) D { return v.button(gtx, &v.copyReport, "Скопировать отчёт", false, true) }),
+						hspace(10),
+						layout.Rigid(func(gtx C) D { return v.button(gtx, &v.openIssue, "Открыть issue на GitHub", false, true) }),
+						hspace(12),
+						layout.Flexed(1, v.label(13, colGreen, v.reportMsg).Layout))
+				}), vspace(6), layout.Rigid(v.label(12, colMuted, "Адресов вашей сети в отчёте нет: серверы показаны городами. "+
+					"Вставьте отчёт в issue и впишите провайдера и город — отчёты от разных провайдеров помогают подобрать настройки.").Layout))
 			}
 		}
 		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
@@ -1290,8 +1314,10 @@ func (v *view) list(gtx C, l *widget.List, n int, el layout.ListElement) D {
 	if ss.remain != 0 && l.Position.First == first && l.Position.Offset == off {
 		ss.remain = 0
 	}
-	// the wheel area on top of the list, so its own scrolling never sees the wheel
+	// the wheel area on top of the list takes the whole scroll, so the list's own scrolling never
+	// sees the wheel; pass-through, or it would also swallow every click on what lies under it
 	defer clip.Rect{Max: d.Size}.Push(gtx.Ops).Pop()
+	defer pointer.PassOp{}.Push(gtx.Ops).Pop()
 	event.Op(gtx.Ops, ss)
 	return d
 }
