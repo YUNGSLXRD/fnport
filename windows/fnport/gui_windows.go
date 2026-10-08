@@ -88,6 +88,7 @@ func (win *window) run() {
 		case app.Win32ViewEvent:
 			if e.HWND != 0 {
 				hwnd := e.HWND
+				smoothMove(hwnd)
 				win.v.onTheme = func(dark bool) { titleBar(hwnd, dark) }
 				titleBar(hwnd, win.v.dark)
 			}
@@ -161,4 +162,49 @@ func openPath(path string) {
 	verb, _ := windows.UTF16PtrFromString("open")
 	file, _ := windows.UTF16PtrFromString(path)
 	windows.ShellExecute(0, verb, file, nil, nil, windows.SW_SHOWNORMAL)
+}
+
+// Gio redraws the whole window, synchronously and waiting for the screen's refresh, on every
+// WM_WINDOWPOSCHANGED, and dragging the window sends dozens of them a second: the drag stutters.
+// A move alone changes nothing inside the window, so those messages skip Gio.
+
+var (
+	pSetWindowLongPtrW = user32.NewProc("SetWindowLongPtrW")
+	pCallWindowProcW   = user32.NewProc("CallWindowProcW")
+	pGetWindowLongPtrW = user32.NewProc("GetWindowLongPtrW")
+	oldProcs           sync.Map // hwnd -> Gio's window procedure
+	moveProc           = windows.NewCallback(func(hwnd, msg, wParam, lParam uintptr) uintptr {
+		old, _ := oldProcs.Load(hwnd)
+		if msg == 0x0047 { // WM_WINDOWPOSCHANGED
+			type windowPos struct {
+				hwnd, after  uintptr
+				x, y, cx, cy int32
+				flags        uint32
+			}
+			const swpNoSize, swpFrameChanged, swpShow, swpHide = 0x1, 0x20, 0x40, 0x80
+			p := (*windowPos)(unsafe.Add(nil, lParam)) // lParam points to a WINDOWPOS
+			if p.flags&swpNoSize != 0 && p.flags&(swpFrameChanged|swpShow|swpHide) == 0 {
+				return 0
+			}
+		}
+		r, _, _ := pCallWindowProcW.Call(old.(uintptr), hwnd, msg, wParam, lParam)
+		if msg == 0x0082 { // WM_NCDESTROY: the window is gone
+			oldProcs.Delete(hwnd)
+		}
+		return r
+	})
+)
+
+func smoothMove(hwnd uintptr) {
+	if _, ok := oldProcs.Load(hwnd); ok {
+		return
+	}
+	gwlpWndProc := -4
+	// Gio's procedure is stored before ours takes over, so no message finds it missing
+	old, _, _ := pGetWindowLongPtrW.Call(hwnd, uintptr(gwlpWndProc))
+	if old == 0 {
+		return
+	}
+	oldProcs.Store(hwnd, old)
+	pSetWindowLongPtrW.Call(hwnd, uintptr(gwlpWndProc), moveProc)
 }

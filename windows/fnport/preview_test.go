@@ -37,7 +37,8 @@ func TestPreview(t *testing.T) {
 	add := func(srv string, port int, out, in int64, ago time.Duration, active, frozen bool, remaps int) {
 		game++
 		ctl.history = append(ctl.history, flowInfo{Server: netip.MustParseAddrPort(srv), GamePort: game, Port: port, Out: out, In: in,
-			Started: now.Add(-ago), Last: now, Active: active, Frozen: frozen, Remaps: remaps})
+			Started: now.Add(-ago), Last: now, Active: active, Frozen: frozen, Remaps: remaps,
+			Match: netip.MustParseAddrPort(srv).Port() < 10000})
 	}
 	add("18.157.38.117:15036", 42844, 1204, 1187, 14*time.Minute, false, false, 0)
 	add("18.157.38.117:9036", 25403, 41522, 88310, 13*time.Minute, false, false, 0)
@@ -45,6 +46,7 @@ func TestPreview(t *testing.T) {
 	add("18.156.212.171:9106", 43648, 35210, 71988, 8*time.Minute, false, false, 1)
 	add("13.41.10.112:15082", 23702, 312, 310, 3*time.Minute, true, false, 0)
 	add("13.41.10.112:9082", 44270, 6120, 12804, 2*time.Minute, true, false, 0)
+	add("35.181.9.118:15094", 51220, 64, 25, time.Minute, true, true, 4)
 	ping := &pinger{list: []beacon{
 		{City: "Франкфурт", Addr: netip.MustParseAddr("3.66.90.173"), RTT: 61 * time.Millisecond, Checked: true},
 		{City: "Лондон", Addr: netip.MustParseAddr("18.133.162.202"), RTT: 112 * time.Millisecond, Checked: true},

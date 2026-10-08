@@ -32,8 +32,31 @@ type beacon struct {
 }
 
 type pinger struct {
-	mu   sync.Mutex
-	list []beacon
+	mu       sync.Mutex
+	list     []beacon
+	inRound  bool
+	kick     chan struct{}
+	kickOnce sync.Once
+}
+
+func (p *pinger) kickCh() chan struct{} {
+	p.kickOnce.Do(func() { p.kick = make(chan struct{}, 1) })
+	return p.kick
+}
+
+// kickNow: ping again now instead of waiting for the next round
+func (p *pinger) kickNow() {
+	select {
+	case p.kickCh() <- struct{}{}:
+	default:
+	}
+}
+
+// busy: a round is running
+func (p *pinger) busy() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.inRound
 }
 
 func (p *pinger) snapshot() []beacon {
@@ -110,6 +133,10 @@ func (p *pinger) run(ctx context.Context, onUpdate func()) {
 	}
 	p.mu.Unlock()
 	for {
+		p.mu.Lock()
+		p.inRound = true
+		p.mu.Unlock()
+		onUpdate()
 		var wg sync.WaitGroup
 		for i, b := range p.snapshot() {
 			wg.Add(1)
@@ -122,11 +149,15 @@ func (p *pinger) run(ctx context.Context, onUpdate func()) {
 			}(i, b.Addr)
 		}
 		wg.Wait()
+		p.mu.Lock()
+		p.inRound = false
+		p.mu.Unlock()
 		onUpdate()
 		select {
 		case <-ctx.Done():
 			return
 		case <-time.After(pingEvery):
+		case <-p.kickCh():
 		}
 	}
 }

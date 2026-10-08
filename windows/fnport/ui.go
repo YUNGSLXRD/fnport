@@ -11,6 +11,8 @@ import (
 
 	"gioui.org/f32"
 	"gioui.org/font"
+	"gioui.org/io/event"
+	"gioui.org/io/pointer"
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/op/clip"
@@ -118,12 +120,12 @@ type view struct {
 	glyphAnim  colorAnim
 	fillAnim   colorAnim
 	titleAnim  colorAnim
-	checkMsg   string
-	checkErr   bool
+	pingNow    widget.Clickable
+	scrolls    map[*widget.List]*smoothScroll
 	theme      widget.Enum
 
 	power    widget.Clickable
-	list     widget.List
+	flowList widget.List
 	mainList widget.List
 	logs     widget.List
 	openLog  widget.Clickable
@@ -160,7 +162,7 @@ func newView(ctl *controller, ping *pinger, check *checker, open func(string), o
 	th.TextSize = unit.Sp(14)
 	v := &view{ctl: ctl, ping: ping, check: check, open: open, onQuit: onQuit, th: th}
 	v.logo = paint.NewImageOp(icon.Draw(96, icon.None))
-	v.list.Axis = layout.Vertical
+	v.flowList.Axis = layout.Vertical
 	v.mainList.Axis = layout.Vertical
 	v.logs.Axis = layout.Vertical
 	v.page.Axis = layout.Vertical
@@ -543,7 +545,7 @@ func (v *view) mainTab(gtx C) D {
 	titleC, more := v.titleAnim.at(gtx.Now, c)
 	v.animating = v.animating || more
 	// a list, so the page scrolls when the check's results make it taller than the window
-	return material.List(v.th, &v.mainList).Layout(gtx, 1, func(gtx C, _ int) D {
+	return v.list(gtx, &v.mainList, 1, func(gtx C, _ int) D {
 		return layout.Inset{Right: 10}.Layout(gtx, func(gtx C) D { return v.mainColumn(gtx, st, titleC, s, sub, subC) })
 	})
 }
@@ -632,37 +634,23 @@ func pingColor(b beacon) (color.NRGBA, string) {
 	return colGreen, fmt.Sprintf("%d мс", b.RTT.Milliseconds())
 }
 
-// beaconsCard: the ping to each city, and the ISP check started from here
+// beaconsCard: the ping to each city; "Проверить" pings again at once
 func (v *view) beaconsCard(gtx C) D {
+	if v.pingNow.Clicked(gtx) {
+		v.ping.kickNow()
+	}
 	bs := v.ping.snapshot()
-	running, lines, res, wait := v.check.state()
-	if v.runCheck.Clicked(gtx) && !running && wait <= 0 {
-		v.check.start(v.ctl.settings())
-	}
-	if v.applyCheck.Clicked(gtx) && res != nil && res.Recommend != nil {
-		rec := *res.Recommend
-		go func() {
-			if err := v.ctl.apply(rec); err == nil {
-				v.checkMsg, v.checkErr = "Применено и сохранено.", false
-			} else {
-				v.checkMsg, v.checkErr = err.Error(), true
-			}
-			v.draftFor = 0
-			changes.Add(1)
-		}()
-	}
-	label := "Проверить провайдера"
-	if running {
-		label = "Идёт проверка…"
-	} else if wait > 0 {
-		label = fmt.Sprintf("Снова через %d с", int(wait.Seconds())+1)
+	busy := v.ping.busy()
+	label := "Проверить"
+	if busy {
+		label = "Проверяю…"
 	}
 	return v.card(gtx, func(gtx C) D {
 		kids := []layout.FlexChild{
 			layout.Rigid(func(gtx C) D {
 				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 					layout.Flexed(1, bold(v.label(14, colText, "Пинг до серверов Epic")).Layout),
-					layout.Rigid(func(gtx C) D { return v.button(gtx, &v.runCheck, label, false, !running && wait <= 0) }))
+					layout.Rigid(func(gtx C) D { return v.button(gtx, &v.pingNow, label, false, !busy) }))
 			}),
 			vspace(8),
 		}
@@ -680,43 +668,6 @@ func (v *view) beaconsCard(gtx C) D {
 						layout.Flexed(1, v.label(14, colText, b.City).Layout),
 						layout.Rigid(bold(v.label(14, c, s)).Layout))
 				})
-			}))
-		}
-		if running || res != nil {
-			kids = append(kids, vspace(10), layout.Rigid(func(gtx C) D {
-				sz := image.Pt(gtx.Constraints.Max.X, gtx.Dp(1))
-				paint.FillShape(gtx.Ops, colLine, clip.Rect{Max: sz}.Op())
-				return D{Size: sz}
-			}), vspace(10))
-		}
-		if running && len(lines) > 0 {
-			kids = append(kids, layout.Rigid(mono(v.label(12, colMuted, strings.TrimSpace(lines[len(lines)-1]))).Layout))
-		}
-		if res != nil && !running {
-			for _, l := range res.Summary {
-				l := l
-				c := colText
-				if strings.Contains(l, "МЕНЯЕТ") || strings.Contains(l, "убивает") {
-					c = colYellow
-				}
-				kids = append(kids, layout.Rigid(func(gtx C) D {
-					return layout.Inset{Bottom: 3}.Layout(gtx, v.label(13, c, "• "+l).Layout)
-				}))
-			}
-			kids = append(kids, vspace(6), layout.Rigid(func(gtx C) D {
-				msgC := colGreen
-				if v.checkErr {
-					msgC = colRed
-				}
-				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-					layout.Rigid(func(gtx C) D {
-						if res.Recommend == nil {
-							return v.label(12, colMuted, "Настройки менять не нужно. Подробности — в журнале.").Layout(gtx)
-						}
-						return v.button(gtx, &v.applyCheck, "Применить", true, true)
-					}),
-					hspace(12),
-					layout.Flexed(1, v.label(13, msgC, v.checkMsg).Layout))
 			}))
 		}
 		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
@@ -766,10 +717,109 @@ func (v *view) tableRow(gtx C, cells []material.LabelStyle) D {
 	return layout.Flex{Alignment: layout.Middle}.Layout(gtx, kids...)
 }
 
+type cityStat struct {
+	city                                string
+	matches, flows, ok, rescued, failed int
+}
+
+// byCity: how the game's connections went in each city
+func byCity(flows []flowInfo) []cityStat {
+	order := []string{"Франкфурт", "Лондон", "Париж", "Европа"}
+	m := map[string]*cityStat{}
+	for _, f := range flows {
+		c := geo.CityRU(f.Server.Addr())
+		st := m[c]
+		if st == nil {
+			st = &cityStat{city: c}
+			m[c] = st
+		}
+		st.flows++
+		if f.Match {
+			st.matches++
+		}
+		switch {
+		case f.Frozen:
+			st.failed++
+		case f.Remaps > 0:
+			st.rescued++
+		default:
+			st.ok++
+		}
+	}
+	var out []cityStat
+	for _, c := range order {
+		if st := m[c]; st != nil {
+			out = append(out, *st)
+		}
+	}
+	return out
+}
+
+var cityCols = []float32{0.22, 0.13, 0.16, 0.16, 0.18, 0.15}
+
+func (v *view) citiesCard(gtx C, flows []flowInfo) D {
+	cs := byCity(flows)
+	return v.card(gtx, func(gtx C) D {
+		row := func(gtx C, cells []material.LabelStyle, c *color.NRGBA) D {
+			var kids []layout.FlexChild
+			for i, l := range cells {
+				i, l := i, l
+				l.MaxLines = 1
+				kids = append(kids, layout.Flexed(cityCols[i], func(gtx C) D {
+					if i > 0 || c == nil {
+						return l.Layout(gtx)
+					}
+					return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+						layout.Rigid(func(gtx C) D { return dot(gtx, *c, 9) }), hspace(8), layout.Rigid(l.Layout))
+				}))
+			}
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx, kids...)
+		}
+		head := func(s string) material.LabelStyle { return v.label(12, colMuted, s) }
+		kids := []layout.FlexChild{
+			layout.Rigid(func(gtx C) D {
+				return row(gtx, []material.LabelStyle{head("Город"), head("Матчей"), head("Соединений"), head("Без проблем"),
+					head("Переведено"), head("Не удалось")}, nil)
+			}),
+			vspace(6),
+		}
+		for _, st := range cs {
+			st := st
+			c := colGreen
+			if st.rescued > 0 {
+				c = colYellow
+			}
+			if st.failed > 0 {
+				c = colRed
+			}
+			num := func(n int, warn color.NRGBA) material.LabelStyle {
+				col := colText
+				if n > 0 {
+					col = warn
+				}
+				return bold(v.label(14, col, fmt.Sprint(n)))
+			}
+			kids = append(kids, layout.Rigid(func(gtx C) D {
+				return layout.Inset{Top: 5, Bottom: 5}.Layout(gtx, func(gtx C) D {
+					return row(gtx, []material.LabelStyle{v.label(14, colText, st.city), bold(v.label(14, colText, fmt.Sprint(st.matches))),
+						bold(v.label(14, colText, fmt.Sprint(st.flows))), num(st.ok, colGreen), num(st.rescued, colYellow), num(st.failed, colRed)}, &c)
+				})
+			}))
+		}
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
+	})
+}
+
 func (v *view) summary(gtx C) D {
 	flows := v.ctl.flows()
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		v.title("Сводка"),
+		layout.Rigid(func(gtx C) D {
+			if len(flows) == 0 {
+				return D{}
+			}
+			return layout.Inset{Bottom: 12}.Layout(gtx, func(gtx C) D { return v.citiesCard(gtx, flows) })
+		}),
 		layout.Flexed(1, func(gtx C) D {
 			if len(flows) == 0 {
 				return v.card(gtx, v.label(14, colMuted, "Соединений игры пока не было. Включите fnport и зайдите в матч: здесь появятся "+
@@ -790,7 +840,7 @@ func (v *view) summary(gtx C) D {
 						return D{Size: sz}
 					}),
 					layout.Flexed(1, func(gtx C) D {
-						return material.List(v.th, &v.list).Layout(gtx, len(flows), func(gtx C, i int) D {
+						return v.list(gtx, &v.flowList, len(flows), func(gtx C, i int) D {
 							f := flows[i]
 							stC, stS := colMuted, "завершено"
 							switch {
@@ -856,7 +906,7 @@ func (v *view) logTab(gtx C) D {
 				}
 				// stick to the newest line only once the lines fill the card; a short log starts at the top
 				v.logs.ScrollToEnd = len(lines)*gtx.Dp(19) > gtx.Constraints.Max.Y
-				return material.List(v.th, &v.logs).Layout(gtx, len(lines), func(gtx C, i int) D {
+				return v.list(gtx, &v.logs, len(lines), func(gtx C, i int) D {
 					l := mono(v.label(12, colText, lines[i]))
 					if warnLine(lines[i]) {
 						l.Color = colYellow
@@ -952,7 +1002,24 @@ func (v *view) settingsTab(gtx C) D {
 			changes.Add(1)
 		}()
 	}
+	running, lines, res, wait := v.check.state()
+	if v.runCheck.Clicked(gtx) && !running && wait <= 0 {
+		v.check.start(v.ctl.settings())
+	}
+	if v.applyCheck.Clicked(gtx) && res != nil && res.Recommend != nil {
+		rec := *res.Recommend
+		go func() {
+			if err := v.ctl.apply(rec); err == nil {
+				v.saveMsg, v.saveErr = "Рекомендация применена и сохранена.", false
+				v.draftFor = 0
+			} else {
+				v.saveMsg, v.saveErr = err.Error(), true
+			}
+			changes.Add(1)
+		}()
+	}
 	sections := []layout.Widget{
+		func(gtx C) D { return v.checkCard(gtx, running, lines, res, wait) },
 		v.themeCard,
 		v.adapterCard,
 		v.fakeCard,
@@ -961,7 +1028,7 @@ func (v *view) settingsTab(gtx C) D {
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		v.title("Настройки"),
 		layout.Flexed(1, func(gtx C) D {
-			return material.List(v.th, &v.page).Layout(gtx, len(sections), func(gtx C, i int) D {
+			return v.list(gtx, &v.page, len(sections), func(gtx C, i int) D {
 				return layout.Inset{Bottom: 12, Right: 10}.Layout(gtx, sections[i])
 			})
 		}),
@@ -986,6 +1053,56 @@ func (v *view) sectionTitle(s, hint string) []layout.FlexChild {
 		kids = append(kids, vspace(4), layout.Rigid(v.label(12, colMuted, hint).Layout))
 	}
 	return append(kids, vspace(12))
+}
+
+func (v *view) checkCard(gtx C, running bool, lines []string, res *checkResult, wait time.Duration) D {
+	return v.card(gtx, func(gtx C) D {
+		kids := v.sectionTitle("Проверка провайдера", "Сохраняет ли роутер порт, есть ли заморозка, какие фейк и TTL подходят. "+
+			"Около 1–3 минут, пробы с паузами, чтобы не насторожить провайдера.")
+		label := "Проверить"
+		enabled := !running && wait <= 0
+		if running {
+			label = "Идёт проверка…"
+		} else if wait > 0 {
+			label = fmt.Sprintf("Снова можно через %d с", int(wait.Seconds())+1)
+		}
+		kids = append(kids, layout.Rigid(func(gtx C) D {
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(func(gtx C) D { return v.button(gtx, &v.runCheck, label, false, enabled) }),
+				hspace(10),
+				layout.Rigid(func(gtx C) D {
+					if res == nil || res.Recommend == nil || running {
+						return D{}
+					}
+					return v.button(gtx, &v.applyCheck, "Применить", true, true)
+				}))
+		}))
+		if len(lines) > 0 {
+			show := lines
+			if len(show) > 14 {
+				show = show[len(show)-14:]
+			}
+			kids = append(kids, vspace(12))
+			for _, l := range show {
+				l := l
+				kids = append(kids, layout.Rigid(mono(v.label(12, colMuted, l)).Layout))
+			}
+		}
+		if res != nil {
+			kids = append(kids, vspace(10))
+			for _, l := range res.Summary {
+				l := l
+				c := colText
+				if strings.Contains(l, "МЕНЯЕТ") || strings.Contains(l, "убивает") {
+					c = colYellow
+				}
+				kids = append(kids, layout.Rigid(func(gtx C) D {
+					return layout.Inset{Bottom: 3}.Layout(gtx, v.label(13, c, "• "+l).Layout)
+				}))
+			}
+		}
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
+	})
 }
 
 func (v *view) themeCard(gtx C) D {
@@ -1115,4 +1232,66 @@ func (v *view) advancedCard(gtx C) D {
 
 func pushOffset(gtx C, x, y int) op.TransformStack {
 	return op.Offset(image.Pt(x, y)).Push(gtx.Ops)
+}
+
+// ---- smooth scrolling: a wheel notch moves a list by 120 px at once; here it glides
+
+type smoothScroll struct {
+	remain float32 // pixels still to scroll
+}
+
+func (v *view) scrollOf(l *widget.List) *smoothScroll {
+	if v.scrolls == nil {
+		v.scrolls = map[*widget.List]*smoothScroll{}
+	}
+	ss := v.scrolls[l]
+	if ss == nil {
+		ss = &smoothScroll{}
+		v.scrolls[l] = ss
+	}
+	return ss
+}
+
+// list lays out a scrollable list whose mouse wheel glides over a few frames
+func (v *view) list(gtx C, l *widget.List, n int, el layout.ListElement) D {
+	ss := v.scrollOf(l)
+	for {
+		ev, ok := gtx.Event(pointer.Filter{Target: ss, Kinds: pointer.Scroll, ScrollY: pointer.ScrollRange{Min: -1 << 20, Max: 1 << 20}})
+		if !ok {
+			break
+		}
+		if e, ok := ev.(pointer.Event); ok && e.Kind == pointer.Scroll {
+			ss.remain += e.Scroll.Y
+		}
+	}
+	first, off := l.Position.First, l.Position.Offset
+	if ss.remain != 0 {
+		// a third of what is left each frame: fast at first, soft at the end
+		step := ss.remain / 3
+		if math.Abs(float64(step)) < 1 {
+			step = ss.remain
+		}
+		px := int(math.Round(float64(step)))
+		if px == 0 {
+			px = int(math.Copysign(1, float64(ss.remain)))
+		}
+		l.Position.Offset += px
+		ss.remain -= float32(px)
+		if math.Abs(float64(ss.remain)) < 0.5 {
+			ss.remain = 0
+		}
+		if px < 0 {
+			l.Position.BeforeEnd = true // a list that sticks to its end must let go when scrolled up
+		}
+		v.animating = true
+	}
+	d := material.List(v.th, l).Layout(gtx, n, el)
+	// the list stopped at an end: drop the rest
+	if ss.remain != 0 && l.Position.First == first && l.Position.Offset == off {
+		ss.remain = 0
+	}
+	// the wheel area on top of the list, so its own scrolling never sees the wheel
+	defer clip.Rect{Max: d.Size}.Push(gtx.Ops).Pop()
+	event.Op(gtx.Ops, ss)
+	return d
 }

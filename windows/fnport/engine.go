@@ -73,8 +73,10 @@ type flowKey struct {
 }
 
 type uflow struct {
-	key  flowKey
-	game bool
+	key    flowKey
+	game   bool
+	match  bool // the match itself (9xxx), not the control connection
+	noGood bool // no probed port was found: it went from an untested one
 
 	mu      sync.Mutex
 	conn    *net.UDPConn // nil while the port is being chosen
@@ -97,6 +99,8 @@ type flowInfo struct {
 	Out, In       int64
 	Remaps        int
 	Frozen        bool
+	Match         bool
+	NoGood        bool
 	Started, Last time.Time
 	Active        bool
 }
@@ -105,7 +109,7 @@ func (f *uflow) info(active bool) flowInfo {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return flowInfo{Server: f.key.dst, GamePort: f.key.cport, Port: f.port, Out: f.totalOut.Load(), In: f.totalIn.Load(),
-		Remaps: f.remaps, Frozen: f.frozen, Started: f.started, Last: f.last, Active: active}
+		Remaps: f.remaps, Frozen: f.frozen, Match: f.match, NoGood: f.noGood, Started: f.started, Last: f.last, Active: active}
 }
 
 type engine struct {
@@ -185,6 +189,7 @@ func (e *engine) udp(p wnet.UDPPacket) {
 	isNew := f == nil
 	if isNew {
 		f = &uflow{key: key, game: e.cfg.gamePort(p.Dst.Port()), last: time.Now(), started: time.Now()}
+		f.match = f.game && !(e.cfg.pairOffset != 0 && p.Dst.Port() >= e.cfg.pairFrom[0] && p.Dst.Port() <= e.cfg.pairFrom[1])
 		e.flows[key] = f
 	}
 	e.mu.Unlock()
@@ -240,6 +245,9 @@ func (e *engine) assign(f *uflow) {
 		if port == 0 {
 			how = "годного порта нет, любой"
 			e.stat.add(&e.stat.nogood, 1)
+			f.mu.Lock()
+			f.noGood = true
+			f.mu.Unlock()
 		}
 		e.stat.add(&e.stat.gameFlows, 1)
 	}
