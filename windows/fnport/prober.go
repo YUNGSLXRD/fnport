@@ -54,6 +54,7 @@ type target struct {
 	good         []int
 	tried        map[int]bool
 	silentRounds int
+	answered     bool // the server answered some probe: a silent round is its pause, not refusal
 	mode         mode
 }
 
@@ -348,6 +349,18 @@ func (p *prober) refresh(dst netip.AddrPort, want int, busy func(int) bool) *tar
 		p.learn(results)
 	}
 	if len(results) == 0 {
+		return t
+	}
+	if silent < len(results) {
+		t.answered = true
+	}
+
+	// a server that answered before and now keeps quiet caps handshake replies for our address
+	// for a while (seen: two silent rounds, then a good port). Try again after a pause rather than
+	// handing out untested ports, which then freeze
+	if !qos && silent == len(results) && t.answered {
+		logf("сервер %s замолчал после ответов: похоже, ограничивает частые проверки; пауза и снова", dst)
+		time.Sleep(time.Second)
 		return t
 	}
 

@@ -346,3 +346,58 @@ func TestPassthroughDoesNotProbe(t *testing.T) {
 		t.Fatalf("probed in passthrough: %s", e.summary())
 	}
 }
+
+// a server that answers probes (frozen), then keeps quiet for a while, then lets ports pass:
+// fnport must keep probing, not hand out untested ports
+func TestSilenceAfterAnswersIsAPause(t *testing.T) {
+	c, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 15126})
+	if err != nil {
+		t.Skip(err)
+	}
+	defer c.Close()
+	go func() {
+		order := map[int]int{} // source port -> the order it was first seen in
+		count := map[int]int{}
+		buf := make([]byte, 2048)
+		for {
+			n, from, err := c.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			if n > 1000 {
+				continue // the fake
+			}
+			if _, ok := order[from.Port]; !ok {
+				order[from.Port] = len(order)
+			}
+			i := order[from.Port]
+			switch {
+			case i < 2: // the first round freezes at 25
+				if count[from.Port]++; count[from.Port] > 25 {
+					continue
+				}
+			case i < 7: // a silent while (two rounds and the no-fake check of the old logic)
+				continue
+			}
+			c.WriteToUDP(buf[:n], from)
+		}
+	}()
+	srv := netip.MustParseAddrPort("127.0.0.1:15126")
+	p := newProber(testConfig(), &counters{})
+	defer func() {
+		for _, l := range logLines() {
+			t.Log(l)
+		}
+	}()
+	none := func(int) bool { return false }
+	port := p.pick(srv, none)
+	if port == 0 {
+		t.Fatal("no port")
+	}
+	if tg := p.targets[srv]; tg.mode == modeBlind {
+		t.Fatal("went blind: untested ports for a server that only paused")
+	}
+	if !p.fakeOn() {
+		t.Fatal("turned the fake off: a port without it happened to pass after the pause")
+	}
+}
