@@ -1,15 +1,16 @@
-# fnport для Windows (в работе)
+# fnport для Windows
 
-Задумка: fnport без роутера с OpenWrt, программой на самом игровом ПК. Игра шлёт пакеты к серверам AWS
+fnport без роутера с OpenWrt, программой на самом игровом ПК. Игра шлёт пакеты к серверам AWS
 в Европе через виртуальный адаптер [Wintun](https://www.wintun.net/), программа отправляет их дальше
 со своего порта, выбранного проверкой, с фейком перед первым пакетом, и возвращает ответы. Драйвер
 WinDivert, который выгружает Easy Anti-Cheat, не нужен.
 
-Работает, только если роутер дома не меняет исходящий порт. Обычно так и есть, но это надо проверять.
+Работает, только если роутер дома не меняет исходящий порт. Обычно так и есть; «Проверка провайдера»
+в настройках программы это проверяет. Как установить — в [README](../README.md#fnport-для-windows).
 
 ## Пробник `fnport-probe`
 
-Перед программой проверяем на ПК, получится ли:
+С него начиналась программа, в релизы он не входит (собирается вместе с ней). Проверяет на ПК, получится ли:
 
 1. сохраняет ли роутер исходящий порт (STUN);
 2. есть ли заморозка у провайдера (маяки Epic, UDP 22222) и снимает ли её фейк, отправленный с ПК,
@@ -67,7 +68,10 @@ WinDivert, который выгружает Easy Anti-Cheat, не нужен.
 
 ## Сборка
 
-Linux или macOS, нужны Go и zip: `./build.sh` → `dist/fnport-<версия>.zip` и `dist/fnport-probe-<версия>.zip`.
+Linux или macOS, нужны Go и zip: `./build.sh [версия]` → `dist/fnport-windows-<версия>.zip` и
+`dist/fnport-windows-probe-<версия>.zip`. Скрипт прогоняет тесты, сверяет `wintun.dll` по SHA-256 и кладёт
+в архив тексты лицензий всех Go-библиотек, вошедших в программу (`third-party-licenses.txt`). В релизах
+архив собирает GitHub Actions (`.github/workflows/build.yml`, задача «Windows app»).
 
 ## Сторонние файлы
 
@@ -76,9 +80,10 @@ Linux или macOS, нужны Go и zip: `./build.sh` → `dist/fnport-<вер�
   в `build.sh`). Распространяется вместе с программой, которая пользуется им только через его API, по
   [лицензии Wintun для готовых сборок](third_party/wintun-LICENSE.txt); она лежит в архиве рядом с DLL.
 - Фейки QUIC (`quic_initial_*.bin`) — файлы пакета fnport, см. [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
-- Библиотеки WireGuard для Go (`golang.zx2c4.com/wireguard`, `golang.zx2c4.com/wireguard/windows`) — MIT.
+- Библиотеки WireGuard для Go (`golang.zx2c4.com/wireguard`, `golang.zx2c4.com/wireguard/windows`, `golang.zx2c4.com/wintun`) — MIT.
 - gVisor (`gvisor.dev/gvisor`, TCP-стек) — Apache 2.0.
 - Gio (`gioui.org`, окно) — MIT или Unlicense; шрифт Go Mono (`gofont`) — BSD.
+- Тексты лицензий Go и всех этих библиотек — в `third-party-licenses.txt` в архиве.
 - Шрифт [Inter](https://github.com/rsms/inter) — SIL Open Font License 1.1 (`internal/fonts/OFL.txt`, в архиве
   `font-Inter-OFL.txt`); в программу вшиты начертания Regular и SemiBold, сделанные из вариативного шрифта
   скриптом `internal/fonts/make.sh`.

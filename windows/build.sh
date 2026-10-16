@@ -1,6 +1,6 @@
 #!/bin/sh
-# Builds dist/fnport-<version>.zip (the program) and dist/fnport-probe-<version>.zip (the probe)
-# for Windows x64, each with wintun.dll.
+# Builds dist/fnport-windows-<version>.zip (the program) and dist/fnport-windows-probe-<version>.zip
+# (the probe) for Windows x64, each with wintun.dll. The version is the first argument, else git describe.
 # Needs Go (the version in go.mod or newer) and zip; runs on Linux and macOS.
 set -eu
 cd "$(dirname "$0")"
@@ -31,21 +31,34 @@ echo "$WINTUN_SHA256  $dll" | sha256sum -c - >/dev/null
 go run ./tools/mkicon fnport/winres
 (cd fnport && go run github.com/tc-hib/go-winres@v0.3.3 make --in winres/winres.json --arch amd64)
 
-# pack NAME PKG [LDFLAGS]: dist/NAME-<version>.zip with NAME.exe, wintun.dll and the notices
+# licenses PKG: the license texts of Go and of every module compiled into PKG for Windows
+licenses() {
+	printf '%s\n\n' "Licenses of the Go code compiled into this program."
+	printf '%s\n\n%s\n\n' "== Go $(go env GOVERSION | sed 's/^go//') (standard library and runtime)" "$(cat "$(go env GOROOT)/LICENSE")"
+	GOOS=windows GOARCH=amd64 go list -deps -f '{{with .Module}}{{if not .Main}}{{.Path}} {{.Version}} {{.Dir}}{{end}}{{end}}' "$1" |
+		sort -u | while read -r path ver dir; do
+			f=$(ls "$dir" | grep -i -E '^(licen[cs]e|copying|unlicense)' | head -n 1)
+			test -n "$f" || { echo "no license file in $path" >&2; exit 1; }
+			printf '%s\n\n%s\n\n' "== $path $ver" "$(cat "$dir/$f")"
+		done
+}
+
+# pack NAME PKG ZIP [LDFLAGS]: dist/ZIP-<version>.zip with NAME.exe, wintun.dll and the notices
 pack() {
 	out="$tmp/$1"
 	mkdir -p "$out" dist
-	GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=$VER ${3:-}" -o "$out/$1.exe" "./$2"
+	GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=$VER ${4:-}" -o "$out/$1.exe" "./$2"
 	cp "$dll" "$out/wintun.dll"
 	cp third_party/wintun-LICENSE.txt "$out/wintun-LICENSE.txt"
 	cp ../fnport/files/quic_initial_vk_com.bin.LICENSE "$out/quic-fakes-LICENSE.txt"
-	rm -f "dist/$1-$VER.zip"
-	(cd "$tmp" && zip -qr - "$1") > "dist/$1-$VER.zip"
-	ls -l "dist/$1-$VER.zip"
+	licenses "./$2" > "$out/third-party-licenses.txt"
+	rm -f "dist/$3-$VER.zip"
+	(cd "$tmp" && zip -qr - "$1") > "dist/$3-$VER.zip"
+	ls -l "dist/$3-$VER.zip"
 }
-pack fnport-probe probe
+pack fnport-probe probe fnport-windows-probe
 # the program has a window, not a console; its fakes sit in a folder next to it
 mkdir -p "$tmp/fnport/fakes"
 cp internal/fakes/*.bin internal/fakes/LICENSE.txt "$tmp/fnport/fakes/"
 cp internal/fonts/OFL.txt "$tmp/fnport/font-Inter-OFL.txt"
-pack fnport fnport "-H windowsgui"
+pack fnport fnport fnport-windows "-H windowsgui"
