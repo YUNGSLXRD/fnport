@@ -152,6 +152,7 @@ type view struct {
 	save       widget.Clickable
 	reset      widget.Clickable
 	openFakes  widget.Clickable
+	licenses   widget.Clickable
 	runCheck   widget.Clickable
 	applyCheck widget.Clickable
 	adapters   []wnet.IfaceInfo
@@ -992,6 +993,11 @@ func (v *view) settingsTab(gtx C) D {
 	if v.openFakes.Clicked(gtx) && v.open != nil {
 		v.open(fakesDir())
 	}
+	if v.licenses.Clicked(gtx) && v.open != nil {
+		if p, err := writeLicenses(); err == nil {
+			v.open(p)
+		}
+	}
 	if v.reset.Clicked(gtx) {
 		v.takeDraft()
 		v.saveMsg = ""
@@ -1037,6 +1043,7 @@ func (v *view) settingsTab(gtx C) D {
 		v.adapterCard,
 		v.fakeCard,
 		v.advancedCard,
+		v.aboutCard,
 	}
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		v.title("Настройки"),
@@ -1191,6 +1198,16 @@ func (v *view) fakeCard(gtx C) D {
 				layout.Flexed(1, func(gtx C) D { return D{Size: image.Pt(gtx.Constraints.Min.X, 0)} }),
 				layout.Rigid(func(gtx C) D { return v.button(gtx, &v.openFakes, "Открыть папку", false, true) }))
 		}))
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
+	})
+}
+
+// aboutCard: the version and the license texts of what is built into the program
+func (v *view) aboutCard(gtx C) D {
+	return v.card(gtx, func(gtx C) D {
+		kids := v.sectionTitle("О программе", "fnport "+version+", открытый код: github.com/YUNGSLXRD/fnport. "+
+			"Внутри Wintun, gVisor, Gio, шрифт Inter и другие библиотеки с открытыми лицензиями.")
+		kids = append(kids, layout.Rigid(func(gtx C) D { return v.button(gtx, &v.licenses, "Лицензии", false, true) }))
 		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
 	})
 }

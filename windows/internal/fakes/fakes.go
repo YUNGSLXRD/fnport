@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-//go:embed *.bin LICENSE.txt
+//go:embed *.bin
 var fs embed.FS
 
 const MaxSize = 1500 // a fake is one datagram
@@ -51,8 +51,7 @@ func Ensure(dir string) error {
 			return err
 		}
 	}
-	lic, _ := fs.ReadFile("LICENSE.txt")
-	return os.WriteFile(filepath.Join(dir, "LICENSE.txt"), lic, 0o644)
+	return nil
 }
 
 // List: the usable fakes in dir (*.bin, 1 to 1500 bytes), by name

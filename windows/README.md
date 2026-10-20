@@ -86,8 +86,11 @@ reg delete "HKCU\Software\Classes\AppUserModelId\YUNGSLXRD.fnport" /f
 ## Сборка
 
 Linux или macOS, нужны Go и zip: `./build.sh [версия]` → `dist/fnport-windows-<версия>.zip` и
-`dist/fnport-windows-probe-<версия>.zip`. Скрипт прогоняет тесты, сверяет `wintun.dll` по SHA-256 и кладёт
-в архив тексты лицензий всех Go-библиотек, вошедших в программу (`third-party-licenses.txt`). В релизах
+`dist/fnport-windows-probe-<версия>.zip`. Скрипт прогоняет тесты, сверяет `wintun.dll` по SHA-256 и собирает
+тексты лицензий всех Go-библиотек, вошедших в программу, Wintun, шрифта и фейков в `fnport/licenses.txt`: они
+вшиваются в `fnport.exe` (Настройки → О программе → «Лицензии»), отдельных файлов в архиве программы нет
+(у пробника они лежат рядом с ним). Запускать тесты и сборку вручную нужно через `build.sh`: без этого
+файла программа не соберётся. В релизах
 архив собирает GitHub Actions (`.github/workflows/build.yml`, задача «Windows app»).
 
 ## Сторонние файлы
@@ -95,12 +98,13 @@ Linux или macOS, нужны Go и zip: `./build.sh [версия]` → `dist/
 - `wintun.dll` 0.14.1 (x64), подписан WireGuard LLC, без изменений. Взят из Go-модуля
   `github.com/sagernet/sing-tun@v0.9.6` (модуль сверяется с базой контрольных сумм Go, файл — по SHA-256
   в `build.sh`). Распространяется вместе с программой, которая пользуется им только через его API, по
-  [лицензии Wintun для готовых сборок](third_party/wintun-LICENSE.txt); она лежит в архиве рядом с DLL.
+  [лицензии Wintun для готовых сборок](third_party/wintun-LICENSE.txt).
 - Фейки QUIC (`quic_initial_*.bin`) — файлы пакета fnport, см. [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
 - Библиотеки WireGuard для Go (`golang.zx2c4.com/wireguard`, `golang.zx2c4.com/wireguard/windows`, `golang.zx2c4.com/wintun`) — MIT.
 - gVisor (`gvisor.dev/gvisor`, TCP-стек) — Apache 2.0.
 - Gio (`gioui.org`, окно) — MIT или Unlicense; шрифт Go Mono (`gofont`) — BSD.
-- Тексты лицензий Go и всех этих библиотек — в `third-party-licenses.txt` в архиве.
-- Шрифт [Inter](https://github.com/rsms/inter) — SIL Open Font License 1.1 (`internal/fonts/OFL.txt`, в архиве
-  `font-Inter-OFL.txt`); в программу вшиты начертания Regular и SemiBold, сделанные из вариативного шрифта
+- Тексты лицензий Go, всех этих библиотек, Wintun, шрифта и фейков вшиты в программу: Настройки → О программе
+  → «Лицензии».
+- Шрифт [Inter](https://github.com/rsms/inter) — SIL Open Font License 1.1 (`internal/fonts/OFL.txt`); в программу
+  вшиты начертания Regular и SemiBold, сделанные из вариативного шрифта
   скриптом `internal/fonts/make.sh`.

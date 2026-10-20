@@ -30,14 +30,17 @@
 
 ## fnport для Windows (`fnport-windows-….zip`)
 
+Тексты всех лицензий ниже вшиты в `fnport.exe`: **Настройки → О программе → «Лицензии»** открывает их
+в Блокноте. Отдельных файлов лицензий в архиве нет.
+
 - **`wintun.dll`** 0.14.1 (x64) от WireGuard LLC, без изменений, с их подписью. Распространяется по
-  [лицензии Wintun для готовых сборок](windows/third_party/wintun-LICENSE.txt), которая лежит в архиве рядом с DLL
-  (`wintun-LICENSE.txt`). Откуда взят и как сверяется — в [windows/README.md](windows/README.md#сторонние-файлы).
+  [лицензии Wintun для готовых сборок](windows/third_party/wintun-LICENSE.txt) вместе с программой, которая
+  пользуется им только через его API. Откуда взят и как сверяется — в [windows/README.md](windows/README.md#сторонние-файлы).
 - **Шрифт [Inter](https://github.com/rsms/inter)** (Rasmus Andersson) — SIL Open Font License 1.1. В программу
   вшиты начертания Regular и SemiBold, сделанные из вариативного шрифта скриптом
   [`windows/internal/fonts/make.sh`](windows/internal/fonts/make.sh); лицензия — в
-  [`windows/internal/fonts/OFL.txt`](windows/internal/fonts/OFL.txt) и в архиве (`font-Inter-OFL.txt`).
-- **Фейки** в папке `fakes` — те же файлы, что выше, с лицензией zapret (`fakes/LICENSE.txt`, `quic-fakes-LICENSE.txt`).
+  [`windows/internal/fonts/OFL.txt`](windows/internal/fonts/OFL.txt) и в программе.
+- **Фейки** в папке `fakes` — те же файлы, что выше, с лицензией zapret.
 - **Библиотеки Go**, вошедшие в программу: Go (BSD-3-Clause), Gio (`gioui.org`, MIT или Unlicense, со шрифтом
   Go Mono), gVisor (Apache 2.0), библиотеки WireGuard и Wintun для Go (MIT), `golang.org/x/*` (BSD-3-Clause)
-  и другие. Тексты всех лицензий собирает `windows/build.sh` в `third-party-licenses.txt` в архиве.
+  и другие. Тексты всех лицензий собирает `windows/build.sh` и вшивает в программу.
