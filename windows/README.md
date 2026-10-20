@@ -66,6 +66,23 @@ WinDivert, который выгружает Easy Anti-Cheat, не нужен.
 Посмотреть вкладки без Windows: `go test -tags preview -run TestPreview ./fnport/` (нужны cgo, EGL и дисплей,
 например Xvfb), картинки — в `FNPORT_PREVIEW_DIR`.
 
+## Обновление и удаление
+
+Программа сама не обновляется. Чтобы обновить: правый щелчок по значку в трее → «Выход», затем распакуйте новый
+`fnport-windows-….zip` из [релиза](../../../releases/latest) туда же, куда и в первый раз, соглашаясь на замену файлов.
+В архиве нет `fnport.json`, поэтому настройки остаются; фейки из программы обновляются, ваши `.bin` в `fakes`
+остаются.
+
+Чтобы удалить: «Выход» в меню значка и удалить папку. Адаптер `fnport` и его маршруты Windows убирает сама,
+когда программа выключается. В автозагрузку программа ничего не пишет; для уведомлений она оставляет значок
+в `%LOCALAPPDATA%\fnport` и запись в реестре `HKCU\Software\Classes\AppUserModelId\YUNGSLXRD.fnport`.
+Убрать и их (командная строка):
+
+```bat
+rmdir /s /q "%LOCALAPPDATA%\fnport"
+reg delete "HKCU\Software\Classes\AppUserModelId\YUNGSLXRD.fnport" /f
+```
+
 ## Сборка
 
 Linux или macOS, нужны Go и zip: `./build.sh [версия]` → `dist/fnport-windows-<версия>.zip` и
