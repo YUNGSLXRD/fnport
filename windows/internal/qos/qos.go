@@ -21,6 +21,7 @@ const (
 	PassMin   = 26 // more than 25 replies: no freeze
 	FrozenMin = 20 // a freeze stops at 24-25; far fewer is the echo's rate limit or loss
 	pktGap    = 30 * time.Millisecond
+	slowGap   = 100 * time.Millisecond // about 0.5 KB/s: well under the echo's limit for one address
 	waitAfter = 400 * time.Millisecond
 	fakeGap   = 30 * time.Millisecond
 )
@@ -62,6 +63,17 @@ func Count(res []int, what string) int {
 // Probe: n fresh sockets on the physical interface, each (with the fake first, if given)
 // sends Pkts packets to host's echo; replies per socket
 func Probe(host netip.Addr, n int, fake []byte, ttl int) ([]int, error) {
+	return probe(host, n, fake, ttl, pktGap)
+}
+
+// ProbeSlow: the same probe at a third of the rate. The echo limits replies to about 1.5 KB/s
+// for one outside address, and behind a provider's NAT that address is shared by many people;
+// a freeze is counted in packets, not speed, so a slow probe does not hide it
+func ProbeSlow(host netip.Addr, n int, fake []byte, ttl int) ([]int, error) {
+	return probe(host, n, fake, ttl, slowGap)
+}
+
+func probe(host netip.Addr, n int, fake []byte, ttl int, gap time.Duration) ([]int, error) {
 	var cs []*net.UDPConn
 	for i := 0; i < n; i++ {
 		c, err := wnet.ListenUDP(0, true)
@@ -88,7 +100,7 @@ func Probe(host netip.Addr, n int, fake []byte, ttl int) ([]int, error) {
 		}
 		time.Sleep(fakeGap)
 	}
-	end := time.Now().Add(Pkts*pktGap + waitAfter)
+	end := time.Now().Add(Pkts*gap + waitAfter)
 	var wg sync.WaitGroup
 	for i, c := range cs {
 		rand.Read(tags[i][:])
@@ -117,7 +129,7 @@ func Probe(host netip.Addr, n int, fake []byte, ttl int) ([]int, error) {
 		for i, c := range cs {
 			c.WriteToUDPAddrPort(packet(tags[i], seq), dst)
 		}
-		time.Sleep(pktGap)
+		time.Sleep(gap)
 	}
 	wg.Wait()
 	return got, nil

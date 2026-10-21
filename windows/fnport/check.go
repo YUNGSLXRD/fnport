@@ -120,6 +120,16 @@ func (k *checker) probe(host netip.Addr, fake []byte, ttl int) []int {
 	if err != nil {
 		k.say("  ошибка сокета: %v", err)
 	}
+	// neither a pass nor a freeze: the beacon may be limiting replies to an address shared by
+	// many people behind the provider's NAT, or just paused. Once more, three times slower; a
+	// freeze still shows, and silence then is real (a fake that kills flows, not a busy beacon)
+	if err == nil && qos.Count(rs, "pass")+qos.Count(rs, "frozen") == 0 {
+		k.say("  (%s; повторяю медленнее)", fmtReplies(rs))
+		time.Sleep(checkGap)
+		if slow, err := qos.ProbeSlow(host, 2, fake, ttl); err == nil {
+			rs = slow
+		}
+	}
 	changes.Add(1)
 	return rs
 }

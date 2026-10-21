@@ -25,6 +25,7 @@ const DEFAULT_FAKE = '/usr/share/fnport/quic_initial_vk_com.bin';
 const PKTS = 30, PASS = 26;     // TSPU stops replies at 25, so more than 25 means no freeze
 const FROZEN_MIN = 20;          // a freeze stops at 24-25; far fewer is the echo's rate limit or loss
 const IV_MS = 30, WAIT_MS = 400, FAKE_GAP_MS = 30;
+const SLOW_IV_MS = 100;           // about 0.5 KB/s: well under the echo's limit for one address
 const GAP_MS = 2000;            // pause between probe rounds
 const MAX_TTL = 8;              // the DPI sits inside the ISP, a few hops out
 const COOLDOWN = 180;           // seconds between checks
@@ -99,7 +100,7 @@ function beacons() {
 }
 
 // n sockets in parallel, each sends PKTS tagged packets to the QoS echo; with ttl, one fake first
-function probe(host, n, fake, ttl) {
+function probe(host, n, fake, ttl, iv) {
 	let socks = [];
 	for (let i = 0; i < n; i++) {
 		let s = socket.create(socket.AF_INET, socket.SOCK_DGRAM | socket.SOCK_NONBLOCK);
@@ -131,7 +132,7 @@ function probe(host, n, fake, ttl) {
 			pkt += chr(0xaa, 0xaa, 0xaa, 0xaa, 0xbb, 0xbb, 0xbb, 0xbb);
 			o.s.send(pkt, 0, { address: host, port: BEACON_PORT });
 		}
-		let end = now_ms() + IV_MS;
+		let end = now_ms() + (iv ?? IV_MS);
 		while (now_ms() < end) { socket.poll(end - now_ms(), ...pollset); drain(); }
 	}
 	let end = now_ms() + WAIT_MS;
@@ -150,6 +151,19 @@ function count(replies, what) {
 	for (let r in replies)
 		if (verdict(r) == what) n++;
 	return n;
+}
+
+// a probe with neither a pass nor a freeze: the beacon may be limiting replies to an address
+// shared by many people behind the provider's NAT, or just paused. Once more, three times
+// slower; a freeze is counted in packets, not speed, so it still shows, and silence then is
+// real (a fake that kills flows, not a busy beacon)
+function probe_check(host, n, fake, ttl) {
+	let r = probe(host, n, fake, ttl, IV_MS);
+	if (count(r, 'pass') + count(r, 'frozen') == 0) {
+		sleep_ms(GAP_MS);
+		r = probe(host, n, fake, ttl, SLOW_IV_MS);
+	}
+	return r;
 }
 
 function load_state() {
@@ -206,12 +220,12 @@ function scan_ttl(r, host, fake, lo, hi, st) {
 	for (let t = lo; t <= hi; t++) {
 		st.step = 'ttl'; st.ttl_now = t; st.fake_now = r.fake; save(st);
 		sleep_ms(GAP_MS);
-		let e = { ttl: t, replies: probe(host, 2, fake, t) };
+		let e = { ttl: t, replies: probe_check(host, 2, fake, t) };
 		push(r.ttl, e);
 		if (count(e.replies, 'pass') >= 1) {
 			save(st);
 			sleep_ms(GAP_MS);
-			e.replies = [ ...e.replies, ...probe(host, 2, fake, t) ];
+			e.replies = [ ...e.replies, ...probe_check(host, 2, fake, t) ];
 			if (count(e.replies, 'pass') >= 2) {
 				// any TTL from here on gets past the DPI; recommend one hop of margin against
 				// route changes, unless the fake starts killing flows there
@@ -220,7 +234,7 @@ function scan_ttl(r, host, fake, lo, hi, st) {
 				if (t < MAX_TTL) {
 					st.ttl_now = t + 1; save(st);
 					sleep_ms(GAP_MS);
-					let m = { ttl: t + 1, replies: probe(host, 2, fake, t + 1) };
+					let m = { ttl: t + 1, replies: probe_check(host, 2, fake, t + 1) };
 					push(r.ttl, m);
 					if (count(m.replies, 'silent') < length(m.replies)) r.recommended_ttl = t + 1;
 				}
@@ -271,7 +285,7 @@ function run() {
 	let host = null, worst = 0;
 	for (let ip in b.list) {
 		sleep_ms(GAP_MS);
-		let r = probe(ip, 2, null, null);
+		let r = probe_check(ip, 2, null, null);
 		push(st.control, { city: city(ip), replies: r });
 		save(st);
 		if (count(r, 'frozen') > worst) { worst = count(r, 'frozen'); host = ip; }
@@ -289,7 +303,7 @@ function run() {
 		if (st.fake_enabled && fake) {
 			st.step = 'fake'; save(st);
 			sleep_ms(GAP_MS);
-			st.fake_check = { ttl: cur_ttl, replies: probe(answered[0], 2, fake, cur_ttl) };
+			st.fake_check = { ttl: cur_ttl, replies: probe_check(answered[0], 2, fake, cur_ttl) };
 		}
 		return finish('no_freeze');
 	}
