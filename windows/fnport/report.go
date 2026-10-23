@@ -61,6 +61,13 @@ func (c *controller) report(r *checkResult) string {
 		line("Сетевой адаптер", kind)
 	}
 	line("Роутер сохраняет порт", map[string]string{"yes": "да", "no": "нет, меняет", "unknown": "не удалось узнать"}[r.PortKept])
+	if len(r.Epic) > 0 {
+		var ep []string
+		for _, e := range r.Epic {
+			ep = append(ep, e.Label+": "+epicStateRU(e))
+		}
+		line("Сервисы Epic напрямую", strings.Join(ep, "; "))
+	}
 	var ctl []string
 	for _, c := range r.Control {
 		ctl = append(ctl, c.City+" "+joinReplies(c.Replies))

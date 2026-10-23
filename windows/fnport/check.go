@@ -48,7 +48,8 @@ type checkResult struct {
 	FakeCheck *ttlReplies // no freeze: the fake at the current TTL
 	FakeCity  string      // where the TTL was scanned
 	WorksFrom int
-	Settings  settings // what the check ran with
+	Settings  settings     // what the check ran with
+	Epic      []epicResult // Epic's HTTPS services, straight from this PC
 
 	PortKept  string // "yes", "no", "unknown"
 	Freeze    string // "yes", "no", "no_reply", "unclear"
@@ -140,6 +141,7 @@ func (k *checker) run(cur settings) *checkResult {
 
 	k.say("Сохраняет ли роутер исходящий порт…")
 	r.PortKept = checkPortKept(k)
+	r.Epic = checkEpic(k)
 
 	bs := resolveBeacons()
 	if len(bs) == 0 {
@@ -208,6 +210,8 @@ func (k *checker) run(cur settings) *checkResult {
 			order = append(order, f.Name)
 		}
 	}
+	// every fake gets its turn: a name the DPI kills a flow for may be one it lets another pass with
+	first := ""
 	for i, name := range order {
 		d := fakeData(name)
 		if d == nil {
@@ -215,20 +219,22 @@ func (k *checker) run(cur settings) *checkResult {
 		}
 		lo, hi := 2, checkMaxTTL
 		if i > 0 {
-			lo, hi = 3, 6
+			hi = 6
 		}
 		k.say("Фейк %s: подбор TTL %d–%d на маяке %s", fakes.Label(name), lo, hi, geo.CityRU(host))
 		scan := fakeScan{Fake: name}
 		verdict, works, rec := k.scanTTL(host, d, lo, hi, &scan)
 		r.Scans = append(r.Scans, scan)
-		r.Fake, r.FakeFile, r.WorksFrom = verdict, name, works
 		if verdict == "works" {
-			r.TTL = rec
+			r.Fake, r.FakeFile, r.WorksFrom, r.TTL = verdict, name, works, rec
 			k.say("  срабатывает с TTL %d, рекомендую %d", works, rec)
 			break
 		}
-		if verdict == "kills" {
-			break
+		k.say("  %s", map[string]string{"kills": "убивает соединения", "fails": "не помогает"}[verdict])
+		// none works: what the fake in use does decides (one that kills flows is to be switched off)
+		if first == "" {
+			first = verdict
+			r.Fake, r.FakeFile = verdict, name
 		}
 	}
 	return finish(r, cur)
@@ -278,10 +284,14 @@ func checkPortKept(k *checker) string {
 	servers := []struct {
 		label, name string
 		port        uint16
-	}{{"sipnet.ru", "stun.sipnet.ru", 3478}, {"Google", "stun.l.google.com", 19302}}
+	}{{"sipnet.ru", "stun.sipnet.ru", 3478}, {"Google", "stun.l.google.com", 19302},
+		{"Google 2", "stun1.l.google.com", 19302}, {"Cloudflare", "stun.cloudflare.com", 3478}}
 	kept, changed := 0, 0
 	var ext netip.Addr
 	for _, sv := range servers {
+		if kept+changed >= 4 {
+			break // enough answers; the rest of the list is for when some do not reply
+		}
 		ips := resolveName(sv.name)
 		if len(ips) == 0 || geo.IsFakeIP(ips[0]) {
 			continue
@@ -323,23 +333,45 @@ func checkPortKept(k *checker) string {
 	return "unknown"
 }
 
-// finish writes the summary and what "Apply" would set
+// finish writes the summary and what "Apply" would set. A changed port alone decides nothing:
+// the fake goes out of the same socket as the game, so it still lifts the freeze if the check saw
+// it do so from this PC, through every router and the ISP's NAT on the way
 func finish(r *checkResult, cur settings) *checkResult {
 	add := func(s string) { r.Summary = append(r.Summary, s) }
-	switch r.PortKept {
-	case "yes":
-		add("Роутер сохраняет порт: fnport на ПК может выбирать порт сам.")
-	case "no":
-		add("Роутер МЕНЯЕТ порт: выбор порта на ПК не сработает, нужен fnport на роутере.")
-	}
 	rec := cur
+	defer func() {
+		if blocked := epicBlocked(r.Epic); len(blocked) > 0 {
+			add(fmt.Sprintf("Сервисы Epic напрямую не работают (%s): ошибки #1, #3 и зависание на 7%% — отсюда. "+
+				"fnport их не снимает: для доменов Epic нужен обход блокировки или VPN.", strings.Join(blocked, ", ")))
+		} else if len(r.Epic) > 0 {
+			add("Сервисы Epic напрямую работают: ошибки #1 и #3 не от блокировки.")
+		}
+		if rec.Fake != cur.Fake || rec.FakeTTL != cur.FakeTTL {
+			r.Recommend = &rec
+		}
+	}()
+	port := func() {
+		switch {
+		case r.PortKept == "yes":
+			add("Роутер сохраняет порт: fnport на ПК подбирает порты сам.")
+		case r.PortKept != "no":
+		case r.Freeze == "no":
+			add("Роутер или провайдер меняет порт, но заморозки нет — это не мешает.")
+		case r.Freeze == "yes" && r.Fake == "works":
+			add("Роутер или провайдер меняет порт, но фейк с ПК снимает заморозку: fnport на ПК работает, " +
+				"только без подбора портов.")
+		case r.Freeze == "yes":
+			add("Роутер или провайдер меняет порт, а фейк не помогает: с ПК fnport мало что сделает. Если порт меняет " +
+				"ваш роутер — fnport на роутере с OpenWrt; если провайдер («серый» IP) — белый IP, но это обычно платная услуга.")
+		default:
+			add("Роутер или провайдер меняет порт: поможет ли fnport на ПК, покажет проверка заморозки.")
+		}
+	}
 	switch r.Freeze {
 	case "no_reply":
 		add("Маяки Epic не ответили: проверить заморозку не удалось.")
-		return r
 	case "unclear":
 		add("Ответов мало (эхо Epic ограничивает или связь теряет пакеты): попробуйте позже.")
-		return r
 	case "no":
 		add("Заморозки сейчас нет.")
 		if r.Fake == "kills" {
@@ -353,14 +385,12 @@ func finish(r *checkResult, cur settings) *checkResult {
 			add(fmt.Sprintf("Фейк %s её снимает: TTL %d.", fakes.Label(r.FakeFile), r.TTL))
 			rec.Fake, rec.FakeTTL = r.FakeFile, r.TTL
 		case "kills":
-			add("Фейк убивает соединения у этого провайдера: остаётся только проверка портов, без фейка.")
+			add("Фейки убивают соединения у этого провайдера: остаётся только проверка портов, без фейка.")
 			rec.Fake = ""
 		default:
-			add("Фейк заморозку не снял: fnport будет искать порты без него.")
+			add("Фейки заморозку не сняли: fnport будет искать порты без них.")
 		}
 	}
-	if rec.Fake != cur.Fake || rec.FakeTTL != cur.FakeTTL {
-		r.Recommend = &rec
-	}
+	port()
 	return r
 }

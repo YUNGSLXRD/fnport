@@ -310,20 +310,22 @@ function run() {
 	st.beacon = city(host);
 	if (!fake) return finish('freeze_no_fake');
 
-	// freeze: try the fake in use, then the spares on a shorter TTL range
+	// freeze: try the fake in use, then the spares on a shorter TTL range, also after one that
+	// kills flows (the DPI may treat another name differently). Unless a spare works, the verdict
+	// is the fake in use's
 	let res = scan_ttl(st, host, fake, 1, MAX_TTL);
-	for (let i = 1; res == 'fake_fails' && i < length(fakes) && i <= 2; i++) {
+	for (let i = 1; res != 'fake_works' && i < length(fakes) && i <= 2; i++) {
 		st.spares = st.spares ?? [];
 		let sp = { fake: fakes[i].name };
 		push(st.spares, sp);
-		res = scan_ttl(sp, host, fakes[i].data, 2, 5, st);
-		if (res == 'fake_works') {
+		if (scan_ttl(sp, host, fakes[i].data, 2, 6, st) == 'fake_works') {
+			res = 'spare_works';
 			st.recommended_ttl = sp.recommended_ttl;
 			st.works_from = sp.works_from;
 			st.recommended_fake = fakes[i].name;
 		}
 	}
-	return finish(res);
+	return finish(res == 'spare_works' ? 'fake_works' : res);
 }
 
 let cmd = ARGV[0];
