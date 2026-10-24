@@ -615,12 +615,12 @@ func startWarpWith(ws warpSettings) (*warpTunnel, error) {
 		if found >= 4 && abroad > 0 || i >= 16 {
 			break
 		}
-		rtt, colo, loc, ok := probeEndpoint(ws, ep)
+		rtt, colo, _, ok := probeEndpoint(ws, ep)
 		if !ok {
 			continue
 		}
 		found++
-		ru := loc == "RU"
+		ru := coloCountry[colo] == "RU"
 		if !ru {
 			abroad++
 		}
@@ -691,7 +691,11 @@ func (w *warpTunnel) exit() string {
 	if city == "" {
 		city = kv["colo"]
 	}
-	return fmt.Sprintf("%s (%s), %s, адрес %s", city, kv["colo"], kv["loc"], kv["ip"])
+	country := coloCountry[kv["colo"]]
+	if c := countryRU[country]; c != "" {
+		country = c
+	}
+	return fmt.Sprintf("%s (%s), %s, адрес %s", city, kv["colo"], country, kv["ip"])
 }
 
 // exitParts: Cloudflare's point, the country, the address; "" before exit() learned them

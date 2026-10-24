@@ -191,10 +191,23 @@ var coloCity = map[string]string{
 	"BRU": "Брюссель", "LUX": "Люксембург", "KIV": "Кишинёв", "MSQ": "Минск",
 }
 
+// coloCountry: where Cloudflare's point is. The trace's own country ("loc") is the WARP
+// address's, and Cloudflare gives those the user's country: always RU here
+var coloCountry = map[string]string{
+	"FRA": "DE", "AMS": "NL", "ARN": "SE", "HEL": "FI", "WAW": "PL", "LHR": "GB", "MAN": "GB", "CDG": "FR",
+	"MRS": "FR", "DME": "RU", "SVO": "RU", "LED": "RU", "KJA": "RU", "SVX": "RU", "OVB": "RU", "KZN": "RU",
+	"RIX": "LV", "TLL": "EE", "VNO": "LT", "PRG": "CZ", "VIE": "AT", "MUC": "DE", "DUS": "DE", "HAM": "DE",
+	"BER": "DE", "TXL": "DE", "STR": "DE", "CPH": "DK", "OSL": "NO", "MAD": "ES", "BCN": "ES", "MXP": "IT",
+	"FCO": "IT", "ZRH": "CH", "GVA": "CH", "KBP": "UA", "OTP": "RO", "SOF": "BG", "BUD": "HU", "IST": "TR",
+	"ALA": "KZ", "NQZ": "KZ", "TBS": "GE", "EVN": "AM", "DUB": "IE", "BRU": "BE", "LUX": "LU", "KIV": "MD",
+	"MSQ": "BY",
+}
+
 var countryRU = map[string]string{
 	"DE": "Германия", "NL": "Нидерланды", "SE": "Швеция", "FI": "Финляндия", "PL": "Польша", "GB": "Великобритания",
 	"FR": "Франция", "RU": "Россия", "LV": "Латвия", "EE": "Эстония", "LT": "Литва", "CZ": "Чехия", "AT": "Австрия",
 	"DK": "Дания", "NO": "Норвегия", "ES": "Испания", "IT": "Италия", "CH": "Швейцария", "UA": "Украина",
 	"RO": "Румыния", "BG": "Болгария", "HU": "Венгрия", "TR": "Турция", "KZ": "Казахстан", "GE": "Грузия",
 	"AM": "Армения", "IE": "Ирландия", "BE": "Бельгия", "LU": "Люксембург", "US": "США",
+	"MD": "Молдова", "BY": "Беларусь",
 }

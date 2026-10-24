@@ -608,17 +608,15 @@ func (v *view) mainColumn(gtx C, st state, titleC color.NRGBA, s, sub string, su
 }
 
 // exitName: "Москва (DME), Россия" for Cloudflare's point and country
-func exitName(colo, loc string) string {
+func exitName(colo string) string {
 	s := coloCity[colo]
 	if s == "" {
 		s = colo
 	} else {
 		s += " (" + colo + ")"
 	}
-	if c := countryRU[loc]; c != "" {
+	if c := countryRU[coloCountry[colo]]; c != "" {
 		s += ", " + c
-	} else if loc != "" {
-		s += ", " + loc
 	}
 	return s
 }
@@ -630,10 +628,10 @@ func (v *view) warpMainCard(gtx C) D {
 	if state == "" {
 		state = "подключается…"
 	}
-	var colo, loc string
+	var colo string
 	if w != nil {
 		dotC, state = colGreen, fmt.Sprintf("подключён, через него %d соединений", w.conns.Load())
-		colo, loc, _ = w.exitParts()
+		colo, _, _ = w.exitParts()
 	} else if strings.HasPrefix(state, "не подключился") {
 		dotC = colRed
 	}
@@ -650,8 +648,8 @@ func (v *view) warpMainCard(gtx C) D {
 			kids = append(kids, vspace(8), layout.Rigid(func(gtx C) D {
 				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 					layout.Rigid(v.label(13, colMuted, "Выход:").Layout), hspace(8),
-					layout.Rigid(func(gtx C) D { return drawFlag(gtx, loc, 13) }), hspace(7),
-					layout.Rigid(v.label(13, colText, exitName(colo, loc)).Layout))
+					layout.Rigid(func(gtx C) D { return drawFlag(gtx, coloCountry[colo], 13) }), hspace(7),
+					layout.Rigid(v.label(13, colText, exitName(colo)).Layout))
 			}))
 		}
 		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
@@ -1485,12 +1483,12 @@ func (v *view) warpCard(gtx C, s settings) D {
 		}
 		kids = append(kids, vspace(10), layout.Rigid(v.label(13, colMuted, info).Layout))
 		if w := v.ctl.warpTunnel(); w != nil {
-			if colo, loc, ip := w.exitParts(); colo != "" {
-				city := exitName(colo, loc)
+			if colo, _, ip := w.exitParts(); colo != "" {
+				city := exitName(colo)
 				kids = append(kids, vspace(8), layout.Rigid(func(gtx C) D {
 					return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 						layout.Rigid(v.label(13, colMuted, "Выход WARP:").Layout), hspace(8),
-						layout.Rigid(func(gtx C) D { return drawFlag(gtx, loc, 13) }), hspace(7),
+						layout.Rigid(func(gtx C) D { return drawFlag(gtx, coloCountry[colo], 13) }), hspace(7),
 						layout.Rigid(v.label(13, colText, city).Layout), hspace(8),
 						layout.Rigid(mono(v.label(12, colMuted, ip)).Layout))
 				}))
