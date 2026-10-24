@@ -661,8 +661,9 @@ func (w *warpTunnel) where() string {
 
 func (w *warpTunnel) close() { w.dev.Close() }
 
-// speedTest: up to 50 MB from Cloudflare's speed test for 15 s, straight and through WARP
-func speedTest(w *warpTunnel) string {
+// speedTest: up to 50 MB from Cloudflare's speed test for 15 s, straight and through WARP; with
+// fnport off, through a tunnel brought up for the test
+func speedTest(w *warpTunnel, ws warpSettings) string {
 	measure := func(dial func(netip.AddrPort) (net.Conn, error)) string {
 		tr := &http.Transport{DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
 			host, port, _ := net.SplitHostPort(addr)
@@ -697,10 +698,19 @@ func speedTest(w *warpTunnel) string {
 		return wnet.DialTCP(ctx, dst)
 	})
 	res := "напрямую " + direct
+	if w == nil && ws.ready() {
+		if tmp, err := startWarp(ws); err == nil {
+			defer tmp.close()
+			w = tmp
+			res += " (WARP поднят для замера через " + tmp.where() + ")"
+		} else {
+			res += ", WARP не подключился: " + err.Error()
+		}
+	}
 	if w != nil {
 		res += ", через WARP " + measure(w.dial)
-	} else {
-		res += ", WARP не подключён"
+	} else if !ws.ready() {
+		res += ", ключа WARP нет"
 	}
 	logf("WARP: скорость %s", res)
 	return res

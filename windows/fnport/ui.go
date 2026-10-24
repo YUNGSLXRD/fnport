@@ -1248,6 +1248,7 @@ func (v *view) warpTab(gtx C) D {
 					v.warpMsg, v.warpErr = err.Error(), true
 				} else {
 					v.warpMsg, v.warpErr = "Ключ получен и сохранён, WARP включён.", false
+					logf("WARP: ключ получен и сохранён в fnport.json")
 					v.draftFor = 0
 				}
 			}
@@ -1277,9 +1278,9 @@ func (v *view) warpTab(gtx C) D {
 		v.warpDraft = true
 	}
 	if v.warpSpeed.Clicked(gtx) && !v.speedBusy {
-		v.speedBusy, v.warpMsg, v.warpErr = true, "Меряю скорость: 15 с напрямую, потом 15 с через WARP…", false
+		v.speedBusy, v.warpMsg, v.warpErr = true, "Меряю скорость: 15 с напрямую, потом через WARP (если fnport выключен, сначала подниму WARP)…", false
 		go func() {
-			v.warpMsg = "Скорость: " + speedTest(v.ctl.warpTunnel())
+			v.warpMsg = "Скорость: " + speedTest(v.ctl.warpTunnel(), v.ctl.settings().Warp)
 			v.speedBusy = false
 			changes.Add(1)
 		}()
