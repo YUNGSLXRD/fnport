@@ -207,27 +207,57 @@ func warpHello() *utls.ClientHelloSpec {
 	}
 }
 
+// warpAPIAddrs: the API's addresses as Google's DNS gives them. Russian resolvers answer with
+// 8.47.69.0 and 8.6.112.0, which do not answer from Russia (October 2026)
+var warpAPIAddrs = []netip.Addr{netip.MustParseAddr("104.16.24.84"), netip.MustParseAddr("104.16.192.82")}
+
+// warpConnect: a TLS connection to the WARP API, trying its addresses in turn
+func warpConnect() (*utls.UConn, error) {
+	ips := append(append([]netip.Addr(nil), warpAPIAddrs...), lookupAll(warpAPI)...)
+	var last error
+	tried := map[netip.Addr]bool{}
+	for _, ip := range ips {
+		if tried[ip] {
+			continue
+		}
+		tried[ip] = true
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		raw, err := wnet.DialTCP(ctx, netip.AddrPortFrom(ip, 443))
+		if err != nil {
+			cancel()
+			last = fmt.Errorf("не соединяется с Cloudflare: %w", err)
+			continue
+		}
+		raw.SetDeadline(time.Now().Add(8 * time.Second))
+		tc := utls.UClient(raw, &utls.Config{ServerName: warpAPI, NextProtos: []string{"http/1.1"}}, utls.HelloCustom)
+		if err := tc.ApplyPreset(warpHello()); err != nil {
+			cancel()
+			raw.Close()
+			return nil, err
+		}
+		err = tc.HandshakeContext(ctx)
+		cancel()
+		if err != nil {
+			raw.Close()
+			last = fmt.Errorf("HTTPS к Cloudflare не прошёл: %w", err)
+			continue
+		}
+		raw.SetDeadline(time.Now().Add(20 * time.Second))
+		return tc, nil
+	}
+	if last == nil {
+		last = errors.New("не найден адрес " + warpAPI)
+	}
+	return nil, last
+}
+
 // warpCall: one HTTPS request to the WARP API, straight out of the physical adapter
 func warpCall(method, path, token string, body []byte) ([]byte, error) {
-	ips := lookupAll(warpAPI)
-	if len(ips) == 0 {
-		return nil, errors.New("не найден адрес " + warpAPI)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	raw, err := wnet.DialTCP(ctx, netip.AddrPortFrom(ips[0], 443))
+	tc, err := warpConnect()
 	if err != nil {
-		return nil, fmt.Errorf("не соединяется с Cloudflare: %w", err)
-	}
-	defer raw.Close()
-	raw.SetDeadline(time.Now().Add(20 * time.Second))
-	tc := utls.UClient(raw, &utls.Config{ServerName: warpAPI, NextProtos: []string{"http/1.1"}}, utls.HelloCustom)
-	if err := tc.ApplyPreset(warpHello()); err != nil {
 		return nil, err
 	}
-	if err := tc.HandshakeContext(ctx); err != nil {
-		return nil, fmt.Errorf("HTTPS к Cloudflare не прошёл: %w", err)
-	}
+	defer tc.Close()
 	req, _ := http.NewRequest(method, "https://"+warpAPI+"/"+warpAPIVersion+path, bytes.NewReader(body))
 	req.Header.Set("User-Agent", "1.1.1.1/6.38.9-5641 (Android 16.0.0)")
 	req.Header.Set("CF-Client-Version", "a-6.38.9-5641")
