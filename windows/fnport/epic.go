@@ -17,7 +17,7 @@ import (
 // The Epic services part of the ISP check: the login, Fortnite's services behind Cloudflare and a
 // larger page, straight from this PC (public DNS, the physical interface, not fnport's adapter).
 // It shows whether the ISP blocks Epic's HTTPS itself, apart from the freeze of the game's UDP.
-// Three requests: nothing to punish.
+// Six requests: nothing to punish.
 
 type epicProbe struct {
 	Label, Host, Path string
@@ -28,6 +28,10 @@ var epicProbes = []epicProbe{
 	{"сервисы Fortnite", "fortnite-public-service-prod11.ol.epicgames.com", "/fortnite/api/version"},
 	// a page well past 16 KB: the TSPU stops foreign HTTPS at about that much
 	{"загрузка", "www.epicgames.com", "/"},
+	// what "Play" needs besides the game server: AWS in the US
+	{"подбор матчей", "fortnite-matchmaking-public-service-live-eu.ol.epicgames.com", "/"},
+	{"пати", "party-service-prod.ol.epicgames.com", "/"},
+	{"чат и друзья", "xmpp-service-prod.ol.epicgames.com", "/"},
 }
 
 type epicResult struct {
@@ -85,7 +89,7 @@ func fetchDirect(p epicProbe, ip netip.Addr) (string, int64) {
 }
 
 func checkEpic(k *checker) []epicResult {
-	k.say("Сервисы Epic напрямую (вход, сервисы Fortnite, загрузка)…")
+	k.say("Сервисы Epic напрямую (вход, сервисы Fortnite, загрузка, подбор матчей, пати, чат)…")
 	var out []epicResult
 	for _, p := range epicProbes {
 		r := epicResult{Label: p.Label, State: "dns"}
