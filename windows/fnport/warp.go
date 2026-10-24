@@ -46,6 +46,7 @@ type warpSettings struct {
 	Jmax       int      `json:"jmax"`
 	I1         string   `json:"i1,omitempty"`      // AWG 1.5 signature packet, written as AmneziaWG does
 	Domains    []string `json:"domains,omitempty"` // what goes through WARP; empty = Epic's (warpDomains)
+	Always     bool     `json:"always"`            // through WARP at once, not trying directly first
 
 	// fnport's fake before the tunnel's first packet to an endpoint, at the fake's TTL: the TSPU
 	// freezes UDP to Cloudflare as to AWS, after the handshake and a few packets
@@ -868,6 +869,7 @@ func (b *physBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 func runWarp(ws warpSettings, dev wnet.Dev, routed []netip.Prefix, t *tcpRelay) {
 	names := ws.domains()
 	t.names.Store(&names)
+	t.always.Store(ws.Always)
 	adder, _ := dev.(interface{ AddRoute(netip.Prefix) error })
 	known := map[netip.Addr]bool{}
 	refresh := func() {

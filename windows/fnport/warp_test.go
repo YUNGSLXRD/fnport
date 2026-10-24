@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/tls"
 	"net"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -130,5 +131,42 @@ func TestSplitRecords(t *testing.T) {
 	}
 	if strings.Contains(string(first), "example.org") {
 		t.Fatal("the whole name in the first record")
+	}
+}
+
+// tryDirect: a server that answers the ClientHello is kept, a silent one is not
+func TestTryDirect(t *testing.T) {
+	listen := func(answer bool) netip.AddrPort {
+		ln, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { ln.Close() })
+		go func() {
+			for {
+				c, err := ln.Accept()
+				if err != nil {
+					return
+				}
+				go func() {
+					buf := make([]byte, 64)
+					c.Read(buf)
+					if answer {
+						c.Write([]byte("server hello"))
+					}
+					time.Sleep(6 * time.Second)
+					c.Close()
+				}()
+			}
+		}()
+		return netip.MustParseAddrPort(ln.Addr().String())
+	}
+	if c, first := tryDirect(listen(true), []byte("client hello")); c == nil || string(first) != "server hello" {
+		t.Fatalf("an answering server dropped: %q", first)
+	} else {
+		c.Close()
+	}
+	if c, _ := tryDirect(listen(false), []byte("client hello")); c != nil {
+		t.Fatal("a silent server kept")
 	}
 }

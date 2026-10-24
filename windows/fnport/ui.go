@@ -151,6 +151,7 @@ type view struct {
 	budget     widget.Editor
 	passthru   widget.Bool
 	warpOn     widget.Bool
+	warpAlways widget.Bool
 	warpPage   widget.List
 	warpList   widget.Editor // the names that go through WARP, one per line
 	warpSave   widget.Clickable
@@ -1330,6 +1331,19 @@ func (v *view) warpTab(gtx C) D {
 	} else {
 		v.warpOn.Value = s.Warp.Enabled
 	}
+	if v.warpAlways.Update(gtx) {
+		always := v.warpAlways.Value
+		go func() {
+			cur := v.ctl.settings()
+			cur.Warp.Always = always
+			if err := v.ctl.apply(cur); err != nil {
+				v.warpMsg, v.warpErr = err.Error(), true
+			}
+			changes.Add(1)
+		}()
+	} else {
+		v.warpAlways.Value = s.Warp.Always
+	}
 	if !v.warpDraft {
 		v.warpList.SetText(strings.Join(s.Warp.domains(), "\n"))
 		v.warpDraft = true
@@ -1453,7 +1467,11 @@ func (v *view) warpCard(gtx C, s settings) D {
 			"через Cloudflare WARP (AmneziaWG), а игра — напрямую, как раньше. Ключ WARP ваш и бесплатный: программа "+
 			"получает его у Cloudflare одной кнопкой. Что именно идёт через WARP — в списке ниже.")
 		kids = append(kids, layout.Rigid(func(gtx C) D {
-			cb := material.CheckBox(v.th, &v.warpOn, "Пускать сервисы Epic через WARP")
+			cb := material.CheckBox(v.th, &v.warpOn, "Пускать сервисы Epic через WARP, если напрямую они не открываются")
+			cb.Color, cb.IconColor, cb.Size = colText, colGreen, unit.Dp(20)
+			return cb.Layout(gtx)
+		}), layout.Rigid(func(gtx C) D {
+			cb := material.CheckBox(v.th, &v.warpAlways, "Всегда через WARP, не пробуя напрямую")
 			cb.Color, cb.IconColor, cb.Size = colText, colGreen, unit.Dp(20)
 			return cb.Layout(gtx)
 		}))

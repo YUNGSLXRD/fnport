@@ -39,6 +39,8 @@ type tcpRelay struct {
 	epicIPs atomic.Pointer[map[netip.Addr]bool]
 	names   atomic.Pointer[[]string] // the names that go through WARP
 	seen    sync.Map                 // names already logged as going through WARP
+	blocked sync.Map                 // name -> when it did not answer directly
+	always  atomic.Bool              // every listed name through WARP, not trying directly
 	state   atomic.Value             // string: how WARP is doing, for the window and the report
 }
 
@@ -131,8 +133,11 @@ func (t *tcpRelay) epicIP(a netip.Addr) bool {
 }
 
 // acceptSplit: with WARP up, the handshake with the PC comes first, then the name it asks for
-// decides: Epic's go through WARP, the rest out directly as usual. A failed WARP dial falls
-// back to direct
+// decides. A listed name goes out directly first: when the server does not answer the
+// ClientHello within seconds (blocked by name or address), the connection is made again through
+// WARP, and the name goes through WARP for the next 10 minutes. Directly is the program's
+// behaviour without WARP, so what works directly keeps working (WARP's addresses are not liked
+// everywhere: Fortnite's content keys failed through it at home)
 func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort, w *warpTunnel) {
 	var wq waiter.Queue
 	ep, terr := r.CreateEndpoint(&wq)
@@ -148,22 +153,40 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort, w *w
 		hello = readHello(in)
 		name = sniOf(hello)
 	}
+	shown := name
+	if shown == "" {
+		shown = dst.String()
+	}
 	var out net.Conn
+	var first []byte // the server's first answer, read while deciding
+	sent := false    // the ClientHello went out on out already
+	var counted *countConn
 	if t.warpName(name) || (name == "" && t.epicIP(dst.Addr())) {
-		shown := name
-		if shown == "" {
-			shown = dst.String()
-		}
-		if c, err := w.dial(dst); err != nil {
-			w.fails.Add(1)
-			if _, dup := t.seen.LoadOrStore("fail "+shown, true); !dup {
-				logf("WARP: %s не открылось через WARP (%v), пошло напрямую", maskAddresses(shown), err)
+		viaWarp := t.always.Load() || t.blockedRecently(shown)
+		if !viaWarp {
+			if out, first = tryDirect(dst, hello); out != nil {
+				sent = len(hello) > 0
+			} else {
+				viaWarp = true
+				t.blocked.Store(shown, time.Now())
+				if _, dup := t.seen.LoadOrStore("blocked "+shown, true); !dup {
+					logf("WARP: %s напрямую не отвечает — через WARP", maskAddresses(shown))
+				}
 			}
-		} else {
-			out = c
-			w.conns.Add(1)
-			if _, dup := t.seen.LoadOrStore(shown, true); !dup {
-				logf("WARP: %s", maskAddresses(shown))
+		}
+		if viaWarp {
+			if c, err := w.dial(dst); err != nil {
+				w.fails.Add(1)
+				if _, dup := t.seen.LoadOrStore("fail "+shown, true); !dup {
+					logf("WARP: %s не открылось через WARP (%v), пошло напрямую", maskAddresses(shown), err)
+				}
+			} else {
+				counted = &countConn{Conn: c}
+				out = counted
+				w.conns.Add(1)
+				if _, dup := t.seen.LoadOrStore(shown, true); !dup {
+					logf("WARP: %s", maskAddresses(shown))
+				}
 			}
 		}
 	}
@@ -178,8 +201,15 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort, w *w
 		}
 		out = c
 	}
-	if len(hello) > 0 {
+	if len(hello) > 0 && !sent {
 		if _, err := out.Write(hello); err != nil {
+			in.Close()
+			out.Close()
+			return
+		}
+	}
+	if len(first) > 0 {
+		if _, err := in.Write(first); err != nil {
 			in.Close()
 			out.Close()
 			return
@@ -189,6 +219,64 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort, w *w
 	t.active.Add(1)
 	defer t.active.Add(-1)
 	splice(in, out)
+	if counted != nil && counted.n.Load() == 0 {
+		w.fails.Add(1)
+		if _, dup := t.seen.LoadOrStore("empty "+shown, true); !dup {
+			logf("WARP: %s через WARP ничего не вернул", maskAddresses(shown))
+		}
+	}
+}
+
+func (t *tcpRelay) blockedRecently(name string) bool {
+	v, ok := t.blocked.Load(name)
+	return ok && time.Since(v.(time.Time)) < 10*time.Minute
+}
+
+// tryDirect: a direct connection that answered the ClientHello, with the answer's first bytes;
+// nil when it did not connect or kept silent. Without a ClientHello (not HTTPS) only connecting
+// counts
+func tryDirect(dst netip.AddrPort, hello []byte) (net.Conn, []byte) {
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	c, err := wnet.DialTCP(ctx, dst)
+	cancel()
+	if err != nil {
+		return nil, nil
+	}
+	if len(hello) == 0 {
+		return c, nil
+	}
+	if _, err := c.Write(hello); err != nil {
+		c.Close()
+		return nil, nil
+	}
+	c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	buf := make([]byte, 16<<10)
+	n, err := c.Read(buf)
+	c.SetReadDeadline(time.Time{})
+	if n == 0 || err != nil && n == 0 {
+		c.Close()
+		return nil, nil
+	}
+	return c, buf[:n]
+}
+
+// countConn counts what came back
+type countConn struct {
+	net.Conn
+	n atomic.Int64
+}
+
+func (c *countConn) Read(b []byte) (int, error) {
+	n, err := c.Conn.Read(b)
+	c.n.Add(int64(n))
+	return n, err
+}
+
+func (c *countConn) CloseWrite() error {
+	if cw, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return c.Conn.Close()
 }
 
 // splice copies both ways; when one side ends, the other gets the end too
