@@ -92,10 +92,11 @@ const (
 	tabMain tab = iota
 	tabSummary
 	tabLog
+	tabWarp
 	tabSettings
 )
 
-var tabNames = []string{"Главная", "Сводка", "Журнал", "Настройки"}
+var tabNames = []string{"Главная", "Сводка", "Журнал", "WARP", "Настройки"}
 
 type view struct {
 	ctl    *controller
@@ -111,7 +112,7 @@ type view struct {
 	tab        tab
 	prevTab    tab
 	tabSince   time.Time
-	tabs       [4]widget.Clickable
+	tabs       [5]widget.Clickable
 	navItemH   int
 	animating  bool // a transition is running: ask for the next frame
 	dark       bool
@@ -150,6 +151,7 @@ type view struct {
 	budget     widget.Editor
 	passthru   widget.Bool
 	warpOn     widget.Bool
+	warpLogs   widget.List
 	warpReg    widget.Clickable
 	warpBusy   bool
 	warpMsg    string
@@ -176,6 +178,7 @@ func newView(ctl *controller, ping *pinger, check *checker, open func(string), o
 	v.flowList.Axis = layout.Vertical
 	v.mainList.Axis = layout.Vertical
 	v.logs.Axis = layout.Vertical
+	v.warpLogs.Axis = layout.Vertical
 	v.page.Axis = layout.Vertical
 	v.ports.SingleLine = true
 	for _, e := range []*widget.Editor{&v.batch, &v.rounds, &v.budget} {
@@ -258,6 +261,7 @@ const (
 	glyphLog
 	glyphGear
 	glyphPower
+	glyphCloud
 )
 
 func drawGlyph(gtx C, g glyph, c color.NRGBA, size unit.Dp, width float32) D {
@@ -308,6 +312,11 @@ func drawGlyph(gtx C, g glyph, c color.NRGBA, size unit.Dp, width float32) D {
 			s, cs := float32(math.Sin(a)), float32(math.Cos(a))
 			line([2]float32{12 + 7*s, 12 - 7*cs}, [2]float32{12 + 10*s, 12 - 10*cs})
 		}
+	case glyphCloud:
+		arc(7.5, 14.5, 4, math.Pi, 2*math.Pi)
+		arc(12.5, 10.5, 5.5, -1.75, 1.6)
+		arc(17.5, 15, 3.5, 0, math.Pi)
+		line([2]float32{7.5, 18.5}, [2]float32{17.5, 18.5})
 	case glyphPower:
 		arc(12, 13, 8, 0.62, 2*math.Pi-0.62)
 		line([2]float32{12, 2.5}, [2]float32{12, 11.5})
@@ -422,6 +431,8 @@ func (v *view) frame(gtx C) {
 					return v.summary(gtx)
 				case tabLog:
 					return v.logTab(gtx)
+				case tabWarp:
+					return v.warpTab(gtx)
 				case tabSettings:
 					return v.settingsTab(gtx)
 				}
@@ -437,7 +448,7 @@ func (v *view) sidebar(gtx C) D {
 	w := gtx.Dp(200)
 	gtx.Constraints = layout.Exact(image.Pt(w, gtx.Constraints.Max.Y))
 	paint.FillShape(gtx.Ops, colSide, clip.Rect{Max: gtx.Constraints.Max}.Op())
-	glyphs := []glyph{glyphHome, glyphList, glyphLog, glyphGear}
+	glyphs := []glyph{glyphHome, glyphList, glyphLog, glyphCloud, glyphGear}
 	return layout.Inset{Top: 22, Bottom: 18, Left: 14, Right: 14}.Layout(gtx, func(gtx C) D {
 		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 			layout.Rigid(func(gtx C) D {
@@ -954,7 +965,6 @@ func (v *view) takeDraft() {
 	v.rounds.SetText(fmt.Sprint(s.MaxRounds))
 	v.budget.SetText(fmt.Sprint(s.ProbeBudget))
 	v.passthru.Value = s.Passthrough
-	v.warpOn.Value = s.Warp.Enabled
 	v.theme.Value = s.Theme
 	if v.theme.Value == "" {
 		v.theme.Value = "system"
@@ -965,7 +975,6 @@ func (v *view) takeDraft() {
 func (v *view) draft() settings {
 	s := v.ctl.settings()
 	s.Adapter, s.Fake, s.FakeTTL, s.Passthrough, s.Theme = v.adapter.Value, v.fake.Value, v.ttl, v.passthru.Value, v.theme.Value
-	s.Warp.Enabled = v.warpOn.Value
 	s.Routes = nil
 	for _, l := range strings.Split(v.routes.Text(), "\n") {
 		if l = strings.TrimSpace(l); l != "" {
@@ -1020,26 +1029,6 @@ func (v *view) settingsTab(gtx C) D {
 			changes.Add(1)
 		}()
 	}
-	if v.warpReg.Clicked(gtx) && !v.warpBusy {
-		v.warpBusy, v.warpMsg, v.warpErr = true, "Получаю ключ у Cloudflare…", false
-		go func() {
-			cur := v.ctl.settings()
-			if ws, err := registerWarp(cur.Warp); err != nil {
-				v.warpMsg, v.warpErr = "Не получилось: "+err.Error(), true
-			} else {
-				ws.Enabled = true
-				cur.Warp = ws
-				if err := v.ctl.apply(cur); err != nil {
-					v.warpMsg, v.warpErr = err.Error(), true
-				} else {
-					v.warpMsg, v.warpErr = "Ключ получен и сохранён, WARP включён.", false
-					v.draftFor = 0
-				}
-			}
-			v.warpBusy = false
-			changes.Add(1)
-		}()
-	}
 	running, lines, res, wait := v.check.state()
 	if v.runCheck.Clicked(gtx) && !running && wait <= 0 {
 		v.check.start(v.ctl.settings())
@@ -1069,7 +1058,6 @@ func (v *view) settingsTab(gtx C) D {
 		v.themeCard,
 		v.adapterCard,
 		v.fakeCard,
-		v.warpCard,
 		v.advancedCard,
 		v.aboutCard,
 	}
@@ -1230,11 +1218,78 @@ func (v *view) fakeCard(gtx C) D {
 	})
 }
 
-// warpCard: Epic's services through the user's own WARP, the game direct
-func (v *view) warpCard(gtx C) D {
+// warpTab: Epic's services through the user's own WARP, the game direct. The switch and the
+// key take effect at once, without "Save"
+func (v *view) warpTab(gtx C) D {
 	s := v.ctl.settings()
+	if v.warpReg.Clicked(gtx) && !v.warpBusy {
+		v.warpBusy, v.warpMsg, v.warpErr = true, "Получаю ключ у Cloudflare…", false
+		go func() {
+			cur := v.ctl.settings()
+			if ws, err := registerWarp(cur.Warp); err != nil {
+				v.warpMsg, v.warpErr = "Не получилось: "+err.Error(), true
+			} else {
+				ws.Enabled = true
+				cur.Warp = ws
+				if err := v.ctl.apply(cur); err != nil {
+					v.warpMsg, v.warpErr = err.Error(), true
+				} else {
+					v.warpMsg, v.warpErr = "Ключ получен и сохранён, WARP включён.", false
+					v.draftFor = 0
+				}
+			}
+			v.warpBusy = false
+			changes.Add(1)
+		}()
+	}
+	if v.warpOn.Update(gtx) {
+		on := v.warpOn.Value
+		go func() {
+			cur := v.ctl.settings()
+			cur.Warp.Enabled = on
+			if err := v.ctl.apply(cur); err != nil {
+				v.warpMsg, v.warpErr = err.Error(), true
+			} else if on && !cur.Warp.ready() {
+				v.warpMsg, v.warpErr = "Включено, но ключа ещё нет: нажмите «Получить ключ WARP».", false
+			} else {
+				v.warpMsg, v.warpErr = "", false
+			}
+			changes.Add(1)
+		}()
+	} else {
+		v.warpOn.Value = s.Warp.Enabled
+	}
+	var lines []string
+	for _, l := range logLines() {
+		if strings.Contains(l, "WARP") {
+			lines = append(lines, l)
+		}
+	}
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		v.title("WARP"),
+		layout.Rigid(func(gtx C) D { return v.warpCard(gtx, s) }),
+		vspace(12),
+		layout.Flexed(1, func(gtx C) D {
+			gtx.Constraints.Min = gtx.Constraints.Max
+			return v.card(gtx, func(gtx C) D {
+				if len(lines) == 0 {
+					return v.label(13, colMuted, "Здесь будет видно, как подключается WARP и какие сервисы Epic идут через него.").Layout(gtx)
+				}
+				v.warpLogs.ScrollToEnd = len(lines)*gtx.Dp(19) > gtx.Constraints.Max.Y
+				return v.list(gtx, &v.warpLogs, len(lines), func(gtx C, i int) D {
+					l := mono(v.label(12, colText, lines[i]))
+					if strings.Contains(lines[i], "не подключился") {
+						l.Color = colYellow
+					}
+					return layout.Inset{Bottom: 3}.Layout(gtx, l.Layout)
+				})
+			})
+		}))
+}
+
+func (v *view) warpCard(gtx C, s settings) D {
 	return v.card(gtx, func(gtx C) D {
-		kids := v.sectionTitle("WARP для сервисов Epic", "Если провайдер режет вход, магазин или загрузки Epic, они пойдут "+
+		kids := v.sectionTitle("Сервисы Epic через WARP", "Если провайдер режет вход, магазин или загрузки Epic, они пойдут "+
 			"через Cloudflare WARP (AmneziaWG), а игра — напрямую, как раньше. Ключ WARP ваш и бесплатный: программа "+
 			"получает его у Cloudflare одной кнопкой.")
 		kids = append(kids, layout.Rigid(func(gtx C) D {
@@ -1248,6 +1303,8 @@ func (v *view) warpCard(gtx C) D {
 		}
 		if st := v.ctl.warpStatus(); st != "" {
 			info += " Сейчас WARP " + st + "."
+		} else if s.Warp.Enabled && s.Warp.ready() {
+			info += " WARP подключится, когда вы включите fnport."
 		}
 		label := "Получить ключ WARP"
 		if s.Warp.ready() {

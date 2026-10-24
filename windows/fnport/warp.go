@@ -49,7 +49,7 @@ func (w warpSettings) ready() bool { return w.PrivateKey != "" && w.Address != "
 
 // epicSuffixes: names whose connections go through WARP (and anything under them)
 var epicSuffixes = []string{"epicgames.com", "epicgames.dev", "epicgames.net", "epicgamescdn.com",
-	"unrealengine.com", "fortnite.com", "easyanticheat.net", "epicgames-download1.akamaized.net"}
+	"unrealengine.com", "fortnite.com", "easyanticheat.net", "epicgames-download1.akamaized.net", "egdownload.fastly-edge.com"}
 
 func epicName(h string) bool {
 	h = strings.ToLower(strings.TrimSuffix(h, "."))
@@ -62,7 +62,8 @@ func epicName(h string) bool {
 }
 
 // epicHosts: resolved now and then, their addresses routed into the adapter so the program sees
-// those connections at all (AWS in the US for the login and friends, Cloudflare for the rest)
+// those connections at all (AWS in the US for the login and friends, Cloudflare for most of the
+// rest, Akamai, CloudFront and Fastly for downloads and static files)
 var epicHosts = []string{
 	"account-public-service-prod.ol.epicgames.com", "account-public-service-prod03.ol.epicgames.com",
 	"fortnite-public-service-prod11.ol.epicgames.com", "lightswitch-public-service-prod.ol.epicgames.com",
@@ -75,10 +76,16 @@ var epicHosts = []string{
 	"www.epicgames.com", "store.epicgames.com", "egs-platform-service.store.epicgames.com", "api.epicgames.dev",
 	"epicgames-download1.akamaized.net", "download.epicgames.com", "fastly-download.epicgames.com",
 	"cloudflare.epicgamescdn.com", "store-site-backend-static.ak.epicgames.com",
+	"download2.epicgames.com", "download3.epicgames.com", "download4.epicgames.com", "egdownload.fastly-edge.com",
+	"cdn1.epicgames.com", "cdn2.epicgames.com", "cdn1.unrealengine.com", "cdn2.unrealengine.com",
+	"static-assets-prod.epicgames.com", "shared-static-prod.epicgames.com", "accounts.epicgames.com",
+	"talon-service-prod.ecosec.on.epicgames.com", "tracking.epicgames.com",
+	"launcher-website-prod07.ol.epicgames.com", "fortnitecontent-website-prod07.ol.epicgames.com",
 }
 
-// lookupAll: every public IPv4 address of host, from public DNS (past a router's fakeip), else
-// from the system's
+// lookupAll: every public IPv4 address of host from public DNS (past a router's fakeip) and from
+// the system's: CDNs like Akamai answer by the resolver's location, and the launcher asks the
+// system's
 func lookupAll(host string) []netip.Addr {
 	try := func(r *net.Resolver) []netip.Addr {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -92,16 +99,17 @@ func lookupAll(host string) []netip.Addr {
 		}
 		return out
 	}
+	out := try(net.DefaultResolver)
 	for _, server := range []string{"77.88.8.8:53", "8.8.8.8:53"} {
 		r := &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			var d net.Dialer
 			return d.DialContext(ctx, "udp", server)
 		}}
 		if ips := try(r); len(ips) > 0 {
-			return ips
+			return append(out, ips...)
 		}
 	}
-	return try(net.DefaultResolver)
+	return out
 }
 
 var fakeIPNet = netip.MustParsePrefix("198.18.0.0/15")

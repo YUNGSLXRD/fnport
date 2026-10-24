@@ -92,7 +92,7 @@ func TestPreview(t *testing.T) {
 		st    state
 		theme string
 	}{{"main-on", tabMain, stateOn, "dark"}, {"main-off", tabMain, stateOff, "dark"}, {"summary", tabSummary, stateOn, "dark"},
-		{"log", tabLog, stateOn, "dark"}, {"settings", tabSettings, stateOff, "dark"}, {"settings2", tabSettings, stateOff, "dark"},
+		{"log", tabLog, stateOn, "dark"}, {"warp", tabWarp, stateOff, "dark"}, {"settings", tabSettings, stateOff, "dark"}, {"settings2", tabSettings, stateOff, "dark"},
 		{"main-light", tabMain, stateOn, "light"}, {"main-starting", tabMain, stateStarting, "dark"}, {"summary-light", tabSummary, stateOn, "light"}} {
 		v.tab, ctl.st, ctl.set.Theme = tc.tab, tc.st, tc.theme
 		v.ringAnim, v.glyphAnim, v.fillAnim, v.titleAnim = colorAnim{}, colorAnim{}, colorAnim{}, colorAnim{}
