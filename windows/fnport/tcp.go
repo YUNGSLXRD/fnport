@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/netip"
@@ -171,10 +172,7 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort, w *w
 				out = counted
 			} else {
 				viaWarp = true
-				t.blocked.Store(shown, time.Now())
-				if _, dup := t.seen.LoadOrStore("blocked "+shown, true); !dup {
-					logf("WARP: %s напрямую не отвечает — через WARP", maskAddresses(shown))
-				}
+				t.markBlocked(shown, "напрямую не отвечает — через WARP")
 			}
 		}
 		if viaWarp {
@@ -229,10 +227,7 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort, w *w
 	if listed && !viaWarp && counted != nil {
 		n := counted.n.Load()
 		if time.Since(start) > 15*time.Second && n > 1<<10 && n < 128<<10 {
-			t.blocked.Store(shown, time.Now())
-			if _, dup := t.seen.LoadOrStore("frozen "+shown, true); !dup {
-				logf("WARP: %s напрямую замёрзло на %d КБ — дальше через WARP", maskAddresses(shown), n>>10)
-			}
+			t.markBlocked(shown, fmt.Sprintf("напрямую замёрзло на %d КБ — дальше через WARP", n>>10))
 		}
 		return
 	}
@@ -241,6 +236,21 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort, w *w
 		if _, dup := t.seen.LoadOrStore("empty "+shown, true); !dup {
 			logf("WARP: %s через WARP ничего не вернул", maskAddresses(shown))
 		}
+	}
+}
+
+// markBlocked: the site through WARP from now on; at the second one the network is taken for
+// one that freezes Epic, everything listed goes through WARP and the network is remembered
+func (t *tcpRelay) markBlocked(name, why string) {
+	if _, dup := t.blocked.Load(name); !dup {
+		logf("WARP: %s %s", maskAddresses(name), why)
+	}
+	t.blocked.Store(name, time.Now())
+	n := 0
+	t.blocked.Range(func(_, _ any) bool { n++; return true })
+	if n >= 2 && !t.always.Swap(true) {
+		logf("WARP: напрямую замерзают уже %d сайта Epic — всё из списка теперь через WARP, сеть запомнена на 3 дня", n)
+		rememberNetworkFreezes()
 	}
 }
 

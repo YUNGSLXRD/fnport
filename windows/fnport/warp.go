@@ -17,6 +17,8 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -612,7 +614,9 @@ func startWarpWith(ws warpSettings) (*warpTunnel, error) {
 	best, bestRTT, bestRU := "", time.Duration(0), true
 	found, abroad := 0, 0
 	for i, ep := range warpEndpoints(ws.Endpoint) {
-		if found >= 4 && abroad > 0 || i >= 16 {
+		// every range first: they lead to different points (home: 96–97 Frankfurt, 98–99 Moscow,
+		// 162.159.192 Helsinki)
+		if found >= 4 && abroad > 0 && i >= 5 || i >= 16 {
 			break
 		}
 		rtt, colo, _, ok := probeEndpoint(ws, ep)
@@ -892,6 +896,10 @@ func runWarp(ws warpSettings, dev wnet.Dev, routed []netip.Prefix, t *tcpRelay) 
 	names := ws.domains()
 	t.names.Store(&names)
 	t.always.Store(ws.Always)
+	if !ws.Always && networkFreezes() {
+		t.always.Store(true)
+		logf("WARP: в этой сети сервисы Epic напрямую замерзали — всё из списка сразу через WARP")
+	}
 	adder, _ := dev.(interface{ AddRoute(netip.Prefix) error })
 	known := map[netip.Addr]bool{}
 	refresh := func() {
@@ -980,6 +988,53 @@ func runWarp(ws warpSettings, dev wnet.Dev, routed []netip.Prefix, t *tcpRelay) 
 				}
 			}
 		}
+	}
+}
+
+// The networks where Epic's sites froze directly, remembered for 3 days in warp-state.json next to
+// the program: learning them site by site took restarts of the game every evening
+
+func warpStatePath() string { return filepath.Join(appDir(), "warp-state.json") }
+
+// networkKey: this PC's address on the adapter towards the internet, telling home from a club
+func networkKey() string {
+	if !wnet.PhysAddr.IsValid() {
+		return ""
+	}
+	return wnet.PhysAddr.String()
+}
+
+func loadWarpState() map[string]time.Time {
+	m := map[string]time.Time{}
+	if b, err := os.ReadFile(warpStatePath()); err == nil {
+		json.Unmarshal(b, &m)
+	}
+	return m
+}
+
+func networkFreezes() bool {
+	k := networkKey()
+	if k == "" {
+		return false
+	}
+	at, ok := loadWarpState()[k]
+	return ok && time.Since(at) < 72*time.Hour
+}
+
+func rememberNetworkFreezes() {
+	k := networkKey()
+	if k == "" {
+		return
+	}
+	m := loadWarpState()
+	m[k] = time.Now()
+	for key, at := range m {
+		if time.Since(at) > 72*time.Hour {
+			delete(m, key)
+		}
+	}
+	if b, err := json.Marshal(m); err == nil {
+		os.WriteFile(warpStatePath(), b, 0o644)
 	}
 }
 
