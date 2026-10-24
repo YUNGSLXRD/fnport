@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/ecdh"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -418,13 +419,15 @@ func (w *warpTunnel) findEndpoint(first string) bool {
 
 // exit: where WARP comes out, from Cloudflare's trace through the tunnel: "FRA, DE, 104.28.x.x"
 func (w *warpTunnel) exit() string {
-	c, err := w.dial(netip.MustParseAddrPort("1.1.1.1:80"))
+	raw, err := w.dial(netip.MustParseAddrPort("1.1.1.1:443"))
 	if err != nil {
 		return ""
 	}
-	defer c.Close()
-	c.SetDeadline(time.Now().Add(8 * time.Second))
-	fmt.Fprint(c, "GET /cdn-cgi/trace HTTP/1.1\r\nHost: 1.1.1.1\r\nConnection: close\r\n\r\n")
+	defer raw.Close()
+	raw.SetDeadline(time.Now().Add(8 * time.Second))
+	// plain HTTP gets a redirect to HTTPS now
+	c := tls.Client(raw, &tls.Config{ServerName: "one.one.one.one"})
+	fmt.Fprint(c, "GET /cdn-cgi/trace HTTP/1.1\r\nHost: one.one.one.one\r\nConnection: close\r\n\r\n")
 	b, _ := io.ReadAll(io.LimitReader(c, 8192))
 	kv := map[string]string{}
 	for _, l := range strings.Split(string(b), "\n") {
@@ -684,6 +687,13 @@ func runWarp(ws warpSettings, dev wnet.Dev, routed []netip.Prefix, t *tcpRelay) 
 				t.warp.Store(w)
 				logf("WARP снова подключён, через %s", w.where())
 				changes.Add(1)
+			}
+			if colo, _, _ := w.exitParts(); ok && colo == "" {
+				if ex := w.exit(); ex != "" {
+					w.exitInfo.Store(ex)
+					logf("WARP: выход — %s", ex)
+					changes.Add(1)
+				}
 			}
 		}
 	}
