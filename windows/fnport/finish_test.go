@@ -16,7 +16,7 @@ func TestFinishPortByFact(t *testing.T) {
 		{checkResult{PortKept: "no", Freeze: "yes", Fake: "works", TTL: 3, FakeFile: "quic_initial_vk_com.bin"},
 			"фейк с ПК снимает заморозку", "OpenWrt", true},
 		{checkResult{PortKept: "no", Freeze: "yes", Fake: "kills"}, "платная услуга", "", true},
-		{checkResult{PortKept: "no", Freeze: "no", Fake: "harmless"}, "заморозки нет — это не мешает", "OpenWrt", false},
+		{checkResult{PortKept: "no", Freeze: "no", Fake: "harmless"}, "заморозки на маяках нет — пока это не мешает", "OpenWrt", false},
 		{checkResult{PortKept: "yes", Freeze: "yes", Fake: "fails"}, "подбирает порты сам", "белый IP", false},
 		{checkResult{PortKept: "no", Freeze: "unclear", Epic: []epicResult{{"вход", "frozen", 16000}}},
 			"Сервисы Epic напрямую не открываются (вход)", "", false},

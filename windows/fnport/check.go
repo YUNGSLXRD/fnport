@@ -356,7 +356,7 @@ func finish(r *checkResult, cur settings) *checkResult {
 			add("Роутер сохраняет порт: fnport на ПК подбирает порты сам.")
 		case r.PortKept != "no":
 		case r.Freeze == "no":
-			add("Роутер или провайдер меняет порт, но заморозки нет — это не мешает.")
+			add("Роутер или провайдер меняет порт, но заморозки на маяках нет — пока это не мешает.")
 		case r.Freeze == "yes" && r.Fake == "works":
 			add("Роутер или провайдер меняет порт, но фейк с ПК снимает заморозку: fnport на ПК работает, " +
 				"только без подбора портов.")
@@ -373,7 +373,9 @@ func finish(r *checkResult, cur settings) *checkResult {
 	case "unclear":
 		add("Ответов мало (эхо Epic ограничивает или связь теряет пакеты): попробуйте позже.")
 	case "no":
-		add("Заморозки сейчас нет.")
+		// seen in a club: beacons 30/30, a game server in the same city froze two ports of four
+		add("На маяках Epic заморозки сейчас нет. На игровых серверах она бывает и тогда: если матчи не находятся " +
+			"или вылетают, оставьте fnport включённым — без заморозки он не мешает.")
 		if r.Fake == "kills" {
 			add("Фейк здесь убивает соединения — лучше его выключить.")
 			rec.Fake = ""

@@ -94,7 +94,7 @@ func (c *controller) report(r *checkResult) string {
 	if r.FakeCheck != nil {
 		line("Фейк при текущем TTL", fmt.Sprintf("TTL %d: %s", r.FakeCheck.TTL, joinReplies(r.FakeCheck.Replies)))
 	}
-	res := map[string]string{"yes": "заморозка есть", "no": "заморозки нет", "no_reply": "маяки не ответили", "unclear": "неясно"}[r.Freeze]
+	res := map[string]string{"yes": "заморозка есть", "no": "на маяках заморозки нет", "no_reply": "маяки не ответили", "unclear": "неясно"}[r.Freeze]
 	if f := map[string]string{"works": "фейк работает", "kills": "фейк убивает соединения", "fails": "фейк не помогает",
 		"harmless": "фейк не мешает"}[r.Fake]; f != "" {
 		res += ", " + f
