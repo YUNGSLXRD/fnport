@@ -156,6 +156,8 @@ type view struct {
 	warpSave   widget.Clickable
 	warpReset  widget.Clickable
 	warpDraft  bool // the list editor holds the saved list
+	warpSpeed  widget.Clickable
+	speedBusy  bool
 	warpReg    widget.Clickable
 	warpBusy   bool
 	warpMsg    string
@@ -1268,6 +1270,14 @@ func (v *view) warpTab(gtx C) D {
 		v.warpList.SetText(strings.Join(s.Warp.domains(), "\n"))
 		v.warpDraft = true
 	}
+	if v.warpSpeed.Clicked(gtx) && !v.speedBusy {
+		v.speedBusy, v.warpMsg, v.warpErr = true, "Меряю скорость: 10 МБ напрямую, потом через WARP…", false
+		go func() {
+			v.warpMsg = "Скорость: " + speedTest(v.ctl.warpTunnel())
+			v.speedBusy = false
+			changes.Add(1)
+		}()
+	}
 	if v.warpReset.Clicked(gtx) {
 		v.warpList.SetText(strings.Join(warpSettings{}.domains(), "\n"))
 	}
@@ -1383,6 +1393,10 @@ func (v *view) warpCard(gtx C, s settings) D {
 			layout.Rigid(func(gtx C) D {
 				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 					layout.Rigid(func(gtx C) D { return v.button(gtx, &v.warpReg, label, false, !v.warpBusy) }),
+					hspace(10),
+					layout.Rigid(func(gtx C) D {
+						return v.button(gtx, &v.warpSpeed, "Проверить скорость", false, !v.speedBusy)
+					}),
 					hspace(12),
 					layout.Flexed(1, v.label(13, msgC, v.warpMsg).Layout))
 			}))

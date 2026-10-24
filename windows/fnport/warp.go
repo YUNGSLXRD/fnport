@@ -347,7 +347,9 @@ type warpTunnel struct {
 	net      *awgnet.Net
 	peer     string // hex public key
 	endpoint atomic.Value
+	exitInfo atomic.Value // string from exit()
 	conns    atomic.Int64
+	fails    atomic.Int64
 }
 
 func b64hex(s string) (string, error) {
@@ -392,17 +394,47 @@ func startWarp(ws warpSettings) (*warpTunnel, error) {
 		return nil, err
 	}
 	w := &warpTunnel{dev: dev, net: tnet, peer: peer}
-	for _, ep := range warpEndpoints(ws.Endpoint) {
-		if dev.IpcSet(fmt.Sprintf("public_key=%s\nupdate_only=true\nendpoint=%s\n", peer, ep)) != nil {
+	if w.findEndpoint(ws.Endpoint) {
+		return w, nil
+	}
+	dev.Close()
+	return nil, errors.New("ни один адрес WARP не ответил")
+}
+
+// findEndpoint: the first address of WARP the handshake goes through
+func (w *warpTunnel) findEndpoint(first string) bool {
+	for _, ep := range warpEndpoints(first) {
+		if w.dev.IpcSet(fmt.Sprintf("public_key=%s\nupdate_only=true\nendpoint=%s\n", w.peer, ep)) != nil {
 			continue
 		}
 		if w.works() {
 			w.endpoint.Store(ep)
-			return w, nil
+			return true
 		}
 	}
-	dev.Close()
-	return nil, errors.New("ни один адрес WARP не ответил")
+	return false
+}
+
+// exit: where WARP comes out, from Cloudflare's trace through the tunnel: "FRA, DE, 104.28.x.x"
+func (w *warpTunnel) exit() string {
+	c, err := w.dial(netip.MustParseAddrPort("1.1.1.1:80"))
+	if err != nil {
+		return ""
+	}
+	defer c.Close()
+	c.SetDeadline(time.Now().Add(8 * time.Second))
+	fmt.Fprint(c, "GET /cdn-cgi/trace HTTP/1.1\r\nHost: 1.1.1.1\r\nConnection: close\r\n\r\n")
+	b, _ := io.ReadAll(io.LimitReader(c, 8192))
+	kv := map[string]string{}
+	for _, l := range strings.Split(string(b), "\n") {
+		if k, v, ok := strings.Cut(strings.TrimSpace(l), "="); ok {
+			kv[k] = v
+		}
+	}
+	if kv["colo"] == "" {
+		return ""
+	}
+	return fmt.Sprintf("точка Cloudflare %s, страна %s, адрес %s", kv["colo"], kv["loc"], kv["ip"])
 }
 
 // works: a TCP connection to 1.1.1.1 through the tunnel, which needs a finished handshake
@@ -418,7 +450,7 @@ func (w *warpTunnel) works() bool {
 }
 
 func (w *warpTunnel) dial(dst netip.AddrPort) (net.Conn, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
 	return w.net.DialTCP(ctx, dst)
 }
@@ -429,6 +461,51 @@ func (w *warpTunnel) where() string {
 }
 
 func (w *warpTunnel) close() { w.dev.Close() }
+
+// speedTest: 10 MB from Cloudflare's speed test, straight and through WARP
+func speedTest(w *warpTunnel) string {
+	measure := func(dial func(netip.AddrPort) (net.Conn, error)) string {
+		tr := &http.Transport{DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
+			host, port, _ := net.SplitHostPort(addr)
+			ips := lookupAll(host)
+			if len(ips) == 0 {
+				return nil, errors.New("не найден адрес " + host)
+			}
+			p := uint16(443)
+			if port == "80" {
+				p = 80
+			}
+			return dial(netip.AddrPortFrom(ips[0], p))
+		}}
+		defer tr.CloseIdleConnections()
+		cl := &http.Client{Transport: tr, Timeout: 30 * time.Second}
+		start := time.Now()
+		resp, err := cl.Get("https://speed.cloudflare.com/__down?bytes=10000000")
+		if err != nil {
+			return "ошибка: " + err.Error()
+		}
+		defer resp.Body.Close()
+		n, _ := io.Copy(io.Discard, resp.Body)
+		d := time.Since(start).Seconds()
+		if n == 0 || d <= 0 {
+			return "ничего не скачалось"
+		}
+		return fmt.Sprintf("%.1f Мбит/с", float64(n)*8/d/1e6)
+	}
+	direct := measure(func(dst netip.AddrPort) (net.Conn, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return wnet.DialTCP(ctx, dst)
+	})
+	res := "напрямую " + direct
+	if w != nil {
+		res += ", через WARP " + measure(w.dial)
+	} else {
+		res += ", WARP не подключён"
+	}
+	logf("WARP: скорость %s", res)
+	return res
+}
 
 // ---- the tunnel's own UDP: out of the physical adapter, like the game's
 
@@ -561,9 +638,17 @@ func runWarp(ws warpSettings, dev wnet.Dev, routed []netip.Prefix, t *tcpRelay) 
 		}
 		return
 	}
-	t.state.Store("подключён через " + w.where())
 	changes.Add(1)
 	logf("WARP подключён через %s: сервисы Epic идут через него, игра — напрямую", w.where())
+	if ex := w.exit(); ex != "" {
+		w.exitInfo.Store(ex)
+		logf("WARP: выход — %s", ex)
+		changes.Add(1)
+	}
+	// the tunnel checked every minute: a dead endpoint makes every Epic connection wait and
+	// fall back to direct, so another one is looked for
+	health := time.NewTicker(time.Minute)
+	defer health.Stop()
 	tk := time.NewTicker(10 * time.Minute)
 	defer tk.Stop()
 	for {
@@ -572,6 +657,22 @@ func runWarp(ws warpSettings, dev wnet.Dev, routed []netip.Prefix, t *tcpRelay) 
 			return
 		case <-tk.C:
 			refresh()
+		case <-health.C:
+			ok := w.works()
+			if !ok {
+				if t.warp.Load() != nil {
+					logf("WARP: туннель через %s не отвечает, ищу другой адрес", w.where())
+					t.warp.Store(nil) // Epic goes direct meanwhile instead of waiting
+					t.state.Store("не отвечает, ищу другой адрес")
+					changes.Add(1)
+				}
+				ok = w.findEndpoint("")
+			}
+			if ok && t.warp.Load() == nil && t.ctx.Err() == nil {
+				t.warp.Store(w)
+				logf("WARP снова подключён, через %s", w.where())
+				changes.Add(1)
+			}
 		}
 	}
 }
@@ -590,6 +691,12 @@ func (t *tcpRelay) warpStatus() string {
 	s, _ := t.state.Load().(string)
 	if w := t.warp.Load(); w != nil {
 		s = fmt.Sprintf("подключён через %s, через него %d соединений", w.where(), w.conns.Load())
+		if n := w.fails.Load(); n > 0 {
+			s += fmt.Sprintf(", не открылись %d", n)
+		}
+		if ex, _ := w.exitInfo.Load().(string); ex != "" {
+			s += "; выход: " + ex
+		}
 	}
 	return s
 }

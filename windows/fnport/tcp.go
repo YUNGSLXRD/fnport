@@ -150,14 +150,20 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort, w *w
 	}
 	var out net.Conn
 	if t.warpName(name) || (name == "" && t.epicIP(dst.Addr())) {
-		if c, err := w.dial(dst); err == nil {
+		shown := name
+		if shown == "" {
+			shown = dst.String()
+		}
+		if c, err := w.dial(dst); err != nil {
+			w.fails.Add(1)
+			if _, dup := t.seen.LoadOrStore("fail "+shown, true); !dup {
+				logf("WARP: %s не открылось через WARP (%v), пошло напрямую", maskAddresses(shown), err)
+			}
+		} else {
 			out = c
 			w.conns.Add(1)
-			if name == "" {
-				name = dst.Addr().String()
-			}
-			if _, dup := t.seen.LoadOrStore(name, true); !dup {
-				logf("WARP: %s", maskAddresses(name))
+			if _, dup := t.seen.LoadOrStore(shown, true); !dup {
+				logf("WARP: %s", maskAddresses(shown))
 			}
 		}
 	}

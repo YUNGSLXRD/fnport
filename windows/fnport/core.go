@@ -346,6 +346,17 @@ func addStats(a, b statSnapshot) statSnapshot {
 }
 
 // fakeLabel: "фейк vk.com, TTL 5" for the window and the log
+// warpTunnel: the running tunnel, nil when there is none
+func (c *controller) warpTunnel() *warpTunnel {
+	c.mu.Lock()
+	t := c.tcp
+	c.mu.Unlock()
+	if t == nil {
+		return nil
+	}
+	return t.warp.Load()
+}
+
 // warpStatus: "" when WARP is off or fnport is
 func (c *controller) warpStatus() string {
 	c.mu.Lock()
