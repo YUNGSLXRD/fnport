@@ -67,3 +67,50 @@ func TestCleanDomain(t *testing.T) {
 		t.Error(d)
 	}
 }
+
+func TestParseWarpConf(t *testing.T) {
+	conf := `[Interface]
+PrivateKey = cGFzc3dvcmRwYXNzd29yZHBhc3N3b3JkcGFzc3dvcmQ=
+Address = 172.16.0.2/32, 2606:4700:110:8a36::1/128
+DNS = 1.1.1.1
+MTU = 1280
+Jc = 5
+Jmin = 30
+Jmax = 60
+[Peer]
+PublicKey = bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=
+AllowedIPs = 0.0.0.0/0
+Endpoint = 188.114.97.3:500
+`
+	w, err := parseWarpConf(conf, warpSettings{Jc: 4, Jmin: 40, Jmax: 70, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.Address != "172.16.0.2" || w.Endpoint != "188.114.97.3:500" || w.Jc != 5 || w.Jmax != 60 || !w.Enabled || !w.ready() {
+		t.Fatalf("%+v", w)
+	}
+	if _, err := parseWarpConf("[Interface]\nAddress = 1.2.3.4", warpSettings{}); err == nil {
+		t.Error("a config without keys taken")
+	}
+}
+
+func TestSplitConn(t *testing.T) {
+	a, b := net.Pipe()
+	defer a.Close()
+	go func() {
+		c := &splitConn{Conn: a, mark: []byte("api.example.com")}
+		c.Write([]byte("hello api.example.com bye"))
+	}()
+	var got []byte
+	buf := make([]byte, 64)
+	for len(got) < 25 {
+		n, err := b.Read(buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, buf[:n]...)
+	}
+	if string(got) != "hello api.example.com bye" {
+		t.Fatal(string(got))
+	}
+}

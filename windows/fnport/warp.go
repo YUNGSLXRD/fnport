@@ -230,6 +230,7 @@ func warpConnect() (*utls.UConn, error) {
 			continue
 		}
 		raw.SetDeadline(time.Now().Add(8 * time.Second))
+		raw = &splitConn{Conn: raw, mark: []byte(warpAPI)}
 		tc := utls.UClient(raw, &utls.Config{ServerName: warpAPI, NextProtos: []string{"http/1.1"}}, utls.HelloCustom)
 		if err := tc.ApplyPreset(warpHello()); err != nil {
 			cancel()
@@ -240,7 +241,8 @@ func warpConnect() (*utls.UConn, error) {
 		cancel()
 		if err != nil {
 			raw.Close()
-			last = fmt.Errorf("HTTPS к Cloudflare не прошёл: %w", err)
+			last = fmt.Errorf("HTTPS к Cloudflare не прошёл (%v): похоже, провайдер блокирует регистрацию WARP. "+
+				"Можно вставить готовый конфиг WARP ниже", err)
 			continue
 		}
 		raw.SetDeadline(time.Now().Add(20 * time.Second))
@@ -250,6 +252,103 @@ func warpConnect() (*utls.UConn, error) {
 		last = errors.New("не найден адрес " + warpAPI)
 	}
 	return nil, last
+}
+
+// splitConn: the first write (the ClientHello) goes out in three TCP segments, the cut in the
+// middle of the server's name, a moment apart: a DPI that looks for the name in one packet
+// does not find it
+type splitConn struct {
+	net.Conn
+	mark []byte
+	done bool
+}
+
+func (c *splitConn) Write(b []byte) (int, error) {
+	if c.done {
+		return c.Conn.Write(b)
+	}
+	c.done = true
+	cut := bytes.Index(b, c.mark)
+	if cut < 0 {
+		cut = len(b) / 2
+	} else {
+		cut += len(c.mark) / 2
+	}
+	n := 0
+	for _, part := range [][]byte{b[:1], b[1:cut], b[cut:]} {
+		if len(part) == 0 {
+			continue
+		}
+		m, err := c.Conn.Write(part)
+		n += m
+		if err != nil {
+			return n, err
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	return n, nil
+}
+
+// parseWarpConf: a WireGuard or AmneziaWG config as the apps export it, over the old settings
+func parseWarpConf(text string, old warpSettings) (warpSettings, error) {
+	w := old
+	w.Endpoint, w.I1 = "", ""
+	for _, l := range strings.Split(text, "\n") {
+		k, v, ok := strings.Cut(l, "=")
+		if !ok {
+			continue
+		}
+		k, v = strings.ToLower(strings.TrimSpace(k)), strings.TrimSpace(v)
+		num := func(d int) int {
+			var n int
+			if _, err := fmt.Sscan(v, &n); err == nil {
+				return n
+			}
+			return d
+		}
+		switch k {
+		case "privatekey":
+			w.PrivateKey = v
+		case "publickey":
+			w.PeerKey = v
+		case "address":
+			for _, a := range strings.Split(v, ",") {
+				a, _, _ = strings.Cut(strings.TrimSpace(a), "/")
+				if ip, err := netip.ParseAddr(a); err == nil && ip.Is4() {
+					w.Address = ip.String()
+					break
+				}
+			}
+		case "endpoint":
+			host, port, err := net.SplitHostPort(v)
+			if err != nil {
+				return old, fmt.Errorf("Endpoint «%s» непонятен", v)
+			}
+			if ip, err := netip.ParseAddr(host); err == nil {
+				w.Endpoint = netip.AddrPortFrom(ip, 0).Addr().String() + ":" + port
+			} else if ips := lookupAll(host); len(ips) > 0 {
+				w.Endpoint = ips[0].String() + ":" + port
+			}
+		case "jc":
+			w.Jc = num(w.Jc)
+		case "jmin":
+			w.Jmin = num(w.Jmin)
+		case "jmax":
+			w.Jmax = num(w.Jmax)
+		case "i1":
+			w.I1 = v
+		}
+	}
+	if _, err := b64hex(w.PrivateKey); err != nil {
+		return old, errors.New("в конфиге нет PrivateKey или он испорчен")
+	}
+	if _, err := b64hex(w.PeerKey); err != nil {
+		return old, errors.New("в конфиге нет PublicKey или он испорчен")
+	}
+	if w.Address == "" {
+		return old, errors.New("в конфиге нет адреса IPv4 (Address)")
+	}
+	return w, nil
 }
 
 // warpCall: one HTTPS request to the WARP API, straight out of the physical adapter

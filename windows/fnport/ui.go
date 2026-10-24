@@ -157,6 +157,8 @@ type view struct {
 	warpReset  widget.Clickable
 	warpDraft  bool // the list editor holds the saved list
 	warpSpeed  widget.Clickable
+	warpConf   widget.Editor // a config pasted by the user
+	warpUseCfg widget.Clickable
 	speedBusy  bool
 	warpReg    widget.Clickable
 	warpBusy   bool
@@ -1282,6 +1284,26 @@ func (v *view) warpTab(gtx C) D {
 			changes.Add(1)
 		}()
 	}
+	if v.warpUseCfg.Clicked(gtx) {
+		text := v.warpConf.Text()
+		go func() {
+			cur := v.ctl.settings()
+			ws, err := parseWarpConf(text, cur.Warp)
+			if err != nil {
+				v.warpMsg, v.warpErr = err.Error(), true
+			} else {
+				ws.Enabled = true
+				cur.Warp = ws
+				if err := v.ctl.apply(cur); err != nil {
+					v.warpMsg, v.warpErr = err.Error(), true
+				} else {
+					v.warpMsg, v.warpErr = "Конфиг принят и сохранён, WARP включён.", false
+					v.warpConf.SetText("")
+				}
+			}
+			changes.Add(1)
+		}()
+	}
 	if v.warpReset.Clicked(gtx) {
 		v.warpList.SetText(strings.Join(warpSettings{}.domains(), "\n"))
 	}
@@ -1424,7 +1446,14 @@ func (v *view) warpCard(gtx C, s settings) D {
 					}),
 					hspace(12),
 					layout.Flexed(1, v.label(13, msgC, v.warpMsg).Layout))
-			}))
+			}),
+			vspace(14),
+			layout.Rigid(v.label(13, colMuted, "Если ключ не получается (провайдер блокирует регистрацию WARP), вставьте готовый "+
+				"конфиг WARP или AmneziaWG, полученный на другом устройстве или через бота:").Layout),
+			vspace(6),
+			layout.Rigid(func(gtx C) D { return v.field(gtx, &v.warpConf, "[Interface]\nPrivateKey = …", 3) }),
+			vspace(8),
+			layout.Rigid(func(gtx C) D { return v.button(gtx, &v.warpUseCfg, "Применить конфиг", false, true) }))
 		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
 	})
 }
