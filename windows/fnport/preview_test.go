@@ -93,7 +93,16 @@ func TestPreview(t *testing.T) {
 		theme string
 	}{{"main-on", tabMain, stateOn, "dark"}, {"main-off", tabMain, stateOff, "dark"}, {"summary", tabSummary, stateOn, "dark"},
 		{"log", tabLog, stateOn, "dark"}, {"warp", tabWarp, stateOff, "dark"}, {"settings", tabSettings, stateOff, "dark"}, {"settings2", tabSettings, stateOff, "dark"},
-		{"main-light", tabMain, stateOn, "light"}, {"main-starting", tabMain, stateStarting, "dark"}, {"summary-light", tabSummary, stateOn, "light"}} {
+		{"main-light", tabMain, stateOn, "light"}, {"main-starting", tabMain, stateStarting, "dark"}, {"summary-light", tabSummary, stateOn, "light"},
+		{"readme", tabMain, stateOn, "dark"}} {
+		if tc.name == "readme" {
+			// the README's picture: a calm evening, no freezes left in the last minutes
+			for i := range ctl.history {
+				ctl.history[i].Frozen, ctl.history[i].Remaps = false, 0
+			}
+			ctl.stats.Frozen, ctl.stats.Remaps, version = 0, 0, "0.6.0"
+			ping.list[1].RTT, ping.list[2].RTT = 78*time.Millisecond, 72*time.Millisecond
+		}
 		v.tab, ctl.st, ctl.set.Theme = tc.tab, tc.st, tc.theme
 		v.ringAnim, v.glyphAnim, v.fillAnim, v.titleAnim = colorAnim{}, colorAnim{}, colorAnim{}, colorAnim{}
 		if tc.name == "settings2" {
