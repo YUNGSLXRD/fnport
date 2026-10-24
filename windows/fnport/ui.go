@@ -598,7 +598,64 @@ func (v *view) mainColumn(gtx C, st state, titleC color.NRGBA, s, sub string, su
 		vspace(22),
 		layout.Rigid(v.beaconsCard),
 		vspace(12),
-		layout.Rigid(v.countersCard))
+		layout.Rigid(v.countersCard),
+		layout.Rigid(func(gtx C) D {
+			if st != stateOn || !v.ctl.settings().Warp.Enabled {
+				return D{}
+			}
+			return layout.Inset{Top: 12}.Layout(gtx, v.warpMainCard)
+		}))
+}
+
+// exitName: "Москва (DME), Россия" for Cloudflare's point and country
+func exitName(colo, loc string) string {
+	s := coloCity[colo]
+	if s == "" {
+		s = colo
+	} else {
+		s += " (" + colo + ")"
+	}
+	if c := countryRU[loc]; c != "" {
+		s += ", " + c
+	} else if loc != "" {
+		s += ", " + loc
+	}
+	return s
+}
+
+// warpMainCard: on the main page while fnport is on with WARP: is it up, where it comes out
+func (v *view) warpMainCard(gtx C) D {
+	w := v.ctl.warpTunnel()
+	dotC, state := colYellow, v.ctl.warpStatus(false)
+	if state == "" {
+		state = "подключается…"
+	}
+	var colo, loc string
+	if w != nil {
+		dotC, state = colGreen, fmt.Sprintf("подключён, через него %d соединений", w.conns.Load())
+		colo, loc, _ = w.exitParts()
+	} else if strings.HasPrefix(state, "не подключился") {
+		dotC = colRed
+	}
+	return v.card(gtx, func(gtx C) D {
+		kids := []layout.FlexChild{
+			layout.Rigid(func(gtx C) D {
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(func(gtx C) D { return dot(gtx, dotC, 10) }), hspace(10),
+					layout.Rigid(bold(v.label(14, colText, "WARP для сервисов Epic")).Layout), hspace(10),
+					layout.Flexed(1, v.label(13, colMuted, state).Layout))
+			}),
+		}
+		if colo != "" {
+			kids = append(kids, vspace(8), layout.Rigid(func(gtx C) D {
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(v.label(13, colMuted, "Выход:").Layout), hspace(8),
+					layout.Rigid(func(gtx C) D { return drawFlag(gtx, loc, 13) }), hspace(7),
+					layout.Rigid(v.label(13, colText, exitName(colo, loc)).Layout))
+			}))
+		}
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
+	})
 }
 
 // powerButton: a round button with the power symbol; its colours glide between states, and a
@@ -1420,15 +1477,7 @@ func (v *view) warpCard(gtx C, s settings) D {
 		kids = append(kids, vspace(10), layout.Rigid(v.label(13, colMuted, info).Layout))
 		if w := v.ctl.warpTunnel(); w != nil {
 			if colo, loc, ip := w.exitParts(); colo != "" {
-				city := coloCity[colo]
-				if city == "" {
-					city = colo
-				} else {
-					city += " (" + colo + ")"
-				}
-				if c := countryRU[loc]; c != "" {
-					city += ", " + c
-				}
+				city := exitName(colo, loc)
 				kids = append(kids, vspace(8), layout.Rigid(func(gtx C) D {
 					return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 						layout.Rigid(v.label(13, colMuted, "Выход WARP:").Layout), hspace(8),
