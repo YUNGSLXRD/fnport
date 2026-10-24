@@ -28,10 +28,17 @@ import (
 type tcpRelay struct {
 	stack  *stack.Stack
 	ep     *channel.Endpoint
+	ctx    context.Context
 	cancel context.CancelFunc
 	active atomic.Int64
 	total  atomic.Int64
 	failed atomic.Int64
+
+	// WARP for Epic's services: nil until (unless) the tunnel is up
+	warp    atomic.Pointer[warpTunnel]
+	epicIPs atomic.Pointer[map[netip.Addr]bool]
+	seen    sync.Map     // names already logged as going through WARP
+	state   atomic.Value // string: how WARP is doing, for the window and the report
 }
 
 // allowLoopback: tests only; the routes never send 127.0.0.0/8 into the adapter
@@ -54,7 +61,7 @@ func newTCPRelay(dev wnet.Dev) (*tcpRelay, error) {
 	s.SetRouteTable([]tcpip.Route{{Destination: header.IPv4EmptySubnet, NIC: 1}})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	t := &tcpRelay{stack: s, ep: ep, cancel: cancel}
+	t := &tcpRelay{stack: s, ep: ep, ctx: ctx, cancel: cancel}
 	fwd := tcp.NewForwarder(s, 0, 512, t.accept)
 	s.SetTransportProtocolHandler(tcp.ProtocolNumber, fwd.HandlePacket)
 
@@ -85,6 +92,10 @@ func (t *tcpRelay) inject(b []byte) {
 func (t *tcpRelay) accept(r *tcp.ForwarderRequest) {
 	id := r.ID()
 	dst := netip.AddrPortFrom(netip.AddrFrom4(id.LocalAddress.As4()), id.LocalPort)
+	if w := t.warp.Load(); w != nil && (dst.Port() == 443 || t.epicIP(dst.Addr())) {
+		t.acceptSplit(r, dst, w)
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	out, err := wnet.DialTCP(ctx, dst)
 	cancel()
@@ -102,6 +113,66 @@ func (t *tcpRelay) accept(r *tcp.ForwarderRequest) {
 	}
 	r.Complete(false)
 	in := gonet.NewTCPConn(&wq, ep)
+	t.total.Add(1)
+	t.active.Add(1)
+	defer t.active.Add(-1)
+	splice(in, out)
+}
+
+func (t *tcpRelay) epicIP(a netip.Addr) bool {
+	m := t.epicIPs.Load()
+	return m != nil && (*m)[a]
+}
+
+// acceptSplit: with WARP up, the handshake with the PC comes first, then the name it asks for
+// decides: Epic's go through WARP, the rest out directly as usual. A failed WARP dial falls
+// back to direct
+func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort, w *warpTunnel) {
+	var wq waiter.Queue
+	ep, terr := r.CreateEndpoint(&wq)
+	if terr != nil {
+		r.Complete(true)
+		return
+	}
+	r.Complete(false)
+	in := gonet.NewTCPConn(&wq, ep)
+	var hello []byte
+	name := ""
+	if dst.Port() == 443 {
+		hello = readHello(in)
+		name = sniOf(hello)
+	}
+	var out net.Conn
+	if epicName(name) || (name == "" && t.epicIP(dst.Addr())) {
+		if c, err := w.dial(dst); err == nil {
+			out = c
+			w.conns.Add(1)
+			if name == "" {
+				name = dst.Addr().String()
+			}
+			if _, dup := t.seen.LoadOrStore(name, true); !dup {
+				logf("WARP: %s", maskAddresses(name))
+			}
+		}
+	}
+	if out == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		c, err := wnet.DialTCP(ctx, dst)
+		cancel()
+		if err != nil {
+			t.failed.Add(1)
+			in.Close()
+			return
+		}
+		out = c
+	}
+	if len(hello) > 0 {
+		if _, err := out.Write(hello); err != nil {
+			in.Close()
+			out.Close()
+			return
+		}
+	}
 	t.total.Add(1)
 	t.active.Add(1)
 	defer t.active.Add(-1)
@@ -135,5 +206,8 @@ func splice(a, b net.Conn) {
 
 func (t *tcpRelay) close() {
 	t.cancel()
+	if w := t.warp.Swap(nil); w != nil {
+		w.close()
+	}
 	t.stack.Close()
 }

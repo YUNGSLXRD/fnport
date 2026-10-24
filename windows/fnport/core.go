@@ -231,6 +231,9 @@ func (c *controller) start() {
 	e := newEngine(cfg, dev, clientIP, tcp)
 	e.gone = c.addHistory
 	go e.run()
+	if set.Warp.Enabled && set.Warp.ready() && !set.Passthrough {
+		go runWarp(set.Warp, dev, cfg.routes, tcp)
+	}
 
 	stop := make(chan struct{})
 	c.mu.Lock()
@@ -343,6 +346,17 @@ func addStats(a, b statSnapshot) statSnapshot {
 }
 
 // fakeLabel: "фейк vk.com, TTL 5" for the window and the log
+// warpStatus: "" when WARP is off or fnport is
+func (c *controller) warpStatus() string {
+	c.mu.Lock()
+	t, on := c.tcp, c.set.Warp.Enabled
+	c.mu.Unlock()
+	if t == nil || !on {
+		return ""
+	}
+	return t.warpStatus()
+}
+
 func (c *controller) fakeLabel() string {
 	s := c.settings()
 	switch {

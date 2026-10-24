@@ -149,6 +149,11 @@ type view struct {
 	rounds     widget.Editor
 	budget     widget.Editor
 	passthru   widget.Bool
+	warpOn     widget.Bool
+	warpReg    widget.Clickable
+	warpBusy   bool
+	warpMsg    string
+	warpErr    bool
 	save       widget.Clickable
 	reset      widget.Clickable
 	openFakes  widget.Clickable
@@ -949,6 +954,7 @@ func (v *view) takeDraft() {
 	v.rounds.SetText(fmt.Sprint(s.MaxRounds))
 	v.budget.SetText(fmt.Sprint(s.ProbeBudget))
 	v.passthru.Value = s.Passthrough
+	v.warpOn.Value = s.Warp.Enabled
 	v.theme.Value = s.Theme
 	if v.theme.Value == "" {
 		v.theme.Value = "system"
@@ -959,6 +965,7 @@ func (v *view) takeDraft() {
 func (v *view) draft() settings {
 	s := v.ctl.settings()
 	s.Adapter, s.Fake, s.FakeTTL, s.Passthrough, s.Theme = v.adapter.Value, v.fake.Value, v.ttl, v.passthru.Value, v.theme.Value
+	s.Warp.Enabled = v.warpOn.Value
 	s.Routes = nil
 	for _, l := range strings.Split(v.routes.Text(), "\n") {
 		if l = strings.TrimSpace(l); l != "" {
@@ -1013,6 +1020,26 @@ func (v *view) settingsTab(gtx C) D {
 			changes.Add(1)
 		}()
 	}
+	if v.warpReg.Clicked(gtx) && !v.warpBusy {
+		v.warpBusy, v.warpMsg, v.warpErr = true, "Получаю ключ у Cloudflare…", false
+		go func() {
+			cur := v.ctl.settings()
+			if ws, err := registerWarp(cur.Warp); err != nil {
+				v.warpMsg, v.warpErr = "Не получилось: "+err.Error(), true
+			} else {
+				ws.Enabled = true
+				cur.Warp = ws
+				if err := v.ctl.apply(cur); err != nil {
+					v.warpMsg, v.warpErr = err.Error(), true
+				} else {
+					v.warpMsg, v.warpErr = "Ключ получен и сохранён, WARP включён.", false
+					v.draftFor = 0
+				}
+			}
+			v.warpBusy = false
+			changes.Add(1)
+		}()
+	}
 	running, lines, res, wait := v.check.state()
 	if v.runCheck.Clicked(gtx) && !running && wait <= 0 {
 		v.check.start(v.ctl.settings())
@@ -1042,6 +1069,7 @@ func (v *view) settingsTab(gtx C) D {
 		v.themeCard,
 		v.adapterCard,
 		v.fakeCard,
+		v.warpCard,
 		v.advancedCard,
 		v.aboutCard,
 	}
@@ -1198,6 +1226,44 @@ func (v *view) fakeCard(gtx C) D {
 				layout.Flexed(1, func(gtx C) D { return D{Size: image.Pt(gtx.Constraints.Min.X, 0)} }),
 				layout.Rigid(func(gtx C) D { return v.button(gtx, &v.openFakes, "Открыть папку", false, true) }))
 		}))
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
+	})
+}
+
+// warpCard: Epic's services through the user's own WARP, the game direct
+func (v *view) warpCard(gtx C) D {
+	s := v.ctl.settings()
+	return v.card(gtx, func(gtx C) D {
+		kids := v.sectionTitle("WARP для сервисов Epic", "Если провайдер режет вход, магазин или загрузки Epic, они пойдут "+
+			"через Cloudflare WARP (AmneziaWG), а игра — напрямую, как раньше. Ключ WARP ваш и бесплатный: программа "+
+			"получает его у Cloudflare одной кнопкой.")
+		kids = append(kids, layout.Rigid(func(gtx C) D {
+			cb := material.CheckBox(v.th, &v.warpOn, "Пускать сервисы Epic через WARP")
+			cb.Color, cb.IconColor, cb.Size = colText, colGreen, unit.Dp(20)
+			return cb.Layout(gtx)
+		}))
+		info := "Ключа WARP пока нет."
+		if s.Warp.ready() {
+			info = "Ключ WARP есть."
+		}
+		if st := v.ctl.warpStatus(); st != "" {
+			info += " Сейчас WARP " + st + "."
+		}
+		label := "Получить ключ WARP"
+		if s.Warp.ready() {
+			label = "Получить новый ключ"
+		}
+		msgC := colGreen
+		if v.warpErr {
+			msgC = colRed
+		}
+		kids = append(kids, vspace(10), layout.Rigid(v.label(13, colMuted, info).Layout), vspace(10),
+			layout.Rigid(func(gtx C) D {
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(func(gtx C) D { return v.button(gtx, &v.warpReg, label, false, !v.warpBusy) }),
+					hspace(12),
+					layout.Flexed(1, v.label(13, msgC, v.warpMsg).Layout))
+			}))
 		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
 	})
 }

@@ -16,6 +16,7 @@ var tunAddr = netip.MustParsePrefix("10.254.77.2/24")
 
 type wintunDev struct {
 	nt    *tun.NativeTun
+	luid  winipcfg.LUID
 	bufs  [][]byte
 	sizes []int
 	wmu   sync.Mutex // the adapter takes one writer at a time
@@ -37,6 +38,11 @@ func (d *wintunDev) WritePacket(pkt []byte) error {
 }
 
 func (d *wintunDev) Close() error { return d.nt.Close() }
+
+// AddRoute sends one more network into the adapter while it runs
+func (d *wintunDev) AddRoute(p netip.Prefix) error {
+	return d.luid.AddRoute(p, netip.IPv4Unspecified(), 0)
+}
 
 // OpenTun creates the adapter (removed again on Close, or when this process ends) and routes
 // the given networks into it
@@ -75,5 +81,5 @@ func OpenTun(name string, routes []netip.Prefix) (Dev, netip.Addr, error) {
 	}
 	// the adapter needs a moment before Windows sends through it
 	time.Sleep(1500 * time.Millisecond)
-	return &wintunDev{nt: nt, bufs: make([][]byte, 1), sizes: make([]int, 1)}, tunAddr.Addr(), nil
+	return &wintunDev{nt: nt, luid: luid, bufs: make([][]byte, 1), sizes: make([]int, 1)}, tunAddr.Addr(), nil
 }

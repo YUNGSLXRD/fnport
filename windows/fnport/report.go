@@ -68,6 +68,13 @@ func (c *controller) report(r *checkResult) string {
 		}
 		line("Сервисы Epic напрямую", strings.Join(ep, "; "))
 	}
+	if r.Settings.Warp.Enabled {
+		st := c.warpStatus()
+		if st == "" {
+			st = "включён в настройках, fnport сейчас выключен"
+		}
+		line("WARP для Epic", st)
+	}
 	var ctl []string
 	for _, c := range r.Control {
 		ctl = append(ctl, c.City+" "+joinReplies(c.Replies))
