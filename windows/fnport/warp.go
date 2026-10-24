@@ -34,53 +34,93 @@ import (
 // them. The key is the user's own, registered with Cloudflare from this PC by one button.
 
 type warpSettings struct {
-	Enabled    bool   `json:"enabled"`
-	PrivateKey string `json:"private_key,omitempty"` // base64; made on this PC, never sent
-	Address    string `json:"address,omitempty"`     // the tunnel's IPv4 address from Cloudflare
-	PeerKey    string `json:"peer_key,omitempty"`
-	Endpoint   string `json:"endpoint,omitempty"` // ip:port tried first; then the known ones
-	Jc         int    `json:"jc"`
-	Jmin       int    `json:"jmin"`
-	Jmax       int    `json:"jmax"`
-	I1         string `json:"i1,omitempty"` // AWG 1.5 signature packet, written as AmneziaWG does
+	Enabled    bool     `json:"enabled"`
+	PrivateKey string   `json:"private_key,omitempty"` // base64; made on this PC, never sent
+	Address    string   `json:"address,omitempty"`     // the tunnel's IPv4 address from Cloudflare
+	PeerKey    string   `json:"peer_key,omitempty"`
+	Endpoint   string   `json:"endpoint,omitempty"` // ip:port tried first; then the known ones
+	Jc         int      `json:"jc"`
+	Jmin       int      `json:"jmin"`
+	Jmax       int      `json:"jmax"`
+	I1         string   `json:"i1,omitempty"`      // AWG 1.5 signature packet, written as AmneziaWG does
+	Domains    []string `json:"domains,omitempty"` // what goes through WARP; empty = Epic's (warpDomains)
 }
 
 func (w warpSettings) ready() bool { return w.PrivateKey != "" && w.Address != "" && w.PeerKey != "" }
 
-// epicSuffixes: names whose connections go through WARP (and anything under them)
-var epicSuffixes = []string{"epicgames.com", "epicgames.dev", "epicgames.net", "epicgamescdn.com",
-	"unrealengine.com", "fortnite.com", "easyanticheat.net", "epicgames-download1.akamaized.net", "egdownload.fastly-edge.com"}
+// warpDomains: what goes through WARP by default. A line covers the name and everything under
+// it; each line is also looked up and its addresses routed into the adapter, so the program
+// sees those connections at all. Epic's own list of the launcher's hosts and what the store,
+// login and downloads use besides: AWS in the US, Cloudflare, Akamai, CloudFront, Fastly
+var warpDomains = []string{
+	"epicgames.com", "epicgames.dev", "epicgames.net", "epicgamescdn.com", "unrealengine.com", "fortnite.com",
+	"easyanticheat.net", "hcaptcha.com", "epicgames-download1.akamaized.net", "egdownload.fastly-edge.com",
+	"account-public-service-prod.ol.epicgames.com", "account-public-service-prod03.ol.epicgames.com",
+	"launcherwaitingroom-public-service-prod06.ol.epicgames.com", "launcher-public-service-prod06.ol.epicgames.com",
+	"www.epicgames.com", "launcher-website-prod07.ol.epicgames.com", "tracking.epicgames.com",
+	"accounts.launcher-website-prod07.ol.epicgames.com", "accounts.epicgames.com",
+	"cdn1.epicgames.com", "cdn2.epicgames.com", "cdn1.unrealengine.com", "cdn2.unrealengine.com",
+	"datarouter.ol.epicgames.com", "entitlement-public-service-prod08.ol.epicgames.com",
+	"orderprocessor-public-service-ecomprod01.ol.epicgames.com", "catalog-public-service-prod06.ol.epicgames.com",
+	"friends-public-service-prod.ol.epicgames.com", "friends-public-service-prod06.ol.epicgames.com",
+	"lightswitch-public-service-prod.ol.epicgames.com", "lightswitch-public-service-prod06.ol.epicgames.com",
+	"accountportal-website-prod07.ol.epicgames.com", "ut-public-service-prod10.ol.epicgames.com",
+	"party-service-prod.ol.epicgames.com", "xmpp-service-prod.ol.epicgames.com",
+	"fortnite-public-service-prod11.ol.epicgames.com", "events-public-service-live.ol.epicgames.com",
+	"fngw-mcp-gc-livefn.ol.epicgames.com", "fortnite-matchmaking-public-service-live-eu.ol.epicgames.com",
+	"eulatracking-public-service-prod-m.ol.epicgames.com", "statsproxy-public-service-live.ol.epicgames.com",
+	"talon-service-prod.ecosec.on.epicgames.com", "fortnitecontent-website-prod07.ol.epicgames.com",
+	"library-service.live.use1a.on.epicgames.com", "datastorage-public-service-liveegs.live.use1a.on.epicgames.com",
+	"download.epicgames.com", "download2.epicgames.com", "download3.epicgames.com", "download4.epicgames.com",
+	"fastly-download.epicgames.com", "cloudflare.epicgamescdn.com",
+	"static-assets-prod.epicgames.com", "shared-static-prod.epicgames.com",
+	"store-site-backend-static.ak.epicgames.com", "store-content.ak.epicgames.com",
+	"store.epicgames.com", "launcher.store.epicgames.com", "egs-platform-service.store.epicgames.com",
+	"api.epicgames.dev", "js.hcaptcha.com",
+}
 
-func epicName(h string) bool {
+// cleanDomain: a line of the list as a bare name ("https://x.com/path", "*.x.com" -> "x.com")
+func cleanDomain(l string) string {
+	l = strings.ToLower(strings.TrimSpace(l))
+	if i := strings.Index(l, "://"); i >= 0 {
+		l = l[i+3:]
+	}
+	if i := strings.IndexAny(l, "/:? "); i >= 0 {
+		l = l[:i]
+	}
+	l = strings.TrimPrefix(strings.TrimPrefix(l, "*."), ".")
+	return strings.TrimSuffix(l, ".")
+}
+
+// domains: the user's list, or the default one
+func (w warpSettings) domains() []string {
+	src := w.Domains
+	if len(src) == 0 {
+		src = warpDomains
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, l := range src {
+		if d := cleanDomain(l); d != "" && !seen[d] {
+			seen[d] = true
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// matchDomain: h is one of the names or under one
+func matchDomain(h string, names []string) bool {
 	h = strings.ToLower(strings.TrimSuffix(h, "."))
-	for _, s := range epicSuffixes {
+	if h == "" {
+		return false
+	}
+	for _, s := range names {
 		if h == s || strings.HasSuffix(h, "."+s) {
 			return true
 		}
 	}
 	return false
-}
-
-// epicHosts: resolved now and then, their addresses routed into the adapter so the program sees
-// those connections at all (AWS in the US for the login and friends, Cloudflare for most of the
-// rest, Akamai, CloudFront and Fastly for downloads and static files)
-var epicHosts = []string{
-	"account-public-service-prod.ol.epicgames.com", "account-public-service-prod03.ol.epicgames.com",
-	"fortnite-public-service-prod11.ol.epicgames.com", "lightswitch-public-service-prod.ol.epicgames.com",
-	"launcher-public-service-prod06.ol.epicgames.com", "catalog-public-service-prod06.ol.epicgames.com",
-	"entitlement-public-service-prod08.ol.epicgames.com", "friends-public-service-prod.ol.epicgames.com",
-	"party-service-prod.ol.epicgames.com", "xmpp-service-prod.ol.epicgames.com",
-	"events-public-service-live.ol.epicgames.com", "fngw-mcp-gc-livefn.ol.epicgames.com",
-	"fortnite-matchmaking-public-service-live-eu.ol.epicgames.com", "datarouter.ol.epicgames.com",
-	"eulatracking-public-service-prod-m.ol.epicgames.com", "statsproxy-public-service-live.ol.epicgames.com",
-	"www.epicgames.com", "store.epicgames.com", "egs-platform-service.store.epicgames.com", "api.epicgames.dev",
-	"epicgames-download1.akamaized.net", "download.epicgames.com", "fastly-download.epicgames.com",
-	"cloudflare.epicgamescdn.com", "store-site-backend-static.ak.epicgames.com",
-	"download2.epicgames.com", "download3.epicgames.com", "download4.epicgames.com", "egdownload.fastly-edge.com",
-	"cdn1.epicgames.com", "cdn2.epicgames.com", "cdn1.unrealengine.com", "cdn2.unrealengine.com",
-	"static-assets-prod.epicgames.com", "shared-static-prod.epicgames.com", "accounts.epicgames.com",
-	"talon-service-prod.ecosec.on.epicgames.com", "tracking.epicgames.com",
-	"launcher-website-prod07.ol.epicgames.com", "fortnitecontent-website-prod07.ol.epicgames.com",
 }
 
 // lookupAll: every public IPv4 address of host from public DNS (past a router's fakeip) and from
@@ -444,6 +484,8 @@ func (b *physBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 // runWarp: Epic's addresses routed into the adapter, then the tunnel. The addresses are looked
 // up again every 10 minutes while fnport is on
 func runWarp(ws warpSettings, dev wnet.Dev, routed []netip.Prefix, t *tcpRelay) {
+	names := ws.domains()
+	t.names.Store(&names)
 	adder, _ := dev.(interface{ AddRoute(netip.Prefix) error })
 	known := map[netip.Addr]bool{}
 	refresh := func() {
@@ -451,7 +493,7 @@ func runWarp(ws warpSettings, dev wnet.Dev, routed []netip.Prefix, t *tcpRelay) 
 		for a := range known {
 			next[a] = true
 		}
-		for _, h := range epicHosts {
+		for _, h := range names {
 			for _, a := range lookupAll(h) {
 				if next[a] {
 					continue

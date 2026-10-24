@@ -151,7 +151,11 @@ type view struct {
 	budget     widget.Editor
 	passthru   widget.Bool
 	warpOn     widget.Bool
-	warpLogs   widget.List
+	warpPage   widget.List
+	warpList   widget.Editor // the names that go through WARP, one per line
+	warpSave   widget.Clickable
+	warpReset  widget.Clickable
+	warpDraft  bool // the list editor holds the saved list
 	warpReg    widget.Clickable
 	warpBusy   bool
 	warpMsg    string
@@ -178,7 +182,7 @@ func newView(ctl *controller, ping *pinger, check *checker, open func(string), o
 	v.flowList.Axis = layout.Vertical
 	v.mainList.Axis = layout.Vertical
 	v.logs.Axis = layout.Vertical
-	v.warpLogs.Axis = layout.Vertical
+	v.warpPage.Axis = layout.Vertical
 	v.page.Axis = layout.Vertical
 	v.ports.SingleLine = true
 	for _, e := range []*widget.Editor{&v.batch, &v.rounds, &v.budget} {
@@ -400,6 +404,7 @@ func (v *view) frame(gtx C) {
 			if v.tab == tabSettings {
 				v.draftFor = 0
 			}
+			v.warpDraft = false
 		}
 	}
 	if v.power.Clicked(gtx) {
@@ -1259,39 +1264,99 @@ func (v *view) warpTab(gtx C) D {
 	} else {
 		v.warpOn.Value = s.Warp.Enabled
 	}
+	if !v.warpDraft {
+		v.warpList.SetText(strings.Join(s.Warp.domains(), "\n"))
+		v.warpDraft = true
+	}
+	if v.warpReset.Clicked(gtx) {
+		v.warpList.SetText(strings.Join(warpSettings{}.domains(), "\n"))
+	}
+	if v.warpSave.Clicked(gtx) {
+		var list []string
+		for _, l := range strings.Split(v.warpList.Text(), "\n") {
+			if d := cleanDomain(l); d != "" {
+				list = append(list, d)
+			}
+		}
+		go func() {
+			cur := v.ctl.settings()
+			cur.Warp.Domains = list
+			if strings.Join(warpSettings{Domains: list}.domains(), " ") == strings.Join(warpSettings{}.domains(), " ") {
+				cur.Warp.Domains = nil // the default list: follows updates of the program
+			}
+			if err := v.ctl.apply(cur); err != nil {
+				v.warpMsg, v.warpErr = err.Error(), true
+			} else {
+				v.warpMsg, v.warpErr = "Список сохранён.", false
+				v.warpDraft = false
+			}
+			changes.Add(1)
+		}()
+	}
 	var lines []string
 	for _, l := range logLines() {
 		if strings.Contains(l, "WARP") {
 			lines = append(lines, l)
 		}
 	}
+	if len(lines) > 200 {
+		lines = lines[len(lines)-200:]
+	}
+	sections := []layout.Widget{
+		func(gtx C) D { return v.warpCard(gtx, s) },
+		func(gtx C) D { return v.warpListCard(gtx) },
+		func(gtx C) D {
+			return v.card(gtx, func(gtx C) D {
+				kids := v.sectionTitle("Журнал WARP", "")
+				if len(lines) == 0 {
+					kids = append(kids, layout.Rigid(v.label(13, colMuted, "Здесь будет видно, как подключается WARP и какие сайты идут через него.").Layout))
+				}
+				for _, l := range lines {
+					l := l
+					kids = append(kids, layout.Rigid(func(gtx C) D {
+						lb := mono(v.label(12, colText, l))
+						if strings.Contains(l, "не подключился") {
+							lb.Color = colYellow
+						}
+						return layout.Inset{Bottom: 3}.Layout(gtx, lb.Layout)
+					}))
+				}
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
+			})
+		},
+	}
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		v.title("WARP"),
-		layout.Rigid(func(gtx C) D { return v.warpCard(gtx, s) }),
-		vspace(12),
 		layout.Flexed(1, func(gtx C) D {
-			gtx.Constraints.Min = gtx.Constraints.Max
-			return v.card(gtx, func(gtx C) D {
-				if len(lines) == 0 {
-					return v.label(13, colMuted, "Здесь будет видно, как подключается WARP и какие сервисы Epic идут через него.").Layout(gtx)
-				}
-				v.warpLogs.ScrollToEnd = len(lines)*gtx.Dp(19) > gtx.Constraints.Max.Y
-				return v.list(gtx, &v.warpLogs, len(lines), func(gtx C, i int) D {
-					l := mono(v.label(12, colText, lines[i]))
-					if strings.Contains(lines[i], "не подключился") {
-						l.Color = colYellow
-					}
-					return layout.Inset{Bottom: 3}.Layout(gtx, l.Layout)
-				})
+			return v.list(gtx, &v.warpPage, len(sections), func(gtx C, i int) D {
+				return layout.Inset{Bottom: 12, Right: 10}.Layout(gtx, sections[i])
 			})
 		}))
+}
+
+func (v *view) warpListCard(gtx C) D {
+	return v.card(gtx, func(gtx C) D {
+		kids := v.sectionTitle("Что идёт через WARP", "По одному сайту в строке; строка покрывает и всё под ним (epicgames.com — это и "+
+			"store.epicgames.com). Сюда можно дописать свои, например discord.com. Через WARP идёт только TCP: игра и голос "+
+			"(UDP) остаются напрямую.")
+		kids = append(kids,
+			layout.Rigid(func(gtx C) D { return v.field(gtx, &v.warpList, "epicgames.com", 8) }),
+			vspace(10),
+			layout.Rigid(func(gtx C) D {
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(func(gtx C) D { return v.button(gtx, &v.warpSave, "Сохранить список", true, true) }),
+					hspace(10),
+					layout.Rigid(func(gtx C) D { return v.button(gtx, &v.warpReset, "Вернуть список Epic", false, true) }))
+			}))
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
+	})
 }
 
 func (v *view) warpCard(gtx C, s settings) D {
 	return v.card(gtx, func(gtx C) D {
 		kids := v.sectionTitle("Сервисы Epic через WARP", "Если провайдер режет вход, магазин или загрузки Epic, они пойдут "+
 			"через Cloudflare WARP (AmneziaWG), а игра — напрямую, как раньше. Ключ WARP ваш и бесплатный: программа "+
-			"получает его у Cloudflare одной кнопкой.")
+			"получает его у Cloudflare одной кнопкой. Что именно идёт через WARP — в списке ниже.")
 		kids = append(kids, layout.Rigid(func(gtx C) D {
 			cb := material.CheckBox(v.th, &v.warpOn, "Пускать сервисы Epic через WARP")
 			cb.Color, cb.IconColor, cb.Size = colText, colGreen, unit.Dp(20)

@@ -31,13 +31,14 @@ func TestSNI(t *testing.T) {
 	}
 }
 
-func TestEpicName(t *testing.T) {
+func TestWarpDomains(t *testing.T) {
+	names := warpSettings{}.domains()
 	for name, want := range map[string]bool{
 		"account-public-service-prod.ol.epicgames.com": true, "store.epicgames.com.": true, "epicgames.com": true,
 		"api.epicgames.dev": true, "epicgames-download1.akamaized.net": true, "a.akamaized.net": false,
 		"notepicgames.com": false, "vk.com": false, "": false,
 	} {
-		if epicName(name) != want {
+		if matchDomain(name, names) != want {
 			t.Errorf("%q: want %v", name, want)
 		}
 	}
@@ -52,5 +53,17 @@ func TestWarpEndpoints(t *testing.T) {
 		if strings.HasPrefix(e, "162.159.193.") {
 			t.Fatal("a banned endpoint:", e)
 		}
+	}
+}
+
+func TestCleanDomain(t *testing.T) {
+	for in, want := range map[string]string{"https://Store.EpicGames.com/": "store.epicgames.com", "*.discord.com": "discord.com",
+		"https://static-assets-prod.epicgames.com/static/": "static-assets-prod.epicgames.com", " discord.gg ": "discord.gg", "x.com:443": "x.com"} {
+		if got := cleanDomain(in); got != want {
+			t.Errorf("%q: %q", in, got)
+		}
+	}
+	if d := (warpSettings{Domains: []string{"discord.com", "discord.com", ""}}).domains(); len(d) != 1 {
+		t.Error(d)
 	}
 }

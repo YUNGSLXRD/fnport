@@ -37,8 +37,9 @@ type tcpRelay struct {
 	// WARP for Epic's services: nil until (unless) the tunnel is up
 	warp    atomic.Pointer[warpTunnel]
 	epicIPs atomic.Pointer[map[netip.Addr]bool]
-	seen    sync.Map     // names already logged as going through WARP
-	state   atomic.Value // string: how WARP is doing, for the window and the report
+	names   atomic.Pointer[[]string] // the names that go through WARP
+	seen    sync.Map                 // names already logged as going through WARP
+	state   atomic.Value             // string: how WARP is doing, for the window and the report
 }
 
 // allowLoopback: tests only; the routes never send 127.0.0.0/8 into the adapter
@@ -119,6 +120,11 @@ func (t *tcpRelay) accept(r *tcp.ForwarderRequest) {
 	splice(in, out)
 }
 
+func (t *tcpRelay) warpName(h string) bool {
+	n := t.names.Load()
+	return n != nil && matchDomain(h, *n)
+}
+
 func (t *tcpRelay) epicIP(a netip.Addr) bool {
 	m := t.epicIPs.Load()
 	return m != nil && (*m)[a]
@@ -143,7 +149,7 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort, w *w
 		name = sniOf(hello)
 	}
 	var out net.Conn
-	if epicName(name) || (name == "" && t.epicIP(dst.Addr())) {
+	if t.warpName(name) || (name == "" && t.epicIP(dst.Addr())) {
 		if c, err := w.dial(dst); err == nil {
 			out = c
 			w.conns.Add(1)
