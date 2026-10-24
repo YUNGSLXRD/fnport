@@ -232,7 +232,7 @@ func (c *controller) start() {
 	e.gone = c.addHistory
 	go e.run()
 	if set.Warp.Enabled && set.Warp.ready() && !set.Passthrough {
-		go runWarp(set.Warp, dev, cfg.routes, tcp)
+		go runWarp(set.Warp.withFake(set), dev, cfg.routes, tcp)
 	}
 
 	stop := make(chan struct{})

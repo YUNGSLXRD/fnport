@@ -1280,7 +1280,8 @@ func (v *view) warpTab(gtx C) D {
 	if v.warpSpeed.Clicked(gtx) && !v.speedBusy {
 		v.speedBusy, v.warpMsg, v.warpErr = true, "Меряю скорость: 15 с напрямую, потом через WARP (если fnport выключен, сначала подниму WARP)…", false
 		go func() {
-			v.warpMsg = "Скорость: " + speedTest(v.ctl.warpTunnel(), v.ctl.settings().Warp)
+			s := v.ctl.settings()
+			v.warpMsg = "Скорость: " + speedTest(v.ctl.warpTunnel(), s.Warp.withFake(s))
 			v.speedBusy = false
 			changes.Add(1)
 		}()

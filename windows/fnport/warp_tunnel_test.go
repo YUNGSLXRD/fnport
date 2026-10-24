@@ -23,6 +23,8 @@ func TestWarpTunnelLoopback(t *testing.T) {
 	// the QUIC decoy before the handshake: the WireGuard end drops it and goes on
 	fakes.Ensure(fakesDir())
 	t.Run("i1", func(t *testing.T) { warpLoopback(t, quicI1()) })
+	// fnport's fake before the first packet, as against the TSPU: dropped by the WireGuard end
+	t.Run("fake", func(t *testing.T) { warpLoopback(t, "fake") })
 }
 
 func warpLoopback(t *testing.T, i1 string) {
@@ -60,8 +62,16 @@ func warpLoopback(t *testing.T, i1 string) {
 		}
 	}()
 
-	ws := warpSettings{PrivateKey: cliB64, Address: "10.9.0.2", Jc: 4, Jmin: 40, Jmax: 70, I1: i1,
+	ws := warpSettings{PrivateKey: cliB64, Address: "10.9.0.2", Jc: 4, Jmin: 40, Jmax: 70,
 		PeerKey: base64.StdEncoding.EncodeToString(srvKey.PublicKey().Bytes())}
+	if i1 == "fake" {
+		ws = ws.withFake(defaultSettings())
+		if ws.fake == nil {
+			t.Fatal("no fake")
+		}
+	} else {
+		ws.I1 = i1
+	}
 	w, err := newWarpDev(ws)
 	if err != nil {
 		t.Fatal(err)
@@ -75,10 +85,15 @@ func warpLoopback(t *testing.T, i1 string) {
 		t.Fatal("dial through the tunnel:", err)
 	}
 	defer c.Close()
-	c.SetDeadline(time.Now().Add(5 * time.Second))
-	c.Write([]byte("ping"))
-	b := make([]byte, 4)
-	if _, err := io.ReadFull(c, b); err != nil || string(b) != "ping" {
-		t.Fatalf("echo: %q %v", b, err)
+	c.SetDeadline(time.Now().Add(10 * time.Second))
+	// a megabyte both ways: full-size packets, not only the handshake's small ones
+	out := make([]byte, 1<<20)
+	for i := range out {
+		out[i] = byte(i * 7)
+	}
+	go c.Write(out)
+	back := make([]byte, len(out))
+	if _, err := io.ReadFull(c, back); err != nil || string(back) != string(out) {
+		t.Fatalf("echo of 1 MB: %v", err)
 	}
 }

@@ -46,6 +46,24 @@ type warpSettings struct {
 	Jmax       int      `json:"jmax"`
 	I1         string   `json:"i1,omitempty"`      // AWG 1.5 signature packet, written as AmneziaWG does
 	Domains    []string `json:"domains,omitempty"` // what goes through WARP; empty = Epic's (warpDomains)
+
+	// fnport's fake before the tunnel's first packet to an endpoint, at the fake's TTL: the TSPU
+	// freezes UDP to Cloudflare as to AWS, after the handshake and a few packets
+	fake    []byte
+	fakeTTL int
+}
+
+// withFake: the fake and TTL of the settings for the tunnel's UDP
+func (w warpSettings) withFake(s settings) warpSettings {
+	if s.Fake == "" || s.Passthrough {
+		return w
+	}
+	for _, f := range fakes.List(fakesDir()) {
+		if f.Name == s.Fake {
+			w.fake, w.fakeTTL = f.Data, s.FakeTTL
+		}
+	}
+	return w
 }
 
 func (w warpSettings) ready() bool { return w.PrivateKey != "" && w.Address != "" && w.PeerKey != "" }
@@ -499,7 +517,7 @@ func newWarpDev(ws warpSettings) (*warpTunnel, error) {
 	if err != nil {
 		return nil, err
 	}
-	dev := device.NewDevice(tdev, &physBind{}, device.NewLogger(device.LogLevelSilent, ""))
+	dev := device.NewDevice(tdev, &physBind{fake: ws.fake, ttl: ws.fakeTTL}, device.NewLogger(device.LogLevelSilent, ""))
 	cfg := fmt.Sprintf("private_key=%s\njc=%d\njmin=%d\njmax=%d\n", priv, ws.Jc, ws.Jmin, ws.Jmax)
 	if ws.I1 != "" {
 		cfg += "i1=" + ws.I1 + "\n"
@@ -547,8 +565,13 @@ func probeEndpoint(ws warpSettings, ep string) (time.Duration, string, bool) {
 	if best == 0 {
 		return 0, "", false
 	}
+	// a connection opens with a few small packets; a frozen tunnel passes those and no more
 	w.exit()
 	colo, _, _ := w.exitParts()
+	if colo == "" {
+		logf("WARP: %s отвечает на рукопожатие, но данные через него не идут (заморожен?)", ep)
+		return 0, "", false
+	}
 	return best, colo, true
 }
 
@@ -756,8 +779,11 @@ func (e physEndpoint) DstIP() netip.Addr   { return netip.AddrPort(e).Addr() }
 func (e physEndpoint) SrcIP() netip.Addr   { return netip.Addr{} }
 
 type physBind struct {
-	mu sync.Mutex
-	c  *net.UDPConn
+	mu   sync.Mutex
+	c    *net.UDPConn
+	fake []byte // sent once per endpoint before anything else, at ttl
+	ttl  int
+	sent map[netip.AddrPort]bool
 }
 
 func (b *physBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
@@ -816,6 +842,18 @@ func (b *physBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 	pe, ok := ep.(physEndpoint)
 	if !ok {
 		return conn.ErrWrongEndpointType
+	}
+	if b.fake != nil && b.ttl > 0 {
+		b.mu.Lock()
+		if b.sent == nil {
+			b.sent = map[netip.AddrPort]bool{}
+		}
+		first := !b.sent[netip.AddrPort(pe)]
+		b.sent[netip.AddrPort(pe)] = true
+		b.mu.Unlock()
+		if first {
+			wnet.SendWithTTL(c, b.fake, netip.AddrPort(pe), b.ttl)
+		}
 	}
 	for _, p := range bufs {
 		if _, err := c.WriteToUDPAddrPort(p, netip.AddrPort(pe)); err != nil {
