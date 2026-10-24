@@ -96,11 +96,14 @@ func (c *controller) report(r *checkResult) string {
 	}
 	res := map[string]string{"yes": "заморозка есть", "no": "на маяках заморозки нет", "no_reply": "маяки не ответили", "unclear": "неясно"}[r.Freeze]
 	if f := map[string]string{"works": "фейк работает", "kills": "фейк убивает соединения", "fails": "фейк не помогает",
-		"harmless": "фейк не мешает"}[r.Fake]; f != "" {
+		"harmless": "фейк не мешает", "lower": "фейк убивает соединения выше TTL"}[r.Fake]; f != "" {
 		res += ", " + f
 	}
-	if r.TTL > 0 {
+	switch {
+	case r.Fake == "works":
 		res += fmt.Sprintf(", TTL %d (срабатывает с %d)", r.TTL, r.WorksFrom)
+	case r.Fake == "lower":
+		res += fmt.Sprintf(" %d", r.TTL)
 	}
 	line("Итог", res)
 	set := fmt.Sprintf("TTL %d, ", s.FakeTTL)

@@ -33,6 +33,11 @@ func TestFinishPortByFact(t *testing.T) {
 			t.Errorf("%d: recommend %v", i, r.Recommend)
 		}
 	}
+	// the fake kills at the TTL in use, not lower: "Apply" lowers it
+	r0 := finish(&checkResult{Freeze: "no", Fake: "lower", TTL: 3, FakeFile: "quic_initial_vk_com.bin"}, defaultSettings())
+	if r0.Recommend == nil || r0.Recommend.FakeTTL != 3 || r0.Recommend.Fake == "" {
+		t.Errorf("the lower TTL not recommended: %+v", r0.Recommend)
+	}
 	// the fake off and harmless: "Apply" turns it on
 	off := defaultSettings()
 	off.Fake = ""

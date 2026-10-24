@@ -200,6 +200,22 @@ func (k *checker) run(cur settings) *checkResult {
 			r.Fake = "harmless"
 			if qos.Count(rs, "silent") == len(rs) {
 				r.Fake = "kills"
+				// the fake reaches the DPI and kills the flow there: lower, it may still pass the
+				// point that lifts the freeze of game servers (seen at Dom.ru: TTL 4 by day, then
+				// 4 killing at night while 3 had worked)
+				r.FakeCity = geo.CityRU(answered[0])
+				scan := fakeScan{Fake: name}
+				for t := cur.FakeTTL - 1; t >= 1; t-- {
+					k.say("  ниже, TTL %d:", t)
+					rs := k.probe(answered[0], d, t)
+					k.say("  %s: %s", geo.CityRU(answered[0]), fmtReplies(rs))
+					scan.Steps = append(scan.Steps, ttlReplies{t, rs})
+					if qos.Count(rs, "silent") < len(rs) {
+						r.Fake, r.TTL = "lower", t
+						break
+					}
+				}
+				r.Scans = append(r.Scans, scan)
 			}
 		}
 		return finish(r, cur)
@@ -384,8 +400,12 @@ func finish(r *checkResult, cur settings) *checkResult {
 		add("На маяках Epic заморозки сейчас нет. На игровых серверах она бывает и тогда: если матчи не находятся " +
 			"или вылетают, оставьте fnport включённым — без заморозки он не мешает.")
 		switch {
+		case r.Fake == "lower":
+			add(fmt.Sprintf("Фейк %s с TTL %d убивает соединения, с TTL %d — нет: «Применить» поставит TTL %d.",
+				fakes.Label(r.FakeFile), cur.FakeTTL, r.TTL, r.TTL))
+			rec.Fake, rec.FakeTTL = r.FakeFile, r.TTL
 		case r.Fake == "kills" && cur.Fake != "":
-			add("Фейк здесь убивает соединения — лучше его выключить.")
+			add("Фейк здесь убивает соединения при любом TTL — лучше его выключить.")
 			rec.Fake = ""
 		case r.Fake == "harmless" && cur.Fake == "":
 			add(fmt.Sprintf("Фейк выключен, а соединения он не ломает: «Применить» включит %s.", fakes.Label(r.FakeFile)))
