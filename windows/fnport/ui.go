@@ -694,6 +694,8 @@ func (v *view) beaconsCard(gtx C) D {
 					return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 						layout.Rigid(func(gtx C) D { return dot(gtx, c, 10) }),
 						hspace(10),
+						layout.Rigid(func(gtx C) D { return drawFlag(gtx, cityCountry[b.City], 13) }),
+						hspace(8),
 						layout.Flexed(1, v.label(14, colText, b.City).Layout),
 						layout.Rigid(bold(v.label(14, c, s)).Layout))
 				})
@@ -799,7 +801,9 @@ func (v *view) citiesCard(gtx C, flows []flowInfo) D {
 						return l.Layout(gtx)
 					}
 					return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-						layout.Rigid(func(gtx C) D { return dot(gtx, *c, 9) }), hspace(8), layout.Rigid(l.Layout))
+						layout.Rigid(func(gtx C) D { return dot(gtx, *c, 9) }), hspace(8),
+						layout.Rigid(func(gtx C) D { return drawFlag(gtx, cityCountry[l.Text], 12) }), hspace(7),
+						layout.Rigid(l.Layout))
 				}))
 			}
 			return layout.Flex{Alignment: layout.Middle}.Layout(gtx, kids...)
@@ -1271,7 +1275,7 @@ func (v *view) warpTab(gtx C) D {
 		v.warpDraft = true
 	}
 	if v.warpSpeed.Clicked(gtx) && !v.speedBusy {
-		v.speedBusy, v.warpMsg, v.warpErr = true, "Меряю скорость: 10 МБ напрямую, потом через WARP…", false
+		v.speedBusy, v.warpMsg, v.warpErr = true, "Меряю скорость: 15 с напрямую, потом 15 с через WARP…", false
 		go func() {
 			v.warpMsg = "Скорость: " + speedTest(v.ctl.warpTunnel())
 			v.speedBusy = false
@@ -1376,7 +1380,7 @@ func (v *view) warpCard(gtx C, s settings) D {
 		if s.Warp.ready() {
 			info = "Ключ WARP есть."
 		}
-		if st := v.ctl.warpStatus(); st != "" {
+		if st := v.ctl.warpStatus(false); st != "" {
 			info += " Сейчас WARP " + st + "."
 		} else if s.Warp.Enabled && s.Warp.ready() {
 			info += " WARP подключится, когда вы включите fnport."
@@ -1389,7 +1393,28 @@ func (v *view) warpCard(gtx C, s settings) D {
 		if v.warpErr {
 			msgC = colRed
 		}
-		kids = append(kids, vspace(10), layout.Rigid(v.label(13, colMuted, info).Layout), vspace(10),
+		kids = append(kids, vspace(10), layout.Rigid(v.label(13, colMuted, info).Layout))
+		if w := v.ctl.warpTunnel(); w != nil {
+			if colo, loc, ip := w.exitParts(); colo != "" {
+				city := coloCity[colo]
+				if city == "" {
+					city = colo
+				} else {
+					city += " (" + colo + ")"
+				}
+				if c := countryRU[loc]; c != "" {
+					city += ", " + c
+				}
+				kids = append(kids, vspace(8), layout.Rigid(func(gtx C) D {
+					return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+						layout.Rigid(v.label(13, colMuted, "Выход WARP:").Layout), hspace(8),
+						layout.Rigid(func(gtx C) D { return drawFlag(gtx, loc, 13) }), hspace(7),
+						layout.Rigid(v.label(13, colText, city).Layout), hspace(8),
+						layout.Rigid(mono(v.label(12, colMuted, ip)).Layout))
+				}))
+			}
+		}
+		kids = append(kids, vspace(10),
 			layout.Rigid(func(gtx C) D {
 				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 					layout.Rigid(func(gtx C) D { return v.button(gtx, &v.warpReg, label, false, !v.warpBusy) }),

@@ -69,7 +69,7 @@ func (c *controller) report(r *checkResult) string {
 		line("Сервисы Epic напрямую", strings.Join(ep, "; "))
 	}
 	if r.Settings.Warp.Enabled {
-		st := c.warpStatus()
+		st := c.warpStatus(true)
 		if st == "" {
 			st = "включён в настройках, fnport сейчас выключен"
 		}

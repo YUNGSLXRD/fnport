@@ -358,14 +358,14 @@ func (c *controller) warpTunnel() *warpTunnel {
 }
 
 // warpStatus: "" when WARP is off or fnport is
-func (c *controller) warpStatus() string {
+func (c *controller) warpStatus(full bool) string {
 	c.mu.Lock()
 	t, on := c.tcp, c.set.Warp.Enabled
 	c.mu.Unlock()
 	if t == nil || !on {
 		return ""
 	}
-	return t.warpStatus()
+	return t.warpStatus(full)
 }
 
 func (c *controller) fakeLabel() string {

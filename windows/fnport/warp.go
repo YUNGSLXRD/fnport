@@ -348,6 +348,7 @@ type warpTunnel struct {
 	peer     string // hex public key
 	endpoint atomic.Value
 	exitInfo atomic.Value // string from exit()
+	exitKV   atomic.Value // [3]string: colo, loc, ip
 	conns    atomic.Int64
 	fails    atomic.Int64
 }
@@ -434,7 +435,18 @@ func (w *warpTunnel) exit() string {
 	if kv["colo"] == "" {
 		return ""
 	}
-	return fmt.Sprintf("точка Cloudflare %s, страна %s, адрес %s", kv["colo"], kv["loc"], kv["ip"])
+	w.exitKV.Store([3]string{kv["colo"], kv["loc"], kv["ip"]})
+	city := coloCity[kv["colo"]]
+	if city == "" {
+		city = kv["colo"]
+	}
+	return fmt.Sprintf("%s (%s), %s, адрес %s", city, kv["colo"], kv["loc"], kv["ip"])
+}
+
+// exitParts: Cloudflare's point, the country, the address; "" before exit() learned them
+func (w *warpTunnel) exitParts() (colo, loc, ip string) {
+	p, _ := w.exitKV.Load().([3]string)
+	return p[0], p[1], p[2]
 }
 
 // works: a TCP connection to 1.1.1.1 through the tunnel, which needs a finished handshake
@@ -462,7 +474,7 @@ func (w *warpTunnel) where() string {
 
 func (w *warpTunnel) close() { w.dev.Close() }
 
-// speedTest: 10 MB from Cloudflare's speed test, straight and through WARP
+// speedTest: up to 50 MB from Cloudflare's speed test for 15 s, straight and through WARP
 func speedTest(w *warpTunnel) string {
 	measure := func(dial func(netip.AddrPort) (net.Conn, error)) string {
 		tr := &http.Transport{DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
@@ -478,9 +490,9 @@ func speedTest(w *warpTunnel) string {
 			return dial(netip.AddrPortFrom(ips[0], p))
 		}}
 		defer tr.CloseIdleConnections()
-		cl := &http.Client{Transport: tr, Timeout: 30 * time.Second}
+		cl := &http.Client{Transport: tr, Timeout: 15 * time.Second}
 		start := time.Now()
-		resp, err := cl.Get("https://speed.cloudflare.com/__down?bytes=10000000")
+		resp, err := cl.Get("https://speed.cloudflare.com/__down?bytes=50000000")
 		if err != nil {
 			return "ошибка: " + err.Error()
 		}
@@ -686,15 +698,15 @@ func inPrefixes(a netip.Addr, ps []netip.Prefix) bool {
 	return false
 }
 
-// warpStatus: for the window and the report
-func (t *tcpRelay) warpStatus() string {
+// warpStatus: for the window and (full, with the exit) the report
+func (t *tcpRelay) warpStatus(full bool) string {
 	s, _ := t.state.Load().(string)
 	if w := t.warp.Load(); w != nil {
 		s = fmt.Sprintf("подключён через %s, через него %d соединений", w.where(), w.conns.Load())
 		if n := w.fails.Load(); n > 0 {
 			s += fmt.Sprintf(", не открылись %d", n)
 		}
-		if ex, _ := w.exitInfo.Load().(string); ex != "" {
+		if ex, _ := w.exitInfo.Load().(string); ex != "" && full {
 			s += "; выход: " + ex
 		}
 	}
