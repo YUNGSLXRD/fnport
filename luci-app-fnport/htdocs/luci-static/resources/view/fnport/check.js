@@ -95,7 +95,7 @@ function stepText(st) {
 function verdictText(st) {
 	switch (st.verdict) {
 	case 'no_freeze':
-		return _('No freeze on this network right now: every beacon answered all packets without help. fnport is not needed here, but it does no harm if left on.');
+		return _('No freeze on Epic's beacons right now: every beacon answered all packets without help. Game servers may freeze all the same, so better leave fnport on: without a freeze it does no harm.');
 	case 'fake_works':
 		return st.recommended_fake
 			? _('The ISP freezes game UDP. The first fake did not help, but the spare %s does. Recommended fake TTL: %d.').format(st.recommended_fake, st.recommended_ttl)

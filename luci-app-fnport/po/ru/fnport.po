@@ -147,8 +147,8 @@ msgstr "Проверяю, что фейк не вредит…"
 msgid "Looking up Epic's beacons…"
 msgstr "Ищу маяки Epic…"
 
-msgid "No freeze on this network right now: every beacon answered all packets without help. fnport is not needed here, but it does no harm if left on."
-msgstr "Сейчас заморозки в этой сети нет: все маяки ответили на все пакеты без помощи. fnport здесь не нужен, но и не мешает, если его оставить."
+msgid "No freeze on Epic's beacons right now: every beacon answered all packets without help. Game servers may freeze all the same, so better leave fnport on: without a freeze it does no harm."
+msgstr "На маяках Epic заморозки сейчас нет: все маяки ответили на все пакеты без помощи. Игровые серверы при этом всё равно могут замораживать, поэтому fnport лучше оставить включённым: без заморозки он не мешает."
 
 msgid "The ISP freezes game UDP, and the whitelist fake lifts the freeze. Recommended fake TTL: %d."
 msgstr "Провайдер замораживает игровой UDP, а фейк с белым SNI заморозку снимает. Рекомендуемый TTL фейка: %d."

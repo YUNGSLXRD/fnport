@@ -21,6 +21,7 @@ func TestFinishPortByFact(t *testing.T) {
 		{checkResult{PortKept: "no", Freeze: "unclear", Epic: []epicResult{{"вход", "frozen", 16000}}},
 			"Сервисы Epic напрямую не открываются (вход)", "", false},
 		{checkResult{PortKept: "yes", Freeze: "no", Epic: ok}, "Сервисы Epic напрямую открываются", "", false},
+		{checkResult{PortKept: "no", Freeze: "no", Fake: "kills", FakeFile: "quic_initial_vk_com.bin"}, "убивает", "", true},
 	}
 	for i, c := range cases {
 		r := c.r
@@ -31,5 +32,12 @@ func TestFinishPortByFact(t *testing.T) {
 		if (r.Recommend != nil) != c.recommends {
 			t.Errorf("%d: recommend %v", i, r.Recommend)
 		}
+	}
+	// the fake off and harmless: "Apply" turns it on
+	off := defaultSettings()
+	off.Fake = ""
+	r := finish(&checkResult{Freeze: "no", Fake: "harmless", FakeFile: "quic_initial_vk_com.bin"}, off)
+	if r.Recommend == nil || r.Recommend.Fake != "quic_initial_vk_com.bin" {
+		t.Errorf("the fake not recommended: %+v", r.Recommend)
 	}
 }

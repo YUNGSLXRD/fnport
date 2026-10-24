@@ -145,7 +145,7 @@ msgstr ""
 msgid "Looking up Epic's beacons…"
 msgstr ""
 
-msgid "No freeze on this network right now: every beacon answered all packets without help. fnport is not needed here, but it does no harm if left on."
+msgid "No freeze on Epic's beacons right now: every beacon answered all packets without help. Game servers may freeze all the same, so better leave fnport on: without a freeze it does no harm."
 msgstr ""
 
 msgid "The ISP freezes game UDP, and the whitelist fake lifts the freeze. Recommended fake TTL: %d."

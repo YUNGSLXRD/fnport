@@ -184,9 +184,16 @@ func (k *checker) run(cur settings) *checkResult {
 		return finish(r, cur)
 	case worst == 0:
 		r.Freeze = "no"
-		// nothing freezes: only make sure the fake at the current TTL does not kill flows
-		if d := fakeData(cur.Fake); d != nil {
-			k.say("Заморозки нет. Не ломает ли фейк соединения (TTL %d):", cur.FakeTTL)
+		// nothing freezes on the beacons: only make sure the fake at the current TTL does not kill
+		// flows. With the fake off, the default one: game servers may freeze all the same, and
+		// a fake that does no harm is better on
+		name := cur.Fake
+		if fakeData(name) == nil {
+			name = fakes.Default()
+		}
+		if d := fakeData(name); d != nil {
+			r.FakeFile = name
+			k.say("Заморозки нет. Не ломает ли фейк %s соединения (TTL %d):", fakes.Label(name), cur.FakeTTL)
 			rs := k.probe(answered[0], d, cur.FakeTTL)
 			k.say("  %s: %s", geo.CityRU(answered[0]), fmtReplies(rs))
 			r.FakeCheck = &ttlReplies{cur.FakeTTL, rs}
@@ -376,9 +383,13 @@ func finish(r *checkResult, cur settings) *checkResult {
 		// seen in a club: beacons 30/30, a game server in the same city froze two ports of four
 		add("На маяках Epic заморозки сейчас нет. На игровых серверах она бывает и тогда: если матчи не находятся " +
 			"или вылетают, оставьте fnport включённым — без заморозки он не мешает.")
-		if r.Fake == "kills" {
+		switch {
+		case r.Fake == "kills" && cur.Fake != "":
 			add("Фейк здесь убивает соединения — лучше его выключить.")
 			rec.Fake = ""
+		case r.Fake == "harmless" && cur.Fake == "":
+			add(fmt.Sprintf("Фейк выключен, а соединения он не ломает: «Применить» включит %s.", fakes.Label(r.FakeFile)))
+			rec.Fake = r.FakeFile
 		}
 	case "yes":
 		add("Заморозка у провайдера есть.")
