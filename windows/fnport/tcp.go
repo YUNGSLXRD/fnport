@@ -161,11 +161,14 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort, w *w
 	var first []byte // the server's first answer, read while deciding
 	sent := false    // the ClientHello went out on out already
 	var counted *countConn
-	if t.warpName(name) || (name == "" && t.epicIP(dst.Addr())) {
-		viaWarp := t.always.Load() || t.blockedRecently(shown)
+	listed, viaWarp := t.warpName(name) || (name == "" && t.epicIP(dst.Addr())), false
+	if listed {
+		viaWarp = t.always.Load() || t.blockedRecently(shown)
 		if !viaWarp {
 			if out, first = tryDirect(dst, hello); out != nil {
 				sent = len(hello) > 0
+				counted = &countConn{Conn: out}
+				out = counted
 			} else {
 				viaWarp = true
 				t.blocked.Store(shown, time.Now())
@@ -218,7 +221,21 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort, w *w
 	t.total.Add(1)
 	t.active.Add(1)
 	defer t.active.Add(-1)
+	start := time.Now()
 	splice(in, out)
+	// directly, a few kilobytes and then nothing until the client gave up: the TSPU's freeze of
+	// foreign HTTPS. The answer to the ClientHello came, so tryDirect let it through; the site
+	// goes through WARP from now on
+	if listed && !viaWarp && counted != nil {
+		n := counted.n.Load()
+		if time.Since(start) > 15*time.Second && n > 1<<10 && n < 128<<10 {
+			t.blocked.Store(shown, time.Now())
+			if _, dup := t.seen.LoadOrStore("frozen "+shown, true); !dup {
+				logf("WARP: %s напрямую замёрзло на %d КБ — дальше через WARP", maskAddresses(shown), n>>10)
+			}
+		}
+		return
+	}
 	if counted != nil && counted.n.Load() == 0 {
 		w.fails.Add(1)
 		if _, dup := t.seen.LoadOrStore("empty "+shown, true); !dup {

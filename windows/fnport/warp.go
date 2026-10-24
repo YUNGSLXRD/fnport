@@ -541,15 +541,16 @@ func (w *warpTunnel) setEndpoint(ep string) bool {
 		"persistent_keepalive_interval=25\n", w.peer, ep)) == nil
 }
 
-// probeEndpoint: through a tunnel of its own, the delay to Cloudflare's exit point and its code
-func probeEndpoint(ws warpSettings, ep string) (time.Duration, string, bool) {
+// probeEndpoint: through a tunnel of its own, the delay to Cloudflare's exit point, its code
+// and country
+func probeEndpoint(ws warpSettings, ep string) (time.Duration, string, string, bool) {
 	w, err := newWarpDev(ws)
 	if err != nil {
-		return 0, "", false
+		return 0, "", "", false
 	}
 	defer w.close()
 	if !w.setEndpoint(ep) || !w.works() {
-		return 0, "", false
+		return 0, "", "", false
 	}
 	var best time.Duration
 	for i := 0; i < 3; i++ {
@@ -564,16 +565,16 @@ func probeEndpoint(ws warpSettings, ep string) (time.Duration, string, bool) {
 		c.Close()
 	}
 	if best == 0 {
-		return 0, "", false
+		return 0, "", "", false
 	}
 	// a connection opens with a few small packets; a frozen tunnel passes those and no more
 	w.exit()
-	colo, _, _ := w.exitParts()
+	colo, loc, _ := w.exitParts()
 	if colo == "" {
 		logf("WARP: %s отвечает на рукопожатие, но данные через него не идут (заморожен?)", ep)
-		return 0, "", false
+		return 0, "", "", false
 	}
-	return best, colo, true
+	return best, colo, loc, true
 }
 
 // quicI1: AWG's signature packet as the fake fnport opens game flows with, a QUIC Initial to a
@@ -603,25 +604,37 @@ func startWarp(ws warpSettings) (*warpTunnel, error) {
 // startWarpWith brings the tunnel up through the nearest of a few endpoints that answer (they
 // lead to different points of Cloudflare, depending on the ISP's routes); slow, so it runs in
 // the background
+//
+// An exit in Russia is taken only when there is no other: from Cloudflare's point in Moscow
+// the traffic goes on through Russian networks, and the TSPU freezes it there (home: Fortnite's
+// content keys and any large download failed through DME, October 2026)
 func startWarpWith(ws warpSettings) (*warpTunnel, error) {
-	best, bestRTT, found := "", time.Duration(0), 0
+	best, bestRTT, bestRU := "", time.Duration(0), true
+	found, abroad := 0, 0
 	for i, ep := range warpEndpoints(ws.Endpoint) {
-		if found >= 4 || i >= 12 {
+		if found >= 4 && abroad > 0 || i >= 16 {
 			break
 		}
-		rtt, colo, ok := probeEndpoint(ws, ep)
+		rtt, colo, loc, ok := probeEndpoint(ws, ep)
 		if !ok {
 			continue
 		}
 		found++
+		ru := loc == "RU"
+		if !ru {
+			abroad++
+		}
 		where := coloCity[colo]
 		if where == "" {
 			where = colo
 		}
 		logf("WARP: %s ведёт в %s (%s), %d мс", ep, where, colo, rtt.Milliseconds())
-		if best == "" || rtt < bestRTT {
-			best, bestRTT = ep, rtt
+		if best == "" || bestRU && !ru || bestRU == ru && rtt < bestRTT {
+			best, bestRTT, bestRU = ep, rtt, ru
 		}
+	}
+	if best != "" && bestRU {
+		logf("WARP: все найденные выходы в России, беру лучший из них — через него может не работать то же, что напрямую")
 	}
 	if best == "" {
 		return nil, errors.New("ни один адрес WARP не ответил")
@@ -716,7 +729,7 @@ func (w *warpTunnel) close() { w.dev.Close() }
 // brought up for the test. Not Cloudflare's own speed test: ISPs block *.cloudflare.com by name
 // (Dom.ru-like home ISP, October 2026), so straight it measured the block, not the line
 func speedTest(w *warpTunnel, ws warpSettings) string {
-	measure := func(dial func(netip.AddrPort) (net.Conn, error)) string {
+	measure := func(url string, dial func(netip.AddrPort) (net.Conn, error)) string {
 		tr := &http.Transport{DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
 			host, port, _ := net.SplitHostPort(addr)
 			ips := lookupAll(host)
@@ -732,19 +745,24 @@ func speedTest(w *warpTunnel, ws warpSettings) string {
 		defer tr.CloseIdleConnections()
 		cl := &http.Client{Transport: tr, Timeout: 15 * time.Second}
 		start := time.Now()
-		resp, err := cl.Get("https://cachefly.cachefly.net/50mb.test")
+		resp, err := cl.Get(url)
 		if err != nil {
 			return "ошибка: " + err.Error()
 		}
 		defer resp.Body.Close()
 		n, _ := io.Copy(io.Discard, resp.Body)
 		d := time.Since(start).Seconds()
+		if resp.StatusCode != 200 {
+			return fmt.Sprintf("сервер ответил %s", resp.Status)
+		}
 		if n == 0 || d <= 0 {
 			return "ничего не скачалось"
 		}
-		return fmt.Sprintf("%.1f Мбит/с", float64(n)*8/d/1e6)
+		return fmt.Sprintf("%.1f Мбит/с (%d КБ за %.0f с)", float64(n)*8/d/1e6, n/1024, d)
 	}
-	direct := measure(func(dst netip.AddrPort) (net.Conn, error) {
+	// straight: not Cloudflare's own names, the ISP blocks those; through WARP: Cloudflare's own
+	// test, the ISP does not see the name there and WARP is Cloudflare's network
+	direct := measure("https://cachefly.cachefly.net/50mb.test", func(dst netip.AddrPort) (net.Conn, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		return wnet.DialTCP(ctx, dst)
@@ -760,7 +778,7 @@ func speedTest(w *warpTunnel, ws warpSettings) string {
 		}
 	}
 	if w != nil {
-		res += ", через WARP " + measure(w.dial)
+		res += ", через WARP " + measure("https://speed.cloudflare.com/__down?bytes=50000000", w.dial)
 	} else if !ws.ready() {
 		res += ", ключа WARP нет"
 	}

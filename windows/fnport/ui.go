@@ -150,8 +150,7 @@ type view struct {
 	rounds     widget.Editor
 	budget     widget.Editor
 	passthru   widget.Bool
-	warpOn     widget.Bool
-	warpAlways widget.Bool
+	warpMode   widget.Enum // "off", "auto", "always"
 	warpPage   widget.List
 	warpList   widget.Editor // the names that go through WARP, one per line
 	warpSave   widget.Clickable
@@ -1314,14 +1313,24 @@ func (v *view) warpTab(gtx C) D {
 			changes.Add(1)
 		}()
 	}
-	if v.warpOn.Update(gtx) {
-		on := v.warpOn.Value
+	// one choice of three: off, only what does not open directly, everything listed
+	mode := func(w warpSettings) string {
+		switch {
+		case !w.Enabled:
+			return "off"
+		case w.Always:
+			return "always"
+		}
+		return "auto"
+	}
+	if v.warpMode.Update(gtx) {
+		m := v.warpMode.Value
 		go func() {
 			cur := v.ctl.settings()
-			cur.Warp.Enabled = on
+			cur.Warp.Enabled, cur.Warp.Always = m != "off", m == "always"
 			if err := v.ctl.apply(cur); err != nil {
 				v.warpMsg, v.warpErr = err.Error(), true
-			} else if on && !cur.Warp.ready() {
+			} else if m != "off" && !cur.Warp.ready() {
 				v.warpMsg, v.warpErr = "Включено, но ключа ещё нет: нажмите «Получить ключ WARP».", false
 			} else {
 				v.warpMsg, v.warpErr = "", false
@@ -1329,20 +1338,7 @@ func (v *view) warpTab(gtx C) D {
 			changes.Add(1)
 		}()
 	} else {
-		v.warpOn.Value = s.Warp.Enabled
-	}
-	if v.warpAlways.Update(gtx) {
-		always := v.warpAlways.Value
-		go func() {
-			cur := v.ctl.settings()
-			cur.Warp.Always = always
-			if err := v.ctl.apply(cur); err != nil {
-				v.warpMsg, v.warpErr = err.Error(), true
-			}
-			changes.Add(1)
-		}()
-	} else {
-		v.warpAlways.Value = s.Warp.Always
+		v.warpMode.Value = mode(s.Warp)
 	}
 	if !v.warpDraft {
 		v.warpList.SetText(strings.Join(s.Warp.domains(), "\n"))
@@ -1466,15 +1462,10 @@ func (v *view) warpCard(gtx C, s settings) D {
 		kids := v.sectionTitle("Сервисы Epic через WARP", "Если провайдер режет вход, магазин или загрузки Epic, они пойдут "+
 			"через Cloudflare WARP (AmneziaWG), а игра — напрямую, как раньше. Ключ WARP ваш и бесплатный: программа "+
 			"получает его у Cloudflare одной кнопкой. Что именно идёт через WARP — в списке ниже.")
-		kids = append(kids, layout.Rigid(func(gtx C) D {
-			cb := material.CheckBox(v.th, &v.warpOn, "Пускать сервисы Epic через WARP, если напрямую они не открываются")
-			cb.Color, cb.IconColor, cb.Size = colText, colGreen, unit.Dp(20)
-			return cb.Layout(gtx)
-		}), layout.Rigid(func(gtx C) D {
-			cb := material.CheckBox(v.th, &v.warpAlways, "Всегда через WARP, не пробуя напрямую")
-			cb.Color, cb.IconColor, cb.Size = colText, colGreen, unit.Dp(20)
-			return cb.Layout(gtx)
-		}))
+		kids = append(kids,
+			v.radio("off", "Выключен", &v.warpMode),
+			v.radio("auto", "Только то, что напрямую не открывается или замерзает (рекомендуется)", &v.warpMode),
+			v.radio("always", "Всё из списка — всегда через WARP", &v.warpMode))
 		info := "Ключа WARP пока нет."
 		if s.Warp.ready() {
 			info = "Ключ WARP есть."
