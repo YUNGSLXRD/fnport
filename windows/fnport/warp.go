@@ -212,41 +212,24 @@ func warpHello() *utls.ClientHelloSpec {
 // 8.47.69.0 and 8.6.112.0, which do not answer from Russia (October 2026)
 var warpAPIAddrs = []netip.Addr{netip.MustParseAddr("104.16.24.84"), netip.MustParseAddr("104.16.192.82")}
 
-// warpConnect: a TLS connection to the WARP API, trying its addresses in turn
+// warpConnect: a TLS connection to the WARP API, trying its addresses in turn, the ClientHello
+// cut in TCP segments first, then also in TLS records
 func warpConnect() (*utls.UConn, error) {
 	ips := append(append([]netip.Addr(nil), warpAPIAddrs...), lookupAll(warpAPI)...)
 	var last error
-	tried := map[netip.Addr]bool{}
-	for _, ip := range ips {
-		if tried[ip] {
-			continue
+	for _, records := range []bool{false, true} {
+		tried := map[netip.Addr]bool{}
+		for _, ip := range ips {
+			if tried[ip] {
+				continue
+			}
+			tried[ip] = true
+			tc, err := warpTLS(ip, records)
+			if err == nil {
+				return tc, nil
+			}
+			last = err
 		}
-		tried[ip] = true
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		raw, err := wnet.DialTCP(ctx, netip.AddrPortFrom(ip, 443))
-		if err != nil {
-			cancel()
-			last = fmt.Errorf("не соединяется с Cloudflare: %w", err)
-			continue
-		}
-		raw.SetDeadline(time.Now().Add(8 * time.Second))
-		raw = &splitConn{Conn: raw, mark: []byte(warpAPI)}
-		tc := utls.UClient(raw, &utls.Config{ServerName: warpAPI, NextProtos: []string{"http/1.1"}}, utls.HelloCustom)
-		if err := tc.ApplyPreset(warpHello()); err != nil {
-			cancel()
-			raw.Close()
-			return nil, err
-		}
-		err = tc.HandshakeContext(ctx)
-		cancel()
-		if err != nil {
-			raw.Close()
-			last = fmt.Errorf("HTTPS к Cloudflare не прошёл (%v): похоже, провайдер блокирует регистрацию WARP. "+
-				"Можно вставить готовый конфиг WARP ниже", err)
-			continue
-		}
-		raw.SetDeadline(time.Now().Add(20 * time.Second))
-		return tc, nil
 	}
 	if last == nil {
 		last = errors.New("не найден адрес " + warpAPI)
@@ -254,13 +237,37 @@ func warpConnect() (*utls.UConn, error) {
 	return nil, last
 }
 
+func warpTLS(ip netip.Addr, records bool) (*utls.UConn, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	raw, err := wnet.DialTCP(ctx, netip.AddrPortFrom(ip, 443))
+	if err != nil {
+		return nil, fmt.Errorf("не соединяется с Cloudflare: %w", err)
+	}
+	raw.SetDeadline(time.Now().Add(6 * time.Second))
+	sc := &splitConn{Conn: raw, mark: []byte(warpAPI), records: records}
+	tc := utls.UClient(sc, &utls.Config{ServerName: warpAPI, NextProtos: []string{"http/1.1"}}, utls.HelloCustom)
+	if err := tc.ApplyPreset(warpHello()); err != nil {
+		raw.Close()
+		return nil, err
+	}
+	if err := tc.HandshakeContext(ctx); err != nil {
+		raw.Close()
+		return nil, fmt.Errorf("HTTPS к Cloudflare не прошёл (%v): похоже, провайдер блокирует регистрацию WARP. "+
+			"Получите ключ в другой сети (дома, с телефона) — он сохранится в fnport.json — или вставьте готовый конфиг ниже", err)
+	}
+	raw.SetDeadline(time.Now().Add(20 * time.Second))
+	return tc, nil
+}
+
 // splitConn: the first write (the ClientHello) goes out in three TCP segments, the cut in the
 // middle of the server's name, a moment apart: a DPI that looks for the name in one packet
 // does not find it
 type splitConn struct {
 	net.Conn
-	mark []byte
-	done bool
+	mark    []byte
+	records bool // also cut the TLS record in two records, for a DPI that reassembles TCP
+	done    bool
 }
 
 func (c *splitConn) Write(b []byte) (int, error) {
@@ -274,19 +281,25 @@ func (c *splitConn) Write(b []byte) (int, error) {
 	} else {
 		cut += len(c.mark) / 2
 	}
-	n := 0
-	for _, part := range [][]byte{b[:1], b[1:cut], b[cut:]} {
+	parts := [][]byte{b[:1], b[1:cut], b[cut:]}
+	if c.records && len(b) > 5 && b[0] == 22 && cut > 5 && cut < len(b) {
+		// one handshake message in two records: the same type and version, each its own length
+		rec := func(body []byte) []byte {
+			return append([]byte{b[0], b[1], b[2], byte(len(body) >> 8), byte(len(body))}, body...)
+		}
+		first, second := rec(b[5:cut]), rec(b[cut:])
+		parts = [][]byte{first[:1], first[1:], second}
+	}
+	for _, part := range parts {
 		if len(part) == 0 {
 			continue
 		}
-		m, err := c.Conn.Write(part)
-		n += m
-		if err != nil {
-			return n, err
+		if _, err := c.Conn.Write(part); err != nil {
+			return 0, err
 		}
 		time.Sleep(15 * time.Millisecond)
 	}
-	return n, nil
+	return len(b), nil
 }
 
 // parseWarpConf: a WireGuard or AmneziaWG config as the apps export it, over the old settings

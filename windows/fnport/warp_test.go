@@ -114,3 +114,21 @@ func TestSplitConn(t *testing.T) {
 		t.Fatal(string(got))
 	}
 }
+
+// the record split keeps the handshake readable for a real TLS server
+func TestSplitRecords(t *testing.T) {
+	a, b := net.Pipe()
+	defer a.Close()
+	go func() {
+		c := tls.Client(&splitConn{Conn: a, mark: []byte("example.org"), records: true}, &tls.Config{ServerName: "example.org", InsecureSkipVerify: true})
+		c.Handshake()
+	}()
+	b.SetReadDeadline(time.Now().Add(5 * time.Second))
+	first := readHello(b) // the first record only: up to the name's middle
+	if first[0] != 22 || len(first) < 5 {
+		t.Fatal(first)
+	}
+	if strings.Contains(string(first), "example.org") {
+		t.Fatal("the whole name in the first record")
+	}
+}
