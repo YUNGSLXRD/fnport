@@ -341,10 +341,10 @@ func finish(r *checkResult, cur settings) *checkResult {
 	rec := cur
 	defer func() {
 		if blocked := epicBlocked(r.Epic); len(blocked) > 0 {
-			add(fmt.Sprintf("Сервисы Epic напрямую не работают (%s): ошибки #1, #3 и зависание на 7%% — отсюда. "+
-				"fnport их не снимает: для доменов Epic нужен обход блокировки или VPN.", strings.Join(blocked, ", ")))
+			add(fmt.Sprintf("Сервисы Epic напрямую не открываются (%s): если не получается войти или скачать "+
+				"обновление, причина может быть в этом.", strings.Join(blocked, ", ")))
 		} else if len(r.Epic) > 0 {
-			add("Сервисы Epic напрямую работают: ошибки #1 и #3 не от блокировки.")
+			add("Сервисы Epic напрямую открываются.")
 		}
 		if rec.Fake != cur.Fake || rec.FakeTTL != cur.FakeTTL {
 			r.Recommend = &rec

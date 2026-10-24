@@ -19,8 +19,8 @@ func TestFinishPortByFact(t *testing.T) {
 		{checkResult{PortKept: "no", Freeze: "no", Fake: "harmless"}, "заморозки нет — это не мешает", "OpenWrt", false},
 		{checkResult{PortKept: "yes", Freeze: "yes", Fake: "fails"}, "подбирает порты сам", "белый IP", false},
 		{checkResult{PortKept: "no", Freeze: "unclear", Epic: []epicResult{{"вход", "frozen", 16000}}},
-			"Сервисы Epic напрямую не работают (вход)", "", false},
-		{checkResult{PortKept: "yes", Freeze: "no", Epic: ok}, "ошибки #1 и #3 не от блокировки", "", false},
+			"Сервисы Epic напрямую не открываются (вход)", "", false},
+		{checkResult{PortKept: "yes", Freeze: "no", Epic: ok}, "Сервисы Epic напрямую открываются", "", false},
 	}
 	for i, c := range cases {
 		r := c.r

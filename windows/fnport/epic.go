@@ -16,8 +16,8 @@ import (
 
 // The Epic services part of the ISP check: the login, Fortnite's services behind Cloudflare and a
 // larger page, straight from this PC (public DNS, the physical interface, not fnport's adapter).
-// It tells the blocking of Epic's HTTPS (errors #1 and #3, loading stuck at 7%) apart from the
-// freeze of the game's UDP (#5), which is what fnport lifts. Three requests: nothing to punish.
+// It shows whether the ISP blocks Epic's HTTPS itself, apart from the freeze of the game's UDP.
+// Three requests: nothing to punish.
 
 type epicProbe struct {
 	Label, Host, Path string
