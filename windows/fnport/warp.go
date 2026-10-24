@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/YUNGSLXRD/fnport/windows/internal/awgnet"
+	"github.com/YUNGSLXRD/fnport/windows/internal/fakes"
 	"github.com/YUNGSLXRD/fnport/windows/internal/wnet"
 	"github.com/amnezia-vpn/amneziawg-go/conn"
 	"github.com/amnezia-vpn/amneziawg-go/device"
@@ -503,7 +504,6 @@ func newWarpDev(ws warpSettings) (*warpTunnel, error) {
 	if ws.I1 != "" {
 		cfg += "i1=" + ws.I1 + "\n"
 	}
-	cfg += fmt.Sprintf("public_key=%s\nallowed_ip=0.0.0.0/0\npersistent_keepalive_interval=25\n", peer)
 	if err := dev.IpcSet(cfg); err != nil {
 		dev.Close()
 		return nil, fmt.Errorf("настройки AWG: %w", err)
@@ -515,8 +515,11 @@ func newWarpDev(ws warpSettings) (*warpTunnel, error) {
 	return &warpTunnel{dev: dev, net: tnet, peer: peer}, nil
 }
 
+// setEndpoint: the peer made anew with the endpoint. A new peer with keepalive sends its
+// handshake at once; changing the endpoint of the old one waits for its retry timer (5 s)
 func (w *warpTunnel) setEndpoint(ep string) bool {
-	return w.dev.IpcSet(fmt.Sprintf("public_key=%s\nupdate_only=true\nendpoint=%s\n", w.peer, ep)) == nil
+	return w.dev.IpcSet(fmt.Sprintf("replace_peers=true\npublic_key=%s\nendpoint=%s\nallowed_ip=0.0.0.0/0\n"+
+		"persistent_keepalive_interval=25\n", w.peer, ep)) == nil
 }
 
 // probeEndpoint: through a tunnel of its own, the delay to Cloudflare's exit point and its code
@@ -549,10 +552,34 @@ func probeEndpoint(ws warpSettings, ep string) (time.Duration, string, bool) {
 	return best, colo, true
 }
 
-// startWarp brings the tunnel up through the nearest of a few endpoints that answer (they lead
-// to different points of Cloudflare, depending on the ISP's routes); slow, so it runs in the
-// background
+// quicI1: AWG's signature packet as the fake fnport opens game flows with, a QUIC Initial to a
+// whitelisted name: before each handshake, so a DPI that blocks WireGuard may let the flow be
+func quicI1() string {
+	for _, f := range fakes.List(fakesDir()) {
+		if f.Name == fakes.Default() {
+			return "<b 0x" + hex.EncodeToString(f.Data) + ">"
+		}
+	}
+	return ""
+}
+
+// startWarp: as it is first, then, if no endpoint answers, with the QUIC decoy before the handshake
 func startWarp(ws warpSettings) (*warpTunnel, error) {
+	w, err := startWarpWith(ws)
+	if err == nil || ws.I1 != "" {
+		return w, err
+	}
+	if ws.I1 = quicI1(); ws.I1 == "" {
+		return nil, err
+	}
+	logf("WARP: ни один адрес не ответил, пробую с приманкой QUIC %s перед рукопожатием", fakes.Label(fakes.Default()))
+	return startWarpWith(ws)
+}
+
+// startWarpWith brings the tunnel up through the nearest of a few endpoints that answer (they
+// lead to different points of Cloudflare, depending on the ISP's routes); slow, so it runs in
+// the background
+func startWarpWith(ws warpSettings) (*warpTunnel, error) {
 	best, bestRTT, found := "", time.Duration(0), 0
 	for i, ep := range warpEndpoints(ws.Endpoint) {
 		if found >= 4 || i >= 12 {
@@ -661,8 +688,9 @@ func (w *warpTunnel) where() string {
 
 func (w *warpTunnel) close() { w.dev.Close() }
 
-// speedTest: up to 50 MB from Cloudflare's speed test for 15 s, straight and through WARP; with
-// fnport off, through a tunnel brought up for the test
+// speedTest: up to 50 MB for 15 s, straight and through WARP; with fnport off, through a tunnel
+// brought up for the test. Not Cloudflare's own speed test: ISPs block *.cloudflare.com by name
+// (Dom.ru-like home ISP, October 2026), so straight it measured the block, not the line
 func speedTest(w *warpTunnel, ws warpSettings) string {
 	measure := func(dial func(netip.AddrPort) (net.Conn, error)) string {
 		tr := &http.Transport{DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
@@ -680,7 +708,7 @@ func speedTest(w *warpTunnel, ws warpSettings) string {
 		defer tr.CloseIdleConnections()
 		cl := &http.Client{Transport: tr, Timeout: 15 * time.Second}
 		start := time.Now()
-		resp, err := cl.Get("https://speed.cloudflare.com/__down?bytes=50000000")
+		resp, err := cl.Get("https://cachefly.cachefly.net/50mb.test")
 		if err != nil {
 			return "ошибка: " + err.Error()
 		}

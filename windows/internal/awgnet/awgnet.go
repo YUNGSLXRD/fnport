@@ -116,3 +116,8 @@ func (d *device) Close() error {
 	close(d.incoming)
 	return nil
 }
+
+// ListenTCP: for tests, a server end inside the stack
+func (n *Net) ListenTCP(port uint16) (*gonet.TCPListener, error) {
+	return gonet.ListenTCP(n.stack, tcpip.FullAddress{NIC: 1, Port: port}, ipv4.ProtocolNumber)
+}
