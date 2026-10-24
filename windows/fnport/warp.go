@@ -329,15 +329,21 @@ func warpEndpoints(first string) []string {
 	if first != "" {
 		out = append(out, first)
 	}
+	ranges := []string{"188.114.96", "188.114.97", "188.114.98", "188.114.99", "162.159.192"}
 	ports := []int{2408, 500, 1701, 4500, 854, 878, 894, 7559, 3138}
-	for _, net3 := range []string{"188.114.96", "188.114.97"} {
-		for _, p := range ports {
-			out = append(out, fmt.Sprintf("%s.%d:%d", net3, 1+mrand.IntN(254), p))
+	pick := func(net3 string, port int) string { return fmt.Sprintf("%s.%d:%d", net3, 1+mrand.IntN(254), port) }
+	// one of each range first: the ranges lead to different points of Cloudflare
+	for _, r := range ranges {
+		out = append(out, pick(r, 2408))
+	}
+	for _, r := range ranges[:2] {
+		for _, p := range ports[1:] {
+			out = append(out, pick(r, p))
 		}
 	}
-	for _, net3 := range []string{"188.114.98", "188.114.99", "162.159.192"} {
-		for _, p := range ports[:3] {
-			out = append(out, fmt.Sprintf("%s.%d:%d", net3, 1+mrand.IntN(254), p))
+	for _, r := range ranges[2:] {
+		for _, p := range ports[1:3] {
+			out = append(out, pick(r, p))
 		}
 	}
 	return out
@@ -362,9 +368,8 @@ func b64hex(s string) (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// startWarp brings the tunnel up and looks for an endpoint that answers; slow (up to a minute
-// or so when the DPI eats the first ones), so it runs in the background
-func startWarp(ws warpSettings) (*warpTunnel, error) {
+// newWarpDev: the AWG device with the key, up, no endpoint yet
+func newWarpDev(ws warpSettings) (*warpTunnel, error) {
 	addr, err := netip.ParseAddr(ws.Address)
 	if err != nil {
 		return nil, errors.New("адрес WARP испорчен")
@@ -395,21 +400,88 @@ func startWarp(ws warpSettings) (*warpTunnel, error) {
 		dev.Close()
 		return nil, err
 	}
-	w := &warpTunnel{dev: dev, net: tnet, peer: peer}
-	if w.findEndpoint(ws.Endpoint) {
+	return &warpTunnel{dev: dev, net: tnet, peer: peer}, nil
+}
+
+func (w *warpTunnel) setEndpoint(ep string) bool {
+	return w.dev.IpcSet(fmt.Sprintf("public_key=%s\nupdate_only=true\nendpoint=%s\n", w.peer, ep)) == nil
+}
+
+// probeEndpoint: through a tunnel of its own, the delay to Cloudflare's exit point and its code
+func probeEndpoint(ws warpSettings, ep string) (time.Duration, string, bool) {
+	w, err := newWarpDev(ws)
+	if err != nil {
+		return 0, "", false
+	}
+	defer w.close()
+	if !w.setEndpoint(ep) || !w.works() {
+		return 0, "", false
+	}
+	var best time.Duration
+	for i := 0; i < 3; i++ {
+		t0 := time.Now()
+		c, err := w.dial(netip.MustParseAddrPort("1.1.1.1:443"))
+		if err != nil {
+			continue
+		}
+		if d := time.Since(t0); best == 0 || d < best {
+			best = d
+		}
+		c.Close()
+	}
+	if best == 0 {
+		return 0, "", false
+	}
+	w.exit()
+	colo, _, _ := w.exitParts()
+	return best, colo, true
+}
+
+// startWarp brings the tunnel up through the nearest of a few endpoints that answer (they lead
+// to different points of Cloudflare, depending on the ISP's routes); slow, so it runs in the
+// background
+func startWarp(ws warpSettings) (*warpTunnel, error) {
+	best, bestRTT, found := "", time.Duration(0), 0
+	for i, ep := range warpEndpoints(ws.Endpoint) {
+		if found >= 4 || i >= 12 {
+			break
+		}
+		rtt, colo, ok := probeEndpoint(ws, ep)
+		if !ok {
+			continue
+		}
+		found++
+		where := coloCity[colo]
+		if where == "" {
+			where = colo
+		}
+		logf("WARP: %s ведёт в %s (%s), %d мс", ep, where, colo, rtt.Milliseconds())
+		if best == "" || rtt < bestRTT {
+			best, bestRTT = ep, rtt
+		}
+	}
+	if best == "" {
+		return nil, errors.New("ни один адрес WARP не ответил")
+	}
+	w, err := newWarpDev(ws)
+	if err != nil {
+		return nil, err
+	}
+	if w.setEndpoint(best) && w.works() {
+		w.endpoint.Store(best)
 		return w, nil
 	}
-	dev.Close()
+	if w.findEndpoint(best) {
+		return w, nil
+	}
+	w.close()
 	return nil, errors.New("ни один адрес WARP не ответил")
 }
 
 // findEndpoint: the first address of WARP the handshake goes through
 func (w *warpTunnel) findEndpoint(first string) bool {
 	for _, ep := range warpEndpoints(first) {
-		if w.dev.IpcSet(fmt.Sprintf("public_key=%s\nupdate_only=true\nendpoint=%s\n", w.peer, ep)) != nil {
-			continue
-		}
-		if w.works() {
+		if w.setEndpoint(ep) && w.works() {
 			w.endpoint.Store(ep)
 			return true
 		}
