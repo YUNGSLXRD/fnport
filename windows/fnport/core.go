@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -127,6 +128,16 @@ func physical(name string) (wnet.IfaceInfo, error) {
 	info, err := wnet.RouteInterface(netip.MustParseAddr("3.66.90.173"))
 	if err != nil || info.Index == 0 {
 		return info, errorf("не найден сетевой адаптер с выходом в интернет")
+	}
+	// with fnport on, AWS is routed into its own adapter: the way out is the one it started with.
+	// Taking fnport's adapter here would send its own sockets back into it
+	if strings.HasPrefix(info.Alias, "fnport") {
+		for _, i := range wnet.Interfaces() {
+			if i.Index == wnet.PhysIndex {
+				return i, nil
+			}
+		}
+		return wnet.IfaceInfo{}, errorf("не найден сетевой адаптер с выходом в интернет")
 	}
 	return info, nil
 }
