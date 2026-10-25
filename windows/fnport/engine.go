@@ -262,7 +262,7 @@ func (e *engine) assign(f *uflow) {
 	if f.game {
 		if fake := e.prober.fakeNow(); fake != nil {
 			// refresh the whitelist for this very flow: the probe may have been a while ago
-			sendFake(c, fake, dst, e.cfg.fakeTTL)
+			sendFake(c, fake, dst, e.prober.fakeTTL())
 			time.Sleep(fakeGap)
 		}
 		if how == "" {
@@ -389,7 +389,7 @@ func (e *engine) remap(f *uflow) {
 		return
 	}
 	if fake := e.prober.fakeNow(); fake != nil {
-		sendFake(c, fake, dst, e.cfg.fakeTTL)
+		sendFake(c, fake, dst, e.prober.fakeTTL())
 		time.Sleep(fakeGap)
 	}
 	f.mu.Lock()

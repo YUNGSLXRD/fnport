@@ -54,6 +54,7 @@ type target struct {
 	good         []int
 	tried        map[int]bool
 	silentRounds int
+	frozenRounds int  // rounds in a row where every probed port froze
 	answered     bool // the server answered some probe: a silent round is its pause, not refusal
 	mode         mode
 }
@@ -73,12 +74,36 @@ type prober struct {
 	fakeOffUntil time.Time
 	fakeTries    int
 	fakeGood     int
+	ttl          int       // the fake's TTL now: starts at the setting, moves with the DPI
+	ttlMoved     time.Time // when it last moved
 
 	stat *counters
 }
 
 func newProber(cfg *config, st *counters) *prober {
-	return &prober{cfg: cfg, targets: map[netip.AddrPort]*target{}, fakes: cfg.fakes, stat: st}
+	return &prober{cfg: cfg, targets: map[netip.AddrPort]*target{}, fakes: cfg.fakes, stat: st, ttl: cfg.fakeTTL}
+}
+
+// fakeTTL: the TTL fakes go out with now
+func (p *prober) fakeTTL() int {
+	p.fmu.Lock()
+	defer p.fmu.Unlock()
+	return p.ttl
+}
+
+// moveTTL: the DPI's reach moves during an evening (Dom.ru: TTL 4 lifted the freeze by day and
+// killed flows at night, then 3 did the same). Not more often than every 20 s, and not past two
+// above the setting
+func (p *prober) moveTTL(by int, why string) bool {
+	p.fmu.Lock()
+	defer p.fmu.Unlock()
+	n := p.ttl + by
+	if n < 1 || n > p.cfg.fakeTTL+2 || time.Since(p.ttlMoved) < 20*time.Second {
+		return false
+	}
+	logf("%s: TTL фейка %d → %d", why, p.ttl, n)
+	p.ttl, p.ttlMoved = n, time.Now()
+	return true
 }
 
 func (p *prober) fakeOn() bool {
@@ -137,7 +162,7 @@ func contains(s []int, v int) bool {
 
 // probe sends probePkts packets from each source port to dst and counts replies per port.
 // Ports that cannot be bound (in use, reserved by Windows) are left out of the result.
-func (p *prober) probe(dst netip.AddrPort, ports []int, qos bool, fake []byte) map[int]int {
+func (p *prober) probe(dst netip.AddrPort, ports []int, qos bool, fake []byte, ttl int) map[int]int {
 	type sock struct {
 		c    *net.UDPConn
 		port int
@@ -157,7 +182,7 @@ func (p *prober) probe(dst netip.AddrPort, ports []int, qos bool, fake []byte) m
 	}
 	faked := false
 	for _, s := range socks {
-		if sendFake(s.c, fake, dst, p.cfg.fakeTTL) {
+		if sendFake(s.c, fake, dst, ttl) {
 			faked = true
 		}
 	}
@@ -315,7 +340,7 @@ func (p *prober) refresh(dst netip.AddrPort, want int, busy func(int) bool) *tar
 	}
 	withFake := p.fakeOn()
 	t0 := time.Now()
-	res := p.probe(pdst, cand, qos, p.fake())
+	res := p.probe(pdst, cand, qos, p.fake(), p.fakeTTL())
 	var fresh, results []int
 	frozen, silent := 0, 0
 	counts := map[int]bool{}
@@ -337,6 +362,14 @@ func (p *prober) refresh(dst netip.AddrPort, want int, busy func(int) bool) *tar
 		}
 	}
 	t.good = append(t.good, fresh...)
+	// every port frozen, round after round: the fake stops short of the point that lifts the freeze
+	if !qos && withFake && len(fresh) == 0 && frozen > 0 && frozen == len(results) && len(counts) > 1 {
+		if t.frozenRounds++; t.frozenRounds >= 3 && p.moveTTL(+1, fmt.Sprintf("фейк не снимает заморозку с %s", dst)) {
+			t.frozenRounds = 0
+		}
+	} else if len(fresh) > 0 {
+		t.frozenRounds = 0
+	}
 	via := "игровой порт"
 	if qos {
 		via = "эхо"
@@ -364,13 +397,30 @@ func (p *prober) refresh(dst netip.AddrPort, want int, busy func(int) bool) *tar
 		return t
 	}
 
+	// no reply at all with the fake: maybe the fake now reaches the point where the DPI kills the
+	// flow. One port with it a hop shorter: an answer (pass or freeze) means it was the TTL
+	if !qos && silent == len(results) && withFake && p.fakeTTL() > 1 && p.budgetTake(1) {
+		if c := freshPorts(t, 1, busy); len(c) == 1 {
+			t.tried[c[0]] = true
+			lower := p.fakeTTL() - 1
+			if got := p.probe(dst, c, false, p.fake(), lower)[c[0]]; got > 0 &&
+				p.moveTTL(-1, fmt.Sprintf("фейк убивает соединения с %s (с TTL на 1 меньше — %d ответов)", dst, got)) {
+				if got >= probePass {
+					t.good = append(t.good, c[0])
+				}
+				t.silentRounds = 0
+				return t
+			}
+		}
+	}
+
 	// no reply at all with the fake: maybe it is the fake that gets the flow killed (some ISPs drop
 	// flows once their DPI sees QUIC). One port without it tells this apart from a silent server.
 	if !qos && silent == len(results) && withFake && p.budgetTake(1) {
 		c := freshPorts(t, 1, busy)
 		if len(c) == 1 {
 			t.tried[c[0]] = true
-			got := p.probe(dst, c, false, nil)[c[0]]
+			got := p.probe(dst, c, false, nil, 0)[c[0]]
 			// only a port passing without the fake proves the fake is the problem; a freeze without
 			// it says the fake is needed, and the silence with it was the server's pause
 			if got >= probePass {

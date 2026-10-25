@@ -401,3 +401,24 @@ func TestSilenceAfterAnswersIsAPause(t *testing.T) {
 		t.Fatal("turned the fake off: a port without it happened to pass after the pause")
 	}
 }
+
+// the fake's TTL moves one hop at a time, not below 1 nor past two above the setting, and not
+// twice within 20 s
+func TestMoveTTL(t *testing.T) {
+	p := newProber(&config{fakeTTL: 3}, &counters{})
+	if !p.moveTTL(-1, "test") || p.fakeTTL() != 2 {
+		t.Fatal("no move down", p.fakeTTL())
+	}
+	if p.moveTTL(-1, "test") {
+		t.Fatal("moved twice within 20 s")
+	}
+	p.ttlMoved = time.Time{}
+	p.ttl = 5
+	if p.moveTTL(+1, "test") {
+		t.Fatal("past two above the setting")
+	}
+	p.ttl = 1
+	if p.moveTTL(-1, "test") {
+		t.Fatal("below 1")
+	}
+}

@@ -376,5 +376,11 @@ func (c *controller) fakeLabel() string {
 	case s.Fake == "":
 		return "без фейка"
 	}
-	return fmt.Sprintf("фейк %s, TTL %d", fakes.Label(s.Fake), s.FakeTTL)
+	ttl := s.FakeTTL
+	c.mu.Lock()
+	if c.eng != nil {
+		ttl = c.eng.prober.fakeTTL() // moved by the engine when the DPI's reach moved
+	}
+	c.mu.Unlock()
+	return fmt.Sprintf("фейк %s, TTL %d", fakes.Label(s.Fake), ttl)
 }
