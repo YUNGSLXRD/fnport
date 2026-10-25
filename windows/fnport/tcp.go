@@ -36,13 +36,14 @@ type tcpRelay struct {
 	failed atomic.Int64
 
 	// WARP for Epic's services: nil until (unless) the tunnel is up
-	warp    atomic.Pointer[warpTunnel]
-	epicIPs atomic.Pointer[map[netip.Addr]bool]
-	names   atomic.Pointer[[]string] // the names that go through WARP
-	seen    sync.Map                 // names already logged as going through WARP
-	blocked sync.Map                 // name -> when it did not answer directly
-	always  atomic.Bool              // every listed name through WARP, not trying directly
-	state   atomic.Value             // string: how WARP is doing, for the window and the report
+	warp      atomic.Pointer[warpTunnel]
+	epicIPs   atomic.Pointer[map[netip.Addr]bool]
+	names     atomic.Pointer[[]string] // the names that go through WARP
+	seen      sync.Map                 // names already logged as going through WARP
+	blocked   sync.Map                 // name -> when it did not answer directly
+	always    atomic.Bool              // every listed name through WARP, not trying directly
+	warpStall chan struct{}            // a connection through WARP stood still inside a record
+	state     atomic.Value             // string: how WARP is doing, for the window and the report
 }
 
 // allowLoopback: tests only; the routes never send 127.0.0.0/8 into the adapter
@@ -65,7 +66,7 @@ func newTCPRelay(dev wnet.Dev) (*tcpRelay, error) {
 	s.SetRouteTable([]tcpip.Route{{Destination: header.IPv4EmptySubnet, NIC: 1}})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	t := &tcpRelay{stack: s, ep: ep, ctx: ctx, cancel: cancel}
+	t := &tcpRelay{stack: s, ep: ep, ctx: ctx, cancel: cancel, warpStall: make(chan struct{}, 1)}
 	fwd := tcp.NewForwarder(s, 0, 512, t.accept)
 	s.SetTransportProtocolHandler(tcp.ProtocolNumber, fwd.HandlePacket)
 
@@ -183,7 +184,7 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort, w *w
 					logf("WARP: %s не открылось через WARP (%v), пошло напрямую", maskAddresses(shown), err)
 				}
 			} else {
-				counted = &countConn{Conn: c}
+				counted = &countConn{Conn: c, tls: len(hello) > 0}
 				out = counted
 				w.conns.Add(1)
 				if _, dup := t.seen.LoadOrStore(shown, true); !dup {
@@ -220,6 +221,31 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort, w *w
 	t.total.Add(1)
 	t.active.Add(1)
 	defer t.active.Add(-1)
+	if listed && viaWarp && counted != nil && counted.tls {
+		// through WARP the same stop inside a record is the tunnel frozen: a new one, other ports
+		done := make(chan struct{})
+		defer close(done)
+		go func() {
+			tk := time.NewTicker(time.Second)
+			defer tk.Stop()
+			for {
+				select {
+				case <-done:
+					return
+				case <-tk.C:
+					if counted.stalled() > 6*time.Second {
+						select {
+						case t.warpStall <- struct{}{}:
+						default:
+						}
+						in.Close()
+						out.Close()
+						return
+					}
+				}
+			}
+		}()
+	}
 	if listed && !viaWarp && counted != nil && counted.tls {
 		// directly: the TSPU's freeze of foreign HTTPS stops the server's data in the middle of
 		// a TLS record, which no server does by itself (an idle connection waits on a record's

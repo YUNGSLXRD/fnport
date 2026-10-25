@@ -543,40 +543,58 @@ func (w *warpTunnel) setEndpoint(ep string) bool {
 		"persistent_keepalive_interval=25\n", w.peer, ep)) == nil
 }
 
-// probeEndpoint: through a tunnel of its own, the delay to Cloudflare's exit point, its code
-// and country
-func probeEndpoint(ws warpSettings, ep string) (time.Duration, string, string, bool) {
-	w, err := newWarpDev(ws)
-	if err != nil {
-		return 0, "", "", false
-	}
-	defer w.close()
-	if !w.setEndpoint(ep) || !w.works() {
-		return 0, "", "", false
-	}
-	var best time.Duration
-	for i := 0; i < 3; i++ {
-		t0 := time.Now()
-		c, err := w.dial(netip.MustParseAddrPort("1.1.1.1:443"))
+// probeEndpoint: a tunnel to ep that carries a bulk of data, with the delay to Cloudflare's exit
+// point and its code; nil when none does. The TSPU freezes the tunnel's UDP like a game flow,
+// by source port: up to three ports are tried, as fnport does for the game (home, October 2026:
+// the handshake and a few kilobytes passed, then the tunnel stood still)
+func probeEndpoint(ws warpSettings, ep string) (*warpTunnel, time.Duration, string) {
+	for try := 0; try < 3; try++ {
+		w, err := newWarpDev(ws)
 		if err != nil {
-			continue
+			return nil, 0, ""
 		}
-		if d := time.Since(t0); best == 0 || d < best {
-			best = d
+		if !w.setEndpoint(ep) || !w.works() {
+			w.close()
+			return nil, 0, "" // no handshake: the address, not the port
 		}
-		c.Close()
+		var best time.Duration
+		for i := 0; i < 3; i++ {
+			t0 := time.Now()
+			c, err := w.dial(netip.MustParseAddrPort("1.1.1.1:443"))
+			if err != nil {
+				continue
+			}
+			if d := time.Since(t0); best == 0 || d < best {
+				best = d
+			}
+			c.Close()
+		}
+		w.exit()
+		colo, _, _ := w.exitParts()
+		if best > 0 && colo != "" && w.bulk() {
+			w.endpoint.Store(ep)
+			return w, best, colo
+		}
+		w.close()
+		logf("WARP: %s — данные встали после первых пакетов, пробую другой порт", ep)
 	}
-	if best == 0 {
-		return 0, "", "", false
+	return nil, 0, ""
+}
+
+// bulk: 256 KB through the tunnel within 8 s, a flow well past the 25 packets a freeze lets by
+func (w *warpTunnel) bulk() bool {
+	tr := &http.Transport{DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
+		return w.dial(netip.MustParseAddrPort("104.16.124.96:443")) // speed.cloudflare.com
+	}}
+	defer tr.CloseIdleConnections()
+	cl := &http.Client{Transport: tr, Timeout: 8 * time.Second}
+	resp, err := cl.Get("https://speed.cloudflare.com/__down?bytes=262144")
+	if err != nil {
+		return false
 	}
-	// a connection opens with a few small packets; a frozen tunnel passes those and no more
-	w.exit()
-	colo, loc, _ := w.exitParts()
-	if colo == "" {
-		logf("WARP: %s отвечает на рукопожатие, но данные через него не идут (заморожен?)", ep)
-		return 0, "", "", false
-	}
-	return best, colo, loc, true
+	defer resp.Body.Close()
+	n, _ := io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode == 200 && n == 262144
 }
 
 // quicI1: AWG's signature packet as the fake fnport opens game flows with, a QUIC Initial to a
@@ -611,7 +629,9 @@ func startWarp(ws warpSettings) (*warpTunnel, error) {
 // the traffic goes on through Russian networks, and the TSPU freezes it there (home: Fortnite's
 // content keys and any large download failed through DME, October 2026)
 func startWarpWith(ws warpSettings) (*warpTunnel, error) {
-	best, bestRTT, bestRU := "", time.Duration(0), true
+	var best *warpTunnel
+	var bestRTT time.Duration
+	bestRU := true
 	found, abroad := 0, 0
 	for i, ep := range warpEndpoints(ws.Endpoint) {
 		// every range first: they lead to different points (home: 96–97 Frankfurt, 98–99 Moscow,
@@ -619,8 +639,8 @@ func startWarpWith(ws warpSettings) (*warpTunnel, error) {
 		if found >= 4 && abroad > 0 && i >= 5 || i >= 16 {
 			break
 		}
-		rtt, colo, _, ok := probeEndpoint(ws, ep)
-		if !ok {
+		w, rtt, colo := probeEndpoint(ws, ep)
+		if w == nil {
 			continue
 		}
 		found++
@@ -633,29 +653,23 @@ func startWarpWith(ws warpSettings) (*warpTunnel, error) {
 			where = colo
 		}
 		logf("WARP: %s ведёт в %s (%s), %d мс", ep, where, colo, rtt.Milliseconds())
-		if best == "" || bestRU && !ru || bestRU == ru && rtt < bestRTT {
-			best, bestRTT, bestRU = ep, rtt, ru
+		if best == nil || bestRU && !ru || bestRU == ru && rtt < bestRTT {
+			if best != nil {
+				best.close()
+			}
+			best, bestRTT, bestRU = w, rtt, ru
+		} else {
+			w.close()
 		}
 	}
-	if best != "" && bestRU {
+	if best == nil {
+		return nil, errors.New("ни один адрес WARP не пропустил данные")
+	}
+	if bestRU {
 		logf("WARP: все найденные выходы в России, беру лучший из них — через него может не работать то же, что напрямую")
 	}
-	if best == "" {
-		return nil, errors.New("ни один адрес WARP не ответил")
-	}
-	w, err := newWarpDev(ws)
-	if err != nil {
-		return nil, err
-	}
-	if w.setEndpoint(best) && w.works() {
-		w.endpoint.Store(best)
-		return w, nil
-	}
-	if w.findEndpoint(best) {
-		return w, nil
-	}
-	w.close()
-	return nil, errors.New("ни один адрес WARP не ответил")
+	// the very tunnel that carried the bulk: another one would get another, untried port
+	return best, nil
 }
 
 // findEndpoint: the first address of WARP the handshake goes through
@@ -965,27 +979,26 @@ func runWarp(ws warpSettings, dev wnet.Dev, routed []netip.Prefix, t *tcpRelay) 
 		case <-tk.C:
 			refresh()
 		case <-health.C:
-			ok := w.works()
-			if !ok {
-				if t.warp.Load() != nil {
-					logf("WARP: туннель через %s не отвечает, ищу другой адрес", w.where())
-					t.warp.Store(nil) // Epic goes direct meanwhile instead of waiting
-					t.state.Store("не отвечает, ищу другой адрес")
-					changes.Add(1)
+			if w.works() {
+				if colo, _, _ := w.exitParts(); colo == "" {
+					if ex := w.exit(); ex != "" {
+						w.exitInfo.Store(ex)
+						logf("WARP: выход — %s", ex)
+						changes.Add(1)
+					}
 				}
-				ok = w.findEndpoint("")
+				continue
 			}
-			if ok && t.warp.Load() == nil && t.ctx.Err() == nil {
-				t.warp.Store(w)
-				logf("WARP снова подключён, через %s", w.where())
-				changes.Add(1)
+			logf("WARP: туннель через %s не отвечает, поднимаю новый", w.where())
+			w = t.rebuildWarp(ws, w)
+			if w == nil {
+				return
 			}
-			if colo, _, _ := w.exitParts(); ok && colo == "" {
-				if ex := w.exit(); ex != "" {
-					w.exitInfo.Store(ex)
-					logf("WARP: выход — %s", ex)
-					changes.Add(1)
-				}
+		case <-t.warpStall:
+			logf("WARP: соединение через %s встало посреди ответа — поднимаю туннель с другого порта", w.where())
+			w = t.rebuildWarp(ws, w)
+			if w == nil {
+				return
 			}
 		}
 	}
@@ -1036,6 +1049,36 @@ func rememberNetworkFreezes() {
 	if b, err := json.Marshal(m); err == nil {
 		os.WriteFile(warpStatePath(), b, 0o644)
 	}
+}
+
+// rebuildWarp: a new tunnel (new ports, maybe another point) in place of old; Epic goes directly
+// meanwhile. nil when fnport went off
+func (t *tcpRelay) rebuildWarp(ws warpSettings, old *warpTunnel) *warpTunnel {
+	t.warp.Store(nil)
+	t.state.Store("переподключается…")
+	changes.Add(1)
+	old.close()
+	for t.ctx.Err() == nil {
+		if w, err := startWarp(ws); err == nil {
+			if t.ctx.Err() != nil {
+				w.close()
+				return nil
+			}
+			if ex := w.exit(); ex != "" {
+				w.exitInfo.Store(ex)
+			}
+			t.warp.Store(w)
+			logf("WARP снова подключён, через %s", w.where())
+			changes.Add(1)
+			return w
+		}
+		t.state.Store("не подключается, пробую снова через минуту")
+		select {
+		case <-t.ctx.Done():
+		case <-time.After(time.Minute):
+		}
+	}
+	return nil
 }
 
 func inPrefixes(a netip.Addr, ps []netip.Prefix) bool {
