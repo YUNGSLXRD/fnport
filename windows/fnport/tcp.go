@@ -178,7 +178,24 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort, w *w
 			}
 		}
 		if viaWarp {
-			if c, err := w.dial(dst); err != nil {
+			c, err := w.dial(dst)
+			if err != nil && t.always.Load() {
+				// directly it freezes here: the tunnel is likely frozen itself, so a new one, and
+				// the connection waits for it rather than going the way that freezes
+				w.fails.Add(1)
+				select {
+				case t.warpStall <- struct{}{}:
+				default:
+				}
+				for i := 0; i < 15 && err != nil; i++ {
+					time.Sleep(time.Second)
+					if nw := t.warp.Load(); nw != nil && nw != w {
+						w = nw
+						c, err = w.dial(dst)
+					}
+				}
+			}
+			if err != nil {
 				w.fails.Add(1)
 				if _, dup := t.seen.LoadOrStore("fail "+shown, true); !dup {
 					logf("WARP: %s не открылось через WARP (%v), пошло напрямую", maskAddresses(shown), err)

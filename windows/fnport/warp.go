@@ -54,6 +54,7 @@ type warpSettings struct {
 	// freezes UDP to Cloudflare as to AWS, after the handshake and a few packets
 	fake    []byte
 	fakeTTL int
+	ttlNow  func() int // the engine's TTL as it moves; nil = fakeTTL
 }
 
 // withFake: the fake and TTL of the settings for the tunnel's UDP
@@ -521,7 +522,7 @@ func newWarpDev(ws warpSettings) (*warpTunnel, error) {
 	if err != nil {
 		return nil, err
 	}
-	bind := &physBind{fake: ws.fake, ttl: ws.fakeTTL}
+	bind := &physBind{fake: ws.fake, ttl: ws.fakeTTL, ttlNow: ws.ttlNow}
 	dev := device.NewDevice(tdev, bind, device.NewLogger(device.LogLevelSilent, ""))
 	cfg := fmt.Sprintf("private_key=%s\njc=%d\njmin=%d\njmax=%d\n", priv, ws.Jc, ws.Jmin, ws.Jmax)
 	if ws.I1 != "" {
@@ -542,7 +543,7 @@ func newWarpDev(ws warpSettings) (*warpTunnel, error) {
 // handshake at once; changing the endpoint of the old one waits for its retry timer (5 s)
 func (w *warpTunnel) setEndpoint(ep string) bool {
 	return w.dev.IpcSet(fmt.Sprintf("replace_peers=true\npublic_key=%s\nendpoint=%s\nallowed_ip=0.0.0.0/0\n"+
-		"persistent_keepalive_interval=25\n", w.peer, ep)) == nil
+		"persistent_keepalive_interval=15\n", w.peer, ep)) == nil
 }
 
 // probeEndpoint: a tunnel to ep that carries a bulk of data, with the delay to Cloudflare's exit
@@ -900,12 +901,13 @@ func (e physEndpoint) DstIP() netip.Addr   { return netip.AddrPort(e).Addr() }
 func (e physEndpoint) SrcIP() netip.Addr   { return netip.Addr{} }
 
 type physBind struct {
-	mu   sync.Mutex
-	c    *net.UDPConn
-	port int    // kept after Close, for the log
-	fake []byte // sent once per endpoint before anything else, at ttl
-	ttl  int
-	sent map[netip.AddrPort]bool
+	mu     sync.Mutex
+	c      *net.UDPConn
+	port   int    // kept after Close, for the log
+	fake   []byte // sent once per endpoint before anything else, at ttl
+	ttl    int
+	ttlNow func() int
+	sent   map[netip.AddrPort]time.Time // when this socket last sent to an endpoint
 }
 
 func (b *physBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
@@ -966,15 +968,22 @@ func (b *physBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 		return conn.ErrWrongEndpointType
 	}
 	if b.fake != nil && b.ttl > 0 {
+		// the fake before the first packet, and again after 20 s of quiet: the DPI forgets a
+		// quiet flow and takes it for a new one, which it then freezes (home: the tunnel stood
+		// still now and then after working for minutes)
 		b.mu.Lock()
 		if b.sent == nil {
-			b.sent = map[netip.AddrPort]bool{}
+			b.sent = map[netip.AddrPort]time.Time{}
 		}
-		first := !b.sent[netip.AddrPort(pe)]
-		b.sent[netip.AddrPort(pe)] = true
+		last := b.sent[netip.AddrPort(pe)]
+		b.sent[netip.AddrPort(pe)] = time.Now()
+		ttl := b.ttl
+		if b.ttlNow != nil {
+			ttl = b.ttlNow()
+		}
 		b.mu.Unlock()
-		if first {
-			wnet.SendWithTTL(c, b.fake, netip.AddrPort(pe), b.ttl)
+		if time.Since(last) > 20*time.Second {
+			wnet.SendWithTTL(c, b.fake, netip.AddrPort(pe), ttl)
 		}
 	}
 	for _, p := range bufs {
