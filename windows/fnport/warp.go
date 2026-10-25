@@ -550,11 +550,9 @@ func (w *warpTunnel) setEndpoint(ep string) bool {
 // by source port: up to three ports are tried, as fnport does for the game (home, October 2026:
 // the handshake and a few kilobytes passed, then the tunnel stood still)
 func probeEndpoint(ws warpSettings, ep string) (*warpTunnel, time.Duration, string) {
-	for try := 0; try < 3; try++ {
-		note := ""
-		if try == 2 && ws.fake != nil {
-			ws.fake, note = nil, " без фейка" // the fake itself may be what kills the tunnel
-		}
+	// without the fake the tunnel froze every time (home, October 2026): no try without it
+	var whys []string
+	for try := 0; try < 2; try++ {
 		w, err := newWarpDev(ws)
 		if err != nil {
 			return nil, 0, ""
@@ -581,44 +579,53 @@ func probeEndpoint(ws warpSettings, ep string) (*warpTunnel, time.Duration, stri
 			why = "выход не определился (HTTPS к 1.1.1.1 не прошёл)"
 			if colo, _, _ := w.exitParts(); colo != "" {
 				if why = w.bulk(); why == "" {
-					if note != "" {
-						logf("WARP: %s прошёл только без фейка", ep)
-					}
 					w.endpoint.Store(ep)
 					return w, best, colo
 				}
 			}
 		}
-		port := w.localPort()
+		whys = append(whys, fmt.Sprintf("порт %d: %s", w.localPort(), why))
 		w.close()
-		logf("WARP: %s, порт %d%s: %s", ep, port, note, why)
 	}
+	logf("WARP: %s не подошёл (%s)", ep, strings.Join(whys, "; "))
 	return nil, 0, ""
 }
 
-// bulk: 256 KB through the tunnel within 8 s, a flow well past the 25 packets a freeze lets by;
-// "" when it came, else what went wrong
+// bulk: the first 256 KB of a test file through the tunnel within 8 s, a flow well past the 25
+// packets a freeze lets by; "" when they came, else what went wrong. Not Cloudflare's own speed
+// test: it answers WARP with 403
 func (w *warpTunnel) bulk() string {
 	tr := &http.Transport{DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
-		return w.dial(netip.MustParseAddrPort("104.16.124.96:443")) // speed.cloudflare.com
+		host, port, _ := net.SplitHostPort(addr)
+		ips := lookupAll(host)
+		if len(ips) == 0 {
+			return nil, errors.New("не найден адрес " + host)
+		}
+		p := uint16(443)
+		if port == "80" {
+			p = 80
+		}
+		return w.dial(netip.AddrPortFrom(ips[0], p))
 	}}
 	defer tr.CloseIdleConnections()
 	cl := &http.Client{Transport: tr, Timeout: 8 * time.Second}
 	start := time.Now()
-	resp, err := cl.Get("https://speed.cloudflare.com/__down?bytes=262144")
+	resp, err := cl.Get(speedTestURL)
 	if err != nil {
 		return fmt.Sprintf("256 КБ: запрос не прошёл за %.1f с (%v)", time.Since(start).Seconds(), err)
 	}
 	defer resp.Body.Close()
-	n, err := io.Copy(io.Discard, resp.Body)
-	switch {
-	case resp.StatusCode != 200:
-		return "256 КБ: Cloudflare ответил " + resp.Status
-	case n != 262144:
+	if resp.StatusCode != 200 {
+		return "256 КБ: сервер ответил " + resp.Status
+	}
+	if n, err := io.Copy(io.Discard, io.LimitReader(resp.Body, 256<<10)); n < 256<<10 {
 		return fmt.Sprintf("256 КБ: пришло %d КБ за %.1f с (%v)", n>>10, time.Since(start).Seconds(), err)
 	}
 	return ""
 }
+
+// speedTestURL: a large file off Cloudflare, served the same directly and through WARP
+const speedTestURL = "https://cachefly.cachefly.net/50mb.test"
 
 // quicI1: AWG's signature packet as the fake fnport opens game flows with, a QUIC Initial to a
 // whitelisted name: before each handshake, so a DPI that blocks WireGuard may let the flow be
@@ -818,9 +825,9 @@ func speedTest(w *warpTunnel, ws warpSettings) string {
 		}
 		return fmt.Sprintf("%.1f Мбит/с (%d КБ за %.0f с)", float64(n)*8/d/1e6, n/1024, d)
 	}
-	// straight: not Cloudflare's own names, the ISP blocks those; through WARP: Cloudflare's own
-	// test, the ISP does not see the name there and WARP is Cloudflare's network
-	direct := measure("https://cachefly.cachefly.net/50mb.test", func(dst netip.AddrPort) (net.Conn, error) {
+	// the same file both ways, off Cloudflare: the ISP blocks Cloudflare's own names directly, and
+	// Cloudflare's speed test answers WARP with 403
+	direct := measure(speedTestURL, func(dst netip.AddrPort) (net.Conn, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		return wnet.DialTCP(ctx, dst)
@@ -836,7 +843,7 @@ func speedTest(w *warpTunnel, ws warpSettings) string {
 		}
 	}
 	if w != nil {
-		res += ", через WARP " + measure("https://speed.cloudflare.com/__down?bytes=50000000", w.dial)
+		res += ", через WARP " + measure(speedTestURL, w.dial)
 	} else if !ws.ready() {
 		res += ", ключа WARP нет"
 	}
@@ -1109,10 +1116,11 @@ func (t *tcpRelay) rebuildWarp(ws warpSettings, old *warpTunnel) *warpTunnel {
 			changes.Add(1)
 			return w
 		}
-		t.state.Store("не подключается, пробую снова через минуту")
+		t.state.Store("не подключается, пробую снова через 5 минут")
+		logf("WARP не подключился: сервисы Epic идут напрямую, попробую снова через 5 минут")
 		select {
 		case <-t.ctx.Done():
-		case <-time.After(time.Minute):
+		case <-time.After(5 * time.Minute):
 		}
 	}
 	return nil
