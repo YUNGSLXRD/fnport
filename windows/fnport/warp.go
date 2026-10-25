@@ -591,11 +591,24 @@ func probeEndpoint(ws warpSettings, ep string) (*warpTunnel, time.Duration, stri
 	return nil, 0, ""
 }
 
-// bulk: the first 256 KB of a test file through the tunnel within 8 s, a flow well past the 25
-// packets a freeze lets by; "" when they came, else what went wrong. Not Cloudflare's own speed
-// test: it answers WARP with 403
+// bulk: the first 256 KB of a large file through the tunnel within 8 s, a flow well past the 25
+// packets a freeze lets by; "" when they came, else what went wrong. Two files: cachefly answered
+// WARP with an empty 200 at home, cdnjs is Cloudflare's own (the ISP cannot see its name inside
+// the tunnel). Not Cloudflare's speed test: it answers WARP with 403
 func (w *warpTunnel) bulk() string {
-	tr := &http.Transport{DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
+	var whys []string
+	for _, url := range []string{speedTestURL, "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"} {
+		why := w.bulkFrom(url)
+		if why == "" {
+			return ""
+		}
+		whys = append(whys, why)
+	}
+	return strings.Join(whys, "; ")
+}
+
+func (w *warpTunnel) bulkFrom(url string) string {
+	tr := &http.Transport{DisableCompression: true, DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
 		host, port, _ := net.SplitHostPort(addr)
 		ips := lookupAll(host)
 		if len(ips) == 0 {
@@ -609,17 +622,21 @@ func (w *warpTunnel) bulk() string {
 	}}
 	defer tr.CloseIdleConnections()
 	cl := &http.Client{Transport: tr, Timeout: 8 * time.Second}
+	host := url[strings.Index(url, "//")+2:]
+	host = host[:strings.Index(host, "/")]
 	start := time.Now()
-	resp, err := cl.Get(speedTestURL)
+	resp, err := cl.Get(url)
 	if err != nil {
-		return fmt.Sprintf("256 КБ: запрос не прошёл за %.1f с (%v)", time.Since(start).Seconds(), err)
+		return fmt.Sprintf("%s: запрос не прошёл за %.1f с (%v)", host, time.Since(start).Seconds(), err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return "256 КБ: сервер ответил " + resp.Status
+		return fmt.Sprintf("%s ответил %s", host, resp.Status)
 	}
-	if n, err := io.Copy(io.Discard, io.LimitReader(resp.Body, 256<<10)); n < 256<<10 {
-		return fmt.Sprintf("256 КБ: пришло %d КБ за %.1f с (%v)", n>>10, time.Since(start).Seconds(), err)
+	n, err := io.Copy(io.Discard, io.LimitReader(resp.Body, 256<<10))
+	if n < 256<<10 {
+		return fmt.Sprintf("%s: пришло %d КБ за %.1f с (%s, длина %d, сервер %q, %v)", host, n>>10,
+			time.Since(start).Seconds(), resp.Proto, resp.ContentLength, resp.Header.Get("Server"), err)
 	}
 	return ""
 }
