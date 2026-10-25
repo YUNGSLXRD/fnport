@@ -597,7 +597,7 @@ func probeEndpoint(ws warpSettings, ep string) (*warpTunnel, time.Duration, stri
 // the tunnel). Not Cloudflare's speed test: it answers WARP with 403
 func (w *warpTunnel) bulk() string {
 	var whys []string
-	for _, url := range []string{speedTestURL, "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"} {
+	for _, url := range []string{warpTestURL, speedTestURL} {
 		why := w.bulkFrom(url)
 		if why == "" {
 			return ""
@@ -641,8 +641,13 @@ func (w *warpTunnel) bulkFrom(url string) string {
 	return ""
 }
 
-// speedTestURL: a large file off Cloudflare, served the same directly and through WARP
-const speedTestURL = "https://cachefly.cachefly.net/50mb.test"
+// speedTestURL: a large file off Cloudflare for the direct speed; warpTestURL: one through WARP
+// (Cloudflare's own cdnjs: cachefly answers WARP with an empty 200, Cloudflare's speed test
+// with 403)
+const (
+	speedTestURL = "https://cachefly.cachefly.net/50mb.test"
+	warpTestURL  = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"
+)
 
 // quicI1: AWG's signature packet as the fake fnport opens game flows with, a QUIC Initial to a
 // whitelisted name: before each handshake, so a DPI that blocks WireGuard may let the flow be
@@ -824,19 +829,33 @@ func speedTest(w *warpTunnel, ws warpSettings) string {
 			}
 			return dial(netip.AddrPortFrom(ips[0], p))
 		}}
+		tr.DisableCompression = true
 		defer tr.CloseIdleConnections()
+		// the file again and again for up to 15 s: through WARP it is a 1 MB one
+		deadline := time.Now().Add(15 * time.Second)
 		cl := &http.Client{Transport: tr, Timeout: 15 * time.Second}
 		start := time.Now()
-		resp, err := cl.Get(url)
-		if err != nil {
-			return "ошибка: " + err.Error()
+		var n int64
+		for time.Now().Before(deadline) {
+			resp, err := cl.Get(url)
+			if err != nil {
+				if n == 0 {
+					return "ошибка: " + err.Error()
+				}
+				break
+			}
+			if resp.StatusCode != 200 {
+				resp.Body.Close()
+				return fmt.Sprintf("сервер ответил %s", resp.Status)
+			}
+			k, _ := io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			n += k
+			if k == 0 {
+				break
+			}
 		}
-		defer resp.Body.Close()
-		n, _ := io.Copy(io.Discard, resp.Body)
 		d := time.Since(start).Seconds()
-		if resp.StatusCode != 200 {
-			return fmt.Sprintf("сервер ответил %s", resp.Status)
-		}
 		if n == 0 || d <= 0 {
 			return "ничего не скачалось"
 		}
@@ -860,7 +879,8 @@ func speedTest(w *warpTunnel, ws warpSettings) string {
 		}
 	}
 	if w != nil {
-		res += ", через WARP " + measure(speedTestURL, w.dial)
+		// cachefly answers WARP with an empty 200; cdnjs is Cloudflare's own
+		res += ", через WARP " + measure(warpTestURL, w.dial)
 	} else if !ws.ready() {
 		res += ", ключа WARP нет"
 	}
