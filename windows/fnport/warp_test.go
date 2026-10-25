@@ -196,3 +196,21 @@ func TestStalled(t *testing.T) {
 		t.Error("a stop inside a record header not seen")
 	}
 }
+
+// a request that gets no answer for 10 s is a stall too; an answered one, then quiet, is not
+func TestStalledRequest(t *testing.T) {
+	c := &countConn{tls: true}
+	c.feed([]byte{23, 3, 3, 0, 2, 1, 2})
+	c.wrote = time.Now().Add(-11 * time.Second)
+	c.last = time.Now().Add(-12 * time.Second)
+	if c.stalled() < 6*time.Second {
+		t.Error("an unanswered request not seen")
+	}
+	c.last = time.Now().Add(-10 * time.Second)
+	c.wrote = time.Now().Add(-11 * time.Second)
+	c.feed([]byte{23, 3, 3, 0, 1, 9}) // the answer, 6 s after the request, then 5 s of quiet
+	c.last = time.Now().Add(-5 * time.Second)
+	if c.stalled() != 0 {
+		t.Error("an answered request taken for a stall")
+	}
+}

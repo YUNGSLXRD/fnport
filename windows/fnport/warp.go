@@ -1097,7 +1097,17 @@ func runWarp(ws warpSettings, dev wnet.Dev, routed []netip.Prefix, t *tcpRelay) 
 // The networks where Epic's sites froze directly, remembered for 3 days in warp-state.json next to
 // the program: learning them site by site took restarts of the game every evening
 
-func warpStatePath() string { return filepath.Join(appDir(), "warp-state.json") }
+// warpStatePath: in %LOCALAPPDATA%\fnport, not next to the program: a new copy in another folder
+// would forget the network otherwise
+func warpStatePath() string {
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		return filepath.Join(appDir(), "warp-state.json")
+	}
+	dir = filepath.Join(dir, "fnport")
+	os.MkdirAll(dir, 0o755)
+	return filepath.Join(dir, "warp-state.json")
+}
 
 // networkKey: this PC's address on the adapter towards the internet, telling home from a club
 func networkKey() string {

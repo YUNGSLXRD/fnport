@@ -279,7 +279,7 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort, w *w
 					return
 				case <-tk.C:
 					if counted.stalled() > 6*time.Second {
-						t.markBlocked(shown, fmt.Sprintf("напрямую замёрзло на %d КБ посреди ответа — дальше через WARP",
+						t.markBlocked(shown, fmt.Sprintf("напрямую замёрзло (получено %d КБ) — дальше через WARP",
 							counted.n.Load()>>10))
 						in.Close()
 						out.Close()
@@ -301,8 +301,9 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort, w *w
 	}
 }
 
-// markBlocked: the site through WARP from now on; at the second one the network is taken for
-// one that freezes Epic, everything listed goes through WARP and the network is remembered
+// markBlocked: the site through WARP from now on, and the network is taken for one that freezes
+// Epic: everything listed goes through WARP and the network is remembered. One site is enough:
+// at home, learning them one by one left the content keys to freeze before their turn came
 func (t *tcpRelay) markBlocked(name, why string) {
 	if _, dup := t.blocked.Load(name); !dup {
 		logf("WARP: %s %s", maskAddresses(name), why)
@@ -310,8 +311,8 @@ func (t *tcpRelay) markBlocked(name, why string) {
 	t.blocked.Store(name, time.Now())
 	n := 0
 	t.blocked.Range(func(_, _ any) bool { n++; return true })
-	if n >= 2 && !t.always.Swap(true) {
-		logf("WARP: напрямую замерзают уже %d сайта Epic — всё из списка теперь через WARP, сеть запомнена на 3 дня", n)
+	if n >= 1 && !t.always.Swap(true) {
+		logf("WARP: сервисы Epic напрямую замерзают — всё из списка теперь через WARP, сеть запомнена на 3 дня")
 		rememberNetworkFreezes()
 	}
 }
@@ -356,10 +357,18 @@ type countConn struct {
 	n   atomic.Int64
 	tls bool
 
-	mu   sync.Mutex
-	hdr  []byte // a record header read in part
-	left int    // bytes of the current record still to come
-	last time.Time
+	mu    sync.Mutex
+	hdr   []byte // a record header read in part
+	left  int    // bytes of the current record still to come
+	last  time.Time
+	wrote time.Time // the client's last write through it
+}
+
+func (c *countConn) Write(b []byte) (int, error) {
+	c.mu.Lock()
+	c.wrote = time.Now()
+	c.mu.Unlock()
+	return c.Conn.Write(b)
 }
 
 func (c *countConn) Read(b []byte) (int, error) {
@@ -392,10 +401,16 @@ func (c *countConn) feed(b []byte) {
 	}
 }
 
-// stalled: how long the data has stood still inside a record; 0 on a record's boundary
+// stalled: how long the data has stood still inside a record, or a request has gone unanswered
+// (counted from its 10th second, so a slow answer is not one); 0 otherwise
 func (c *countConn) stalled() time.Duration {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if !c.wrote.IsZero() && c.wrote.After(c.last) {
+		if d := time.Since(c.wrote) - 4*time.Second; d > 0 {
+			return d
+		}
+	}
 	if c.left == 0 && len(c.hdr) == 0 || c.last.IsZero() {
 		return 0
 	}
