@@ -27,6 +27,7 @@ licenses() {
 {
 	licenses ./fnport
 	printf '%s\n\n%s\n\n' "== Wintun (wintun.dll), WireGuard LLC" "$(cat third_party/wintun-LICENSE.txt)"
+	printf '%s\n\n%s\n\n' "== wgcf (the WARP registration request and TLS fingerprint), ViRb3" "$(cat third_party/wgcf-LICENSE.txt)"
 	printf '%s\n\n%s\n\n' "== Inter font" "$(cat internal/fonts/OFL.txt)"
 	printf '%s\n\n%s\n' "== Fake QUIC Initials (fakes/*.bin), from zapret" "$(cat ../fnport/files/quic_initial_vk_com.bin.LICENSE)"
 } > fnport/licenses.txt
