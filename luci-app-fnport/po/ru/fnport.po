@@ -147,7 +147,7 @@ msgstr "Проверяю, что фейк не вредит…"
 msgid "Looking up Epic's beacons…"
 msgstr "Ищу маяки Epic…"
 
-msgid "No freeze on Epic's beacons right now: every beacon answered all packets without help. Game servers may freeze all the same, so better leave fnport on: without a freeze it does no harm."
+msgid "No freeze on the Epic beacons right now: every beacon answered all packets without help. Game servers may freeze all the same, so better leave fnport on: without a freeze it does no harm."
 msgstr "На маяках Epic заморозки сейчас нет: все маяки ответили на все пакеты без помощи. Игровые серверы при этом всё равно могут замораживать, поэтому fnport лучше оставить включённым: без заморозки он не мешает."
 
 msgid "The ISP freezes game UDP, and the whitelist fake lifts the freeze. Recommended fake TTL: %d."
@@ -466,3 +466,9 @@ msgstr "Вышла версия fnport %s (установлена %s)."
 
 msgid "What is new"
 msgstr "Что нового"
+
+msgid "%d (loss)"
+msgstr "%d (потери)"
+
+msgid "The link loses up to %d%% of packets on the way to Epic's servers: that is not a freeze, and fnport does not remove losses."
+msgstr "Связь теряет до %d%% пакетов на пути к серверам Epic: это не заморозка, и fnport потери не убирает."

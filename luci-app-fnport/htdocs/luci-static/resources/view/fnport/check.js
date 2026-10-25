@@ -7,7 +7,7 @@
 
 var CHECK = '/usr/libexec/fnport-check';
 var ISSUE_URL = 'https://github.com/YUNGSLXRD/fnport/issues/new?template=provider-report.yml';
-var PASS = 26, FROZEN_MIN = 20;
+var PASS = 26, FROZEN_MIN = 20, PKTS = 30, LOSSY = 1000;
 
 function run(arg) {
 	return fs.exec(CHECK, [ arg ]).then(function(res) {
@@ -21,7 +21,19 @@ function run(arg) {
 
 // same thresholds as fnport-check
 function verdictOf(r) {
+	if (r >= LOSSY) return 'pass';
 	return r >= PASS ? 'pass' : (r >= FROZEN_MIN ? 'frozen' : (r > 0 ? 'limited' : 'silent'));
+}
+
+// the most the line lost to the beacons without a freeze, in %; 0 = no such probe
+function lossOf(st) {
+	var loss = 0;
+	(st.control || []).forEach(function(c) {
+		(c.replies || []).forEach(function(r) {
+			if (r >= LOSSY) loss = Math.max(loss, Math.round((PKTS - r % LOSSY) * 100 / PKTS));
+		});
+	});
+	return loss;
 }
 
 function count(replies, what) {
@@ -93,9 +105,15 @@ function stepText(st) {
 }
 
 function verdictText(st) {
+	var loss = lossOf(st), v = verdictMain(st);
+	// seen at SkyNet over Wi-Fi: 23 of 30 everywhere, with and without the fake
+	return loss ? _('The link loses up to %d%% of packets on the way to Epic\'s servers: that is not a freeze, and fnport does not remove losses.').format(loss) + ' ' + v : v;
+}
+
+function verdictMain(st) {
 	switch (st.verdict) {
 	case 'no_freeze':
-		return _('No freeze on Epic's beacons right now: every beacon answered all packets without help. Game servers may freeze all the same, so better leave fnport on: without a freeze it does no harm.');
+		return _('No freeze on the Epic beacons right now: every beacon answered all packets without help. Game servers may freeze all the same, so better leave fnport on: without a freeze it does no harm.');
 	case 'fake_works':
 		return st.recommended_fake
 			? _('The ISP freezes game UDP. The first fake did not help, but the spare %s does. Recommended fake TTL: %d.').format(st.recommended_fake, st.recommended_ttl)
@@ -116,7 +134,7 @@ function verdictText(st) {
 }
 
 function repliesText(r) {
-	return (r || []).join(', ');
+	return (r || []).map(function(x) { return x >= LOSSY ? _('%d (loss)').format(x % LOSSY) : String(x); }).join(', ');
 }
 
 function report(st, log, stats) {

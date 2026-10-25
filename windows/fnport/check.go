@@ -50,6 +50,7 @@ type checkResult struct {
 	WorksFrom int
 	Settings  settings     // what the check ran with
 	Epic      []epicResult // Epic's HTTPS services, straight from this PC
+	Loss      int          // % of packets the line lost to the beacons without a freeze; 0 = none seen
 
 	PortKept  string // "yes", "no", "unknown"
 	Freeze    string // "yes", "no", "no_reply", "unclear"
@@ -110,7 +111,10 @@ func fmtReplies(rs []int) string {
 	var p []string
 	for _, r := range rs {
 		s := map[string]string{"pass": "проходит", "frozen": "заморозка", "limited": "мало ответов", "silent": "нет ответа"}[qos.Verdict(r)]
-		p = append(p, fmt.Sprintf("%d/%d %s", r, qos.Pkts, s))
+		if qos.IsLossy(r) {
+			s = "потери, не заморозка"
+		}
+		p = append(p, fmt.Sprintf("%d/%d %s", qos.Got(r), qos.Pkts, s))
 	}
 	return strings.Join(p, ", ")
 }
@@ -156,6 +160,11 @@ func (k *checker) run(cur settings) *checkResult {
 		rs := k.probe(b, nil, 0)
 		k.say("  %s: %s", geo.CityRU(b), fmtReplies(rs))
 		r.Control = append(r.Control, cityReplies{geo.CityRU(b), rs})
+		for _, x := range rs {
+			if qos.IsLossy(x) {
+				r.Loss = max(r.Loss, (qos.Pkts-qos.Got(x))*100/qos.Pkts)
+			}
+		}
 		if qos.Count(rs, "silent") < len(rs) {
 			answered = append(answered, b)
 		}
@@ -373,6 +382,11 @@ func finish(r *checkResult, cur settings) *checkResult {
 			r.Recommend = &rec
 		}
 	}()
+	if r.Loss > 0 {
+		// seen at SkyNet over Wi-Fi: 23 of 30 everywhere, with and without the fake, at any TTL
+		add(fmt.Sprintf("Связь теряет до %d%% пакетов на пути к серверам Epic — это не заморозка, и fnport потери не убирает. "+
+			"Если ПК на Wi-Fi, попробуйте кабель.", r.Loss))
+	}
 	port := func() {
 		switch {
 		case r.PortKept == "yes":

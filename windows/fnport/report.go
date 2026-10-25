@@ -8,6 +8,7 @@ import (
 
 	"github.com/YUNGSLXRD/fnport/windows/internal/fakes"
 	"github.com/YUNGSLXRD/fnport/windows/internal/geo"
+	"github.com/YUNGSLXRD/fnport/windows/internal/qos"
 )
 
 // The report for a GitHub issue, as the router's ISP check makes it: the check's results, the
@@ -38,7 +39,11 @@ func maskAddresses(line string) string {
 func joinReplies(rs []int) string {
 	var p []string
 	for _, r := range rs {
-		p = append(p, fmt.Sprint(r))
+		s := fmt.Sprint(qos.Got(r))
+		if qos.IsLossy(r) {
+			s += " (потери)"
+		}
+		p = append(p, s)
 	}
 	return strings.Join(p, ", ")
 }

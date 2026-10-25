@@ -24,6 +24,7 @@ const PUBLIC_DNS = [ '77.88.8.8', '8.8.8.8' ];
 const DEFAULT_FAKE = '/usr/share/fnport/quic_initial_vk_com.bin';
 const PKTS = 30, PASS = 26;     // TSPU stops replies at 25, so more than 25 means no freeze
 const FROZEN_MIN = 20;          // a freeze stops at 24-25; far fewer is the echo's rate limit or loss
+const LOSSY = 1000;             // added to a count that is loss, not a freeze
 const IV_MS = 30, WAIT_MS = 400, FAKE_GAP_MS = 30;
 const SLOW_IV_MS = 100;           // about 0.5 KB/s: well under the echo's limit for one address
 const GAP_MS = 2000;            // pause between probe rounds
@@ -106,7 +107,7 @@ function probe(host, n, fake, ttl, iv) {
 		let s = socket.create(socket.AF_INET, socket.SOCK_DGRAM | socket.SOCK_NONBLOCK);
 		if (!s) continue;
 		if (!s.bind({ address: '0.0.0.0', port: 0 })) { s.close(); continue; }
-		push(socks, { s, tag: chr(rand() % 256, rand() % 256), got: 0 });
+		push(socks, { s, tag: chr(rand() % 256, rand() % 256), got: 0, late: false });
 	}
 	let pollset = map(socks, o => [ o.s, socket.POLLIN ]);
 	if (ttl) {
@@ -121,8 +122,11 @@ function probe(host, n, fake, ttl, iv) {
 		for (let o in socks) {
 			let d, from = {};
 			while ((d = o.s.recv(2048, 0, from)) != null && length(d) > 0)
-				if (from.address == host && from.port == BEACON_PORT && substr(d, 0, 2) == o.tag)
+				if (from.address == host && from.port == BEACON_PORT && substr(d, 0, 2) == o.tag) {
 					o.got++;
+					// a reply to a packet past the 25th: whatever is missing, the flow was not frozen
+					if (length(d) >= 4 && (ord(d, 2) << 8 | ord(d, 3)) >= 25) o.late = true;
+				}
 		}
 	};
 	for (let i = 0; i < PKTS; i++) {
@@ -138,11 +142,17 @@ function probe(host, n, fake, ttl, iv) {
 	let end = now_ms() + WAIT_MS;
 	while (now_ms() < end) { socket.poll(50, ...pollset); drain(); }
 	let res = [];
-	for (let o in socks) { push(res, o.got); o.s.close(); }
+	// 20-25 replies, some to packets past the 25th: the line lost packets, no freeze. Marked
+	// with LOSSY added (LuCI shows the count and "loss")
+	for (let o in socks) {
+		push(res, o.late && o.got >= FROZEN_MIN && o.got < PASS ? o.got + LOSSY : o.got);
+		o.s.close();
+	}
 	return res;
 }
 
 function verdict(r) {
+	if (r >= LOSSY) return 'pass';
 	return r >= PASS ? 'pass' : (r >= FROZEN_MIN ? 'frozen' : (r > 0 ? 'limited' : 'silent'));
 }
 

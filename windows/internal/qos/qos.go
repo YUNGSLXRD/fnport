@@ -37,8 +37,21 @@ func packet(tag [2]byte, seq int) []byte {
 	return append(p, 0xaa, 0xaa, 0xaa, 0xaa, 0xbb, 0xbb, 0xbb, 0xbb)
 }
 
-// Verdict: "pass", "frozen", "limited" (a few replies) or "silent"
+// Lossy marks a probe of 20–25 replies where some came to packets past the 25th: the flow was
+// not frozen (a freeze stops every reply after it), the line lost packets. Probe returns
+// got+Lossy for those; Got takes the count back
+const Lossy = 1000
+
+func Got(r int) int { return r % Lossy }
+
+func IsLossy(r int) bool { return r >= Lossy }
+
+// Verdict: "pass", "frozen", "limited" (a few replies) or "silent"; a lossy probe passed: its flow
+// was not frozen
 func Verdict(got int) string {
+	if got >= Lossy {
+		return "pass"
+	}
 	switch {
 	case got >= PassMin:
 		return "pass"
@@ -93,6 +106,7 @@ func probe(host netip.Addr, n int, fake []byte, ttl int, gap time.Duration) ([]i
 	dst := netip.AddrPortFrom(host, EchoPort)
 	tags := make([][2]byte, n)
 	got := make([]int, n)
+	late := make([]bool, n) // a reply to a packet past the 25th
 	var mu sync.Mutex
 	if fake != nil && ttl > 0 {
 		for _, c := range cs {
@@ -117,9 +131,12 @@ func probe(host netip.Addr, n int, fake []byte, ttl int, gap time.Duration) ([]i
 					}
 					continue
 				}
-				if from.Addr().Unmap() == host && from.Port() == EchoPort && k >= 2 && buf[0] == tags[i][0] && buf[1] == tags[i][1] {
+				if from.Addr().Unmap() == host && from.Port() == EchoPort && k >= 4 && buf[0] == tags[i][0] && buf[1] == tags[i][1] {
 					mu.Lock()
 					got[i]++
+					if binary.BigEndian.Uint16(buf[2:4]) >= 25 {
+						late[i] = true
+					}
 					mu.Unlock()
 				}
 			}
@@ -132,6 +149,11 @@ func probe(host netip.Addr, n int, fake []byte, ttl int, gap time.Duration) ([]i
 		time.Sleep(gap)
 	}
 	wg.Wait()
+	for i := range got {
+		if late[i] && got[i] >= FrozenMin && got[i] < PassMin {
+			got[i] += Lossy
+		}
+	}
 	return got, nil
 }
 
