@@ -170,3 +170,29 @@ func TestTryDirect(t *testing.T) {
 		t.Fatal("a silent server kept")
 	}
 }
+
+// a stop inside a TLS record is a freeze, a stop between records is not
+func TestStalled(t *testing.T) {
+	rec := func(n int) []byte { return append([]byte{23, 3, 3, byte(n >> 8), byte(n)}, make([]byte, n)...) }
+	c := &countConn{tls: true}
+	c.feed(rec(100))
+	c.last = time.Now().Add(-10 * time.Second)
+	if c.stalled() != 0 {
+		t.Error("idle between records taken for a freeze")
+	}
+	big := rec(16000)
+	c.feed(big[:9000])
+	c.last = time.Now().Add(-10 * time.Second)
+	if c.stalled() < 9*time.Second {
+		t.Error("a stop inside a record not seen")
+	}
+	c.feed(big[9000:])
+	if c.stalled() != 0 {
+		t.Error("the record's end not seen")
+	}
+	c.feed([]byte{23, 3})
+	c.last = time.Now().Add(-10 * time.Second)
+	if c.stalled() == 0 {
+		t.Error("a stop inside a record header not seen")
+	}
+}

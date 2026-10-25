@@ -168,7 +168,8 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort, w *w
 		if !viaWarp {
 			if out, first = tryDirect(dst, hello); out != nil {
 				sent = len(hello) > 0
-				counted = &countConn{Conn: out}
+				counted = &countConn{Conn: out, tls: len(hello) > 0}
+				counted.feed(first) // the server's first bytes came before the count
 				out = counted
 			} else {
 				viaWarp = true
@@ -219,16 +220,34 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort, w *w
 	t.total.Add(1)
 	t.active.Add(1)
 	defer t.active.Add(-1)
-	start := time.Now()
+	if listed && !viaWarp && counted != nil && counted.tls {
+		// directly: the TSPU's freeze of foreign HTTPS stops the server's data in the middle of
+		// a TLS record, which no server does by itself (an idle connection waits on a record's
+		// end). Six seconds so: the connection is cut, the client asks again, and the site goes
+		// through WARP from now on
+		done := make(chan struct{})
+		defer close(done)
+		go func() {
+			tk := time.NewTicker(time.Second)
+			defer tk.Stop()
+			for {
+				select {
+				case <-done:
+					return
+				case <-tk.C:
+					if counted.stalled() > 6*time.Second {
+						t.markBlocked(shown, fmt.Sprintf("напрямую замёрзло на %d КБ посреди ответа — дальше через WARP",
+							counted.n.Load()>>10))
+						in.Close()
+						out.Close()
+						return
+					}
+				}
+			}
+		}()
+	}
 	splice(in, out)
-	// directly, a few kilobytes and then nothing until the client gave up: the TSPU's freeze of
-	// foreign HTTPS. The answer to the ClientHello came, so tryDirect let it through; the site
-	// goes through WARP from now on
-	if listed && !viaWarp && counted != nil {
-		n := counted.n.Load()
-		if time.Since(start) > 15*time.Second && n > 1<<10 && n < 128<<10 {
-			t.markBlocked(shown, fmt.Sprintf("напрямую замёрзло на %d КБ — дальше через WARP", n>>10))
-		}
+	if listed && !viaWarp {
 		return
 	}
 	if counted != nil && counted.n.Load() == 0 {
@@ -287,16 +306,57 @@ func tryDirect(dst netip.AddrPort, hello []byte) (net.Conn, []byte) {
 	return c, buf[:n]
 }
 
-// countConn counts what came back
+// countConn counts what came back and, for TLS, follows the records: whether the data stopped
+// inside one, and since when
 type countConn struct {
 	net.Conn
-	n atomic.Int64
+	n   atomic.Int64
+	tls bool
+
+	mu   sync.Mutex
+	hdr  []byte // a record header read in part
+	left int    // bytes of the current record still to come
+	last time.Time
 }
 
 func (c *countConn) Read(b []byte) (int, error) {
 	n, err := c.Conn.Read(b)
 	c.n.Add(int64(n))
+	if c.tls && n > 0 {
+		c.feed(b[:n])
+	}
 	return n, err
+}
+
+func (c *countConn) feed(b []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.last = time.Now()
+	for len(b) > 0 {
+		if c.left > 0 {
+			k := min(c.left, len(b))
+			c.left -= k
+			b = b[k:]
+			continue
+		}
+		k := min(5-len(c.hdr), len(b))
+		c.hdr = append(c.hdr, b[:k]...)
+		b = b[k:]
+		if len(c.hdr) == 5 {
+			c.left = int(c.hdr[3])<<8 | int(c.hdr[4])
+			c.hdr = c.hdr[:0]
+		}
+	}
+}
+
+// stalled: how long the data has stood still inside a record; 0 on a record's boundary
+func (c *countConn) stalled() time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.left == 0 && len(c.hdr) == 0 || c.last.IsZero() {
+		return 0
+	}
+	return time.Since(c.last)
 }
 
 func (c *countConn) CloseWrite() error {
