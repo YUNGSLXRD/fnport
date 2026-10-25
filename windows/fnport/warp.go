@@ -490,6 +490,7 @@ type warpTunnel struct {
 	endpoint atomic.Value
 	exitInfo atomic.Value // string from exit()
 	exitKV   atomic.Value // [3]string: colo, loc, ip
+	bind     *physBind
 	conns    atomic.Int64
 	fails    atomic.Int64
 }
@@ -520,7 +521,8 @@ func newWarpDev(ws warpSettings) (*warpTunnel, error) {
 	if err != nil {
 		return nil, err
 	}
-	dev := device.NewDevice(tdev, &physBind{fake: ws.fake, ttl: ws.fakeTTL}, device.NewLogger(device.LogLevelSilent, ""))
+	bind := &physBind{fake: ws.fake, ttl: ws.fakeTTL}
+	dev := device.NewDevice(tdev, bind, device.NewLogger(device.LogLevelSilent, ""))
 	cfg := fmt.Sprintf("private_key=%s\njc=%d\njmin=%d\njmax=%d\n", priv, ws.Jc, ws.Jmin, ws.Jmax)
 	if ws.I1 != "" {
 		cfg += "i1=" + ws.I1 + "\n"
@@ -533,7 +535,7 @@ func newWarpDev(ws warpSettings) (*warpTunnel, error) {
 		dev.Close()
 		return nil, err
 	}
-	return &warpTunnel{dev: dev, net: tnet, peer: peer}, nil
+	return &warpTunnel{dev: dev, net: tnet, peer: peer, bind: bind}, nil
 }
 
 // setEndpoint: the peer made anew with the endpoint. A new peer with keepalive sends its
@@ -549,6 +551,10 @@ func (w *warpTunnel) setEndpoint(ep string) bool {
 // the handshake and a few kilobytes passed, then the tunnel stood still)
 func probeEndpoint(ws warpSettings, ep string) (*warpTunnel, time.Duration, string) {
 	for try := 0; try < 3; try++ {
+		note := ""
+		if try == 2 && ws.fake != nil {
+			ws.fake, note = nil, " без фейка" // the fake itself may be what kills the tunnel
+		}
 		w, err := newWarpDev(ws)
 		if err != nil {
 			return nil, 0, ""
@@ -569,32 +575,49 @@ func probeEndpoint(ws warpSettings, ep string) (*warpTunnel, time.Duration, stri
 			}
 			c.Close()
 		}
-		w.exit()
-		colo, _, _ := w.exitParts()
-		if best > 0 && colo != "" && w.bulk() {
-			w.endpoint.Store(ep)
-			return w, best, colo
+		why := "соединения с 1.1.1.1 не открываются"
+		if best > 0 {
+			w.exit()
+			why = "выход не определился (HTTPS к 1.1.1.1 не прошёл)"
+			if colo, _, _ := w.exitParts(); colo != "" {
+				if why = w.bulk(); why == "" {
+					if note != "" {
+						logf("WARP: %s прошёл только без фейка", ep)
+					}
+					w.endpoint.Store(ep)
+					return w, best, colo
+				}
+			}
 		}
+		port := w.localPort()
 		w.close()
-		logf("WARP: %s — данные встали после первых пакетов, пробую другой порт", ep)
+		logf("WARP: %s, порт %d%s: %s", ep, port, note, why)
 	}
 	return nil, 0, ""
 }
 
-// bulk: 256 KB through the tunnel within 8 s, a flow well past the 25 packets a freeze lets by
-func (w *warpTunnel) bulk() bool {
+// bulk: 256 KB through the tunnel within 8 s, a flow well past the 25 packets a freeze lets by;
+// "" when it came, else what went wrong
+func (w *warpTunnel) bulk() string {
 	tr := &http.Transport{DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
 		return w.dial(netip.MustParseAddrPort("104.16.124.96:443")) // speed.cloudflare.com
 	}}
 	defer tr.CloseIdleConnections()
 	cl := &http.Client{Transport: tr, Timeout: 8 * time.Second}
+	start := time.Now()
 	resp, err := cl.Get("https://speed.cloudflare.com/__down?bytes=262144")
 	if err != nil {
-		return false
+		return fmt.Sprintf("256 КБ: запрос не прошёл за %.1f с (%v)", time.Since(start).Seconds(), err)
 	}
 	defer resp.Body.Close()
-	n, _ := io.Copy(io.Discard, resp.Body)
-	return resp.StatusCode == 200 && n == 262144
+	n, err := io.Copy(io.Discard, resp.Body)
+	switch {
+	case resp.StatusCode != 200:
+		return "256 КБ: Cloudflare ответил " + resp.Status
+	case n != 262144:
+		return fmt.Sprintf("256 КБ: пришло %d КБ за %.1f с (%v)", n>>10, time.Since(start).Seconds(), err)
+	}
+	return ""
 }
 
 // quicI1: AWG's signature packet as the fake fnport opens game flows with, a QUIC Initial to a
@@ -747,6 +770,19 @@ func (w *warpTunnel) where() string {
 
 func (w *warpTunnel) close() { w.dev.Close() }
 
+// localPort: the tunnel's own UDP port, for the log
+func (w *warpTunnel) localPort() int {
+	if w.bind == nil {
+		return 0
+	}
+	w.bind.mu.Lock()
+	defer w.bind.mu.Unlock()
+	if w.bind.port == 0 && w.bind.c != nil {
+		w.bind.port = w.bind.c.LocalAddr().(*net.UDPAddr).Port
+	}
+	return w.bind.port
+}
+
 // speedTest: up to 50 MB for 15 s, straight and through WARP; with fnport off, through a tunnel
 // brought up for the test. Not Cloudflare's own speed test: ISPs block *.cloudflare.com by name
 // (Dom.ru-like home ISP, October 2026), so straight it measured the block, not the line
@@ -822,6 +858,7 @@ func (e physEndpoint) SrcIP() netip.Addr   { return netip.Addr{} }
 type physBind struct {
 	mu   sync.Mutex
 	c    *net.UDPConn
+	port int    // kept after Close, for the log
 	fake []byte // sent once per endpoint before anything else, at ttl
 	ttl  int
 	sent map[netip.AddrPort]bool
