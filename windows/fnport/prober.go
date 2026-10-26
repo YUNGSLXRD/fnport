@@ -54,7 +54,7 @@ type target struct {
 	good         []int
 	tried        map[int]bool
 	silentRounds int
-	frozenRounds int  // rounds in a row where every probed port froze
+	badRounds    int  // rounds in a row without a good port, with the fake
 	answered     bool // the server answered some probe: a silent round is its pause, not refusal
 	mode         mode
 }
@@ -74,8 +74,7 @@ type prober struct {
 	fakeOffUntil time.Time
 	fakeTries    int
 	fakeGood     int
-	ttl          int       // the fake's TTL now: starts at the setting, moves with the DPI
-	ttlMoved     time.Time // when it last moved
+	ttl          int // the fake's TTL now: starts at the setting, moves with the DPI
 
 	stat *counters
 }
@@ -91,19 +90,49 @@ func (p *prober) fakeTTL() int {
 	return p.ttl
 }
 
-// moveTTL: the DPI's reach moves during an evening (Dom.ru: TTL 4 lifted the freeze by day and
-// killed flows at night, then 3 did the same). Not more often than every 20 s, and not past two
-// above the setting
-func (p *prober) moveTTL(by int, why string) bool {
+// The DPI's reach moves during an evening (Dom.ru: TTL 4 lifted the freeze by day and killed flows
+// at night, then 3 did, then only 2 worked). When no port passes two rounds running, one port
+// each is tried at the TTLs around the current one, and the first that passes is taken
+
+// ttlCandidates: the TTLs to try around cur, nearest first, within 1..max
+func ttlCandidates(cur, max int) []int {
+	var out []int
+	for _, d := range []int{-1, 1, -2, 2, -3, -4} {
+		if t := cur + d; t >= 1 && t <= max {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+func (p *prober) setTTL(n int, why string) {
 	p.fmu.Lock()
 	defer p.fmu.Unlock()
-	n := p.ttl + by
-	if n < 1 || n > p.cfg.fakeTTL+2 || time.Since(p.ttlMoved) < 20*time.Second {
-		return false
+	if n != p.ttl {
+		logf("TTL фейка %d → %d: %s", p.ttl, n, why)
+		p.ttl = n
 	}
-	logf("%s: TTL фейка %d → %d", why, p.ttl, n)
-	p.ttl, p.ttlMoved = n, time.Now()
-	return true
+}
+
+// searchTTL: a port to dst that passed at another TTL, which becomes the fake's TTL
+func (p *prober) searchTTL(dst netip.AddrPort, t *target, busy func(int) bool) (int, bool) {
+	cur := p.fakeTTL()
+	for _, ttl := range ttlCandidates(cur, p.cfg.fakeTTL+2) {
+		if !p.budgetTake(1) {
+			return 0, false
+		}
+		c := freshPorts(t, 1, busy)
+		if len(c) == 0 {
+			return 0, false
+		}
+		t.tried[c[0]] = true
+		if got := p.probe(dst, c, false, p.fake(), ttl)[c[0]]; got >= probePass {
+			p.setTTL(ttl, fmt.Sprintf("с ним порт к %s прошёл, с TTL %d годных не было", dst, cur))
+			return c[0], true
+		}
+	}
+	logf("TTL фейка: ни один из соседних TTL не дал годного порта к %s", dst)
+	return 0, false
 }
 
 func (p *prober) fakeOn() bool {
@@ -362,13 +391,18 @@ func (p *prober) refresh(dst netip.AddrPort, want int, busy func(int) bool) *tar
 		}
 	}
 	t.good = append(t.good, fresh...)
-	// every port frozen, round after round: the fake stops short of the point that lifts the freeze
-	if !qos && withFake && len(fresh) == 0 && frozen > 0 && frozen == len(results) && len(counts) > 1 {
-		if t.frozenRounds++; t.frozenRounds >= 3 && p.moveTTL(+1, fmt.Sprintf("фейк не снимает заморозку с %s", dst)) {
-			t.frozenRounds = 0
+	// no port passed with the fake two rounds running, frozen or silent (a server that answered
+	// before and went quiet is its pause, not the TTL): the DPI's reach moved, look around
+	if !qos && withFake && len(results) > 0 && len(fresh) == 0 && (frozen > 0 || !t.answered) {
+		if t.badRounds++; t.badRounds >= 2 {
+			t.badRounds = 0
+			if port, ok := p.searchTTL(dst, t, busy); ok {
+				t.good = append(t.good, port)
+				t.silentRounds = 0
+			}
 		}
 	} else if len(fresh) > 0 {
-		t.frozenRounds = 0
+		t.badRounds = 0
 	}
 	via := "игровой порт"
 	if qos {
@@ -395,23 +429,6 @@ func (p *prober) refresh(dst netip.AddrPort, want int, busy func(int) bool) *tar
 		logf("сервер %s замолчал после ответов: похоже, ограничивает частые проверки; пауза и снова", dst)
 		time.Sleep(time.Second)
 		return t
-	}
-
-	// no reply at all with the fake: maybe the fake now reaches the point where the DPI kills the
-	// flow. One port with it a hop shorter: an answer (pass or freeze) means it was the TTL
-	if !qos && silent == len(results) && withFake && p.fakeTTL() > 1 && p.budgetTake(1) {
-		if c := freshPorts(t, 1, busy); len(c) == 1 {
-			t.tried[c[0]] = true
-			lower := p.fakeTTL() - 1
-			if got := p.probe(dst, c, false, p.fake(), lower)[c[0]]; got > 0 &&
-				p.moveTTL(-1, fmt.Sprintf("фейк убивает соединения с %s (с TTL на 1 меньше — %d ответов)", dst, got)) {
-				if got >= probePass {
-					t.good = append(t.good, c[0])
-				}
-				t.silentRounds = 0
-				return t
-			}
-		}
 	}
 
 	// no reply at all with the fake: maybe it is the fake that gets the flow killed (some ISPs drop

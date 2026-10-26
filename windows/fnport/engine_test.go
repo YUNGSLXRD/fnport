@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"net"
 	"net/netip"
@@ -402,23 +403,14 @@ func TestSilenceAfterAnswersIsAPause(t *testing.T) {
 	}
 }
 
-// the fake's TTL moves one hop at a time, not below 1 nor past two above the setting, and not
-// twice within 20 s
-func TestMoveTTL(t *testing.T) {
-	p := newProber(&config{fakeTTL: 3}, &counters{})
-	if !p.moveTTL(-1, "test") || p.fakeTTL() != 2 {
-		t.Fatal("no move down", p.fakeTTL())
-	}
-	if p.moveTTL(-1, "test") {
-		t.Fatal("moved twice within 20 s")
-	}
-	p.ttlMoved = time.Time{}
-	p.ttl = 5
-	if p.moveTTL(+1, "test") {
-		t.Fatal("past two above the setting")
-	}
-	p.ttl = 1
-	if p.moveTTL(-1, "test") {
-		t.Fatal("below 1")
+// the TTLs tried around the current one: nearest first, never below 1 nor past the limit
+func TestTTLCandidates(t *testing.T) {
+	for _, c := range []struct {
+		cur, max int
+		want     string
+	}{{5, 7, "[4 6 3 7 2 1]"}, {2, 7, "[1 3 4]"}, {1, 3, "[2 3]"}} {
+		if got := fmt.Sprint(ttlCandidates(c.cur, c.max)); got != c.want {
+			t.Errorf("%d..%d: %s, want %s", c.cur, c.max, got, c.want)
+		}
 	}
 }
