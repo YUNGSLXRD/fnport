@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"sync"
 	"syscall"
 
 	"github.com/amnezia-vpn/amneziawg-go/tun"
@@ -27,6 +28,9 @@ type Net struct {
 	stack    *stack.Stack
 	events   chan tun.Event
 	incoming chan *buffer.View
+	closed   chan struct{} // closed by Close; incoming never is: the stack may still be writing
+	once     sync.Once
+	notify   *channel.NotificationHandle
 	mtu      int
 }
 
@@ -38,10 +42,10 @@ func New(addr netip.Addr, mtu int) (tun.Device, *Net, error) {
 		HandleLocal:        true,
 	})
 	n := &Net{ep: channel.New(1024, uint32(mtu), ""), stack: s, events: make(chan tun.Event, 10),
-		incoming: make(chan *buffer.View), mtu: mtu}
+		incoming: make(chan *buffer.View), closed: make(chan struct{}), mtu: mtu}
 	sack := tcpip.TCPSACKEnabled(true)
 	s.SetTransportProtocolOption(tcp.ProtocolNumber, &sack)
-	n.ep.AddNotify(n)
+	n.notify = n.ep.AddNotify(n)
 	if err := s.CreateNIC(1, n.ep); err != nil {
 		return nil, nil, fmt.Errorf("CreateNIC: %v", err)
 	}
@@ -60,7 +64,9 @@ func (n *Net) DialTCP(ctx context.Context, dst netip.AddrPort) (*gonet.TCPConn, 
 	return gonet.DialContextTCP(ctx, n.stack, fa, ipv4.ProtocolNumber)
 }
 
-// WriteNotify: the stack has a packet for the tunnel
+// WriteNotify: the stack has a packet for the tunnel. After Close the packet is dropped: the
+// stack's connections still send (retransmits, resets) while the tunnel goes away, and a send on
+// a closed channel here took the whole program down at every rebuild of the tunnel
 func (n *Net) WriteNotify() {
 	pkt := n.ep.Read()
 	if pkt == nil {
@@ -68,7 +74,11 @@ func (n *Net) WriteNotify() {
 	}
 	v := pkt.ToView()
 	pkt.DecRef()
-	n.incoming <- v
+	select {
+	case n.incoming <- v:
+	case <-n.closed:
+		v.Release()
+	}
 }
 
 // device is the Net as AWG's tun.Device
@@ -81,10 +91,13 @@ func (d *device) MTU() (int, error)        { return d.mtu, nil }
 func (d *device) BatchSize() int           { return 1 }
 
 func (d *device) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
-	v, ok := <-d.incoming
-	if !ok {
+	var v *buffer.View
+	select {
+	case v = <-d.incoming:
+	case <-d.closed:
 		return 0, os.ErrClosed
 	}
+	defer v.Release()
 	n, err := v.Read(bufs[0][offset:])
 	if err != nil {
 		return 0, err
@@ -110,10 +123,15 @@ func (d *device) Write(bufs [][]byte, offset int) (int, error) {
 }
 
 func (d *device) Close() error {
-	d.stack.RemoveNIC(1)
-	close(d.events)
-	d.ep.Close()
-	close(d.incoming)
+	d.once.Do(func() {
+		close(d.closed)
+		d.ep.RemoveNotify(d.notify)
+		d.stack.RemoveNIC(1)
+		d.ep.Close()
+		// the stack's connections end: a reader or writer on them gets an error, not a wait
+		d.stack.Close()
+		close(d.events)
+	})
 	return nil
 }
 

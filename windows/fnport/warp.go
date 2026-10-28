@@ -911,6 +911,7 @@ func (e physEndpoint) SrcIP() netip.Addr   { return netip.Addr{} }
 
 type physBind struct {
 	mu     sync.Mutex
+	smu    sync.Mutex // one Send at a time: the fake lowers the socket's TTL for a moment
 	c      *net.UDPConn
 	port   int    // kept after Close, for the log
 	fake   []byte // sent once per endpoint before anything else, at ttl
@@ -976,6 +977,11 @@ func (b *physBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 	if !ok {
 		return conn.ErrWrongEndpointType
 	}
+	// AWG sends from several goroutines (data, handshakes, keepalives): one sending while the
+	// socket's TTL is down for the fake would have its packet die at the TSPU's hop, a lost
+	// handshake waiting 5 s for its retry
+	b.smu.Lock()
+	defer b.smu.Unlock()
 	if b.fake != nil && b.ttl > 0 {
 		// the fake before the first packet, and again after 20 s of quiet: the DPI forgets a
 		// quiet flow and takes it for a new one, which it then freezes (home: the tunnel stood
