@@ -36,14 +36,17 @@ type tcpRelay struct {
 	failed atomic.Int64
 
 	// WARP for Epic's services: nil until (unless) the tunnel is up
-	warp      atomic.Pointer[warpTunnel]
-	epicIPs   atomic.Pointer[map[netip.Addr]bool]
-	names     atomic.Pointer[[]string] // the names that go through WARP
-	seen      sync.Map                 // names already logged as going through WARP
-	blocked   sync.Map                 // name -> when it did not answer directly
-	always    atomic.Bool              // every listed name through WARP, not trying directly
-	warpStall chan struct{}            // a connection through WARP stood still inside a record
-	state     atomic.Value             // string: how WARP is doing, for the window and the report
+	warp       atomic.Pointer[warpTunnel]
+	epicIPs    atomic.Pointer[map[netip.Addr]bool]
+	names      atomic.Pointer[[]string] // the names that go through WARP
+	seen       sync.Map                 // names already logged as going through WARP
+	blocked    sync.Map                 // name -> when it did not answer directly
+	warpBad    sync.Map                 // name -> when it failed through WARP while the tunnel worked
+	always     atomic.Bool              // every listed name through WARP, not trying directly
+	warpWait   atomic.Bool              // the tunnel is being brought up: listed names wait for it
+	remembered atomic.Bool              // this network is written down as one that freezes Epic
+	warpStall  chan struct{}            // a connection through WARP stood still inside a record
+	state      atomic.Value             // string: how WARP is doing, for the window and the report
 }
 
 // allowLoopback: tests only; the routes never send 127.0.0.0/8 into the adapter
@@ -97,8 +100,8 @@ func (t *tcpRelay) inject(b []byte) {
 func (t *tcpRelay) accept(r *tcp.ForwarderRequest) {
 	id := r.ID()
 	dst := netip.AddrPortFrom(netip.AddrFrom4(id.LocalAddress.As4()), id.LocalPort)
-	if w := t.warp.Load(); w != nil && (dst.Port() == 443 || t.epicIP(dst.Addr())) {
-		t.acceptSplit(r, dst, w)
+	if (t.warp.Load() != nil || t.warpWait.Load()) && (dst.Port() == 443 || t.epicIP(dst.Addr())) {
+		t.acceptSplit(r, dst)
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -139,8 +142,11 @@ func (t *tcpRelay) epicIP(a netip.Addr) bool {
 // ClientHello within seconds (blocked by name or address), the connection is made again through
 // WARP, and the name goes through WARP for the next 10 minutes. Directly is the program's
 // behaviour without WARP, so what works directly keeps working (WARP's addresses are not liked
-// everywhere: Fortnite's content keys failed through it at home)
-func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort, w *warpTunnel) {
+// everywhere: Fortnite's content keys failed through it at home). While the tunnel is being
+// brought up, a name that has to go through WARP waits for it: directly it would freeze (at
+// start the search for an endpoint took a minute, and the game, started meanwhile, failed to
+// load its content keys and timed out logging in)
+func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort) {
 	var wq waiter.Queue
 	ep, terr := r.CreateEndpoint(&wq)
 	if terr != nil {
@@ -163,7 +169,13 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort, w *w
 	var first []byte // the server's first answer, read while deciding
 	sent := false    // the ClientHello went out on out already
 	var counted *countConn
+	var w *warpTunnel
 	listed, viaWarp := t.warpName(name) || (name == "" && t.epicIP(dst.Addr())), false
+	if listed && t.warpBadRecently(shown) {
+		// it failed through a working tunnel: directly, as without WARP (with WARP on, logins
+		// failed more often than with it off)
+		listed = false
+	}
 	if listed {
 		viaWarp = t.always.Load() || t.blockedRecently(shown)
 		if !viaWarp {
@@ -178,21 +190,26 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort, w *w
 			}
 		}
 		if viaWarp {
+			w = t.waitWarp(nil, warpHold)
+		}
+		if viaWarp && w == nil {
+			if _, dup := t.seen.LoadOrStore("nowarp "+shown, true); !dup {
+				logf("WARP: %s — туннель ещё не готов, пошло напрямую", maskAddresses(shown))
+			}
+		}
+		if viaWarp && w != nil {
 			c, err := w.dial(dst)
-			if err != nil && t.always.Load() {
-				// directly it freezes here: the tunnel is likely frozen itself, so a new one, and
+			if err != nil && t.always.Load() && !w.works() {
+				// directly it freezes here, and the tunnel does not answer either: a new one, and
 				// the connection waits for it rather than going the way that freezes
 				w.fails.Add(1)
 				select {
 				case t.warpStall <- struct{}{}:
 				default:
 				}
-				for i := 0; i < 15 && err != nil; i++ {
-					time.Sleep(time.Second)
-					if nw := t.warp.Load(); nw != nil && nw != w {
-						w = nw
-						c, err = w.dial(dst)
-					}
+				if nw := t.waitWarp(w, warpHold); nw != nil {
+					w = nw
+					c, err = w.dial(dst)
 				}
 			}
 			if err != nil {
@@ -239,7 +256,10 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort, w *w
 	t.active.Add(1)
 	defer t.active.Add(-1)
 	if listed && viaWarp && counted != nil && counted.tls {
-		// through WARP the same stop inside a record is the tunnel frozen: a new one, other ports
+		// through WARP a stop inside a record may be the tunnel frozen: the connection is cut, and
+		// the tunnel is checked and made anew if it does not answer. A request without an answer
+		// is no sign here: chat and other long connections wait on the server (they were cut, and
+		// the tunnel with everything in it rebuilt, again and again)
 		done := make(chan struct{})
 		defer close(done)
 		go func() {
@@ -250,13 +270,17 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort, w *w
 				case <-done:
 					return
 				case <-tk.C:
-					if counted.stalled() > 6*time.Second {
-						select {
-						case t.warpStall <- struct{}{}:
-						default:
-						}
+					if d, inRecord := counted.stalled(); inRecord && d > 6*time.Second {
 						in.Close()
 						out.Close()
+						if w.works() {
+							t.markWarpBad(shown, "встало посреди ответа")
+						} else {
+							select {
+							case t.warpStall <- struct{}{}:
+							default:
+							}
+						}
 						return
 					}
 				}
@@ -267,7 +291,8 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort, w *w
 		// directly: the TSPU's freeze of foreign HTTPS stops the server's data in the middle of
 		// a TLS record, which no server does by itself (an idle connection waits on a record's
 		// end). Six seconds so: the connection is cut, the client asks again, and the site goes
-		// through WARP from now on
+		// through WARP from now on. A request left without an answer is no sign: chat, the
+		// waiting room and other long requests wait on the server by design
 		done := make(chan struct{})
 		defer close(done)
 		go func() {
@@ -278,7 +303,7 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort, w *w
 				case <-done:
 					return
 				case <-tk.C:
-					if counted.stalled() > 6*time.Second {
+					if d, inRecord := counted.stalled(); inRecord && d > 6*time.Second {
 						t.markBlocked(shown, fmt.Sprintf("напрямую замёрзло (получено %d КБ) — дальше через WARP",
 							counted.n.Load()>>10))
 						in.Close()
@@ -293,17 +318,30 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort, w *w
 	if listed && !viaWarp {
 		return
 	}
-	if counted != nil && counted.n.Load() == 0 {
+	if counted != nil && counted.n.Load() == 0 && w != nil {
 		w.fails.Add(1)
-		if _, dup := t.seen.LoadOrStore("empty "+shown, true); !dup {
-			logf("WARP: %s через WARP ничего не вернул", maskAddresses(shown))
-		}
+		t.markWarpBad(shown, "ничего не вернул")
 	}
 }
 
+// markWarpBad: the name goes directly for the next 10 minutes. Epic does not take every
+// request from WARP's addresses (Fortnite's content keys failed through it at home)
+func (t *tcpRelay) markWarpBad(name, why string) {
+	if _, dup := t.warpBad.Swap(name, time.Now()); !dup {
+		logf("WARP: %s через WARP %s, хотя туннель работает — 10 минут напрямую", maskAddresses(name), why)
+	}
+}
+
+func (t *tcpRelay) warpBadRecently(name string) bool {
+	v, ok := t.warpBad.Load(name)
+	return ok && time.Since(v.(time.Time)) < 10*time.Minute
+}
+
 // markBlocked: the site through WARP from now on, and the network is taken for one that freezes
-// Epic: everything listed goes through WARP and the network is remembered. One site is enough:
-// at home, learning them one by one left the content keys to freeze before their turn came
+// Epic: everything listed goes through WARP. One site is enough for this run (at home, learning
+// them one by one left the content keys to freeze before their turn came); the network is
+// remembered for 3 days only after two sites, so one false alarm does not keep everything in
+// WARP for days
 func (t *tcpRelay) markBlocked(name, why string) {
 	if _, dup := t.blocked.Load(name); !dup {
 		logf("WARP: %s %s", maskAddresses(name), why)
@@ -311,9 +349,30 @@ func (t *tcpRelay) markBlocked(name, why string) {
 	t.blocked.Store(name, time.Now())
 	n := 0
 	t.blocked.Range(func(_, _ any) bool { n++; return true })
-	if n >= 1 && !t.always.Swap(true) {
-		logf("WARP: сервисы Epic напрямую замерзают — всё из списка теперь через WARP, сеть запомнена на 3 дня")
+	if !t.always.Swap(true) {
+		logf("WARP: сервисы Epic напрямую замерзают — всё из списка теперь через WARP")
+	}
+	if n >= 2 && !t.remembered.Swap(true) {
+		logf("WARP: напрямую замерзло уже %d сайта Epic — сеть запомнена на 3 дня", n)
 		rememberNetworkFreezes()
+	}
+}
+
+// warpHold: how long a connection that has to go through WARP waits for the tunnel
+const warpHold = 25 * time.Second
+
+// waitWarp: the tunnel, other than old, waiting up to d while one is being brought up; nil when
+// there is none (WARP gave up for now, fnport went off, or the time ran out)
+func (t *tcpRelay) waitWarp(old *warpTunnel, d time.Duration) *warpTunnel {
+	end := time.Now().Add(d)
+	for {
+		if w := t.warp.Load(); w != nil && w != old {
+			return w
+		}
+		if !t.warpWait.Load() || t.ctx.Err() != nil || time.Now().After(end) {
+			return nil
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
 }
 
@@ -364,10 +423,16 @@ type countConn struct {
 	wrote time.Time // the client's last write through it
 }
 
+// requestMin: a client's write smaller than this is not taken for a request waiting on an answer:
+// HTTP/2's window updates, pings and acknowledgements (35–70 bytes in TLS) get none
+const requestMin = 100
+
 func (c *countConn) Write(b []byte) (int, error) {
-	c.mu.Lock()
-	c.wrote = time.Now()
-	c.mu.Unlock()
+	if len(b) >= requestMin {
+		c.mu.Lock()
+		c.wrote = time.Now()
+		c.mu.Unlock()
+	}
 	return c.Conn.Write(b)
 }
 
@@ -401,20 +466,20 @@ func (c *countConn) feed(b []byte) {
 	}
 }
 
-// stalled: how long the data has stood still inside a record, or a request has gone unanswered
-// (counted from its 10th second, so a slow answer is not one); 0 otherwise
-func (c *countConn) stalled() time.Duration {
+// stalled: how long the data has stood still inside a record (inRecord), or a request has gone
+// unanswered (counted from its 10th second, so a slow answer is not one); 0 otherwise
+func (c *countConn) stalled() (d time.Duration, inRecord bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if (c.left > 0 || len(c.hdr) > 0) && !c.last.IsZero() {
+		return time.Since(c.last), true
+	}
 	if !c.wrote.IsZero() && c.wrote.After(c.last) {
 		if d := time.Since(c.wrote) - 4*time.Second; d > 0 {
-			return d
+			return d, false
 		}
 	}
-	if c.left == 0 && len(c.hdr) == 0 || c.last.IsZero() {
-		return 0
-	}
-	return time.Since(c.last)
+	return 0, false
 }
 
 func (c *countConn) CloseWrite() error {

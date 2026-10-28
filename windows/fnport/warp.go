@@ -464,6 +464,10 @@ func warpEndpoints(first string) []string {
 	if first != "" {
 		out = append(out, first)
 	}
+	// the one that worked last time on this network: found again at once, not after a minute
+	if last := lastEndpoint(); last != "" && last != first {
+		out = append(out, last)
+	}
 	ranges := []string{"188.114.96", "188.114.97", "188.114.98", "188.114.99", "162.159.192"}
 	ports := []int{2408, 500, 1701, 4500, 854, 878, 894, 7559, 3138}
 	pick := func(net3 string, port int) string { return fmt.Sprintf("%s.%d:%d", net3, 1+mrand.IntN(254), port) }
@@ -713,6 +717,11 @@ func startWarpWith(ws warpSettings) (*warpTunnel, error) {
 			best, bestRTT, bestRU = w, rtt, ru
 		} else {
 			w.close()
+		}
+		// the first exit abroad is taken: until the tunnel is up, Epic's sites wait or go directly,
+		// and looking for a nearer one took a minute
+		if !bestRU {
+			break
 		}
 	}
 	if best == nil {
@@ -1004,6 +1013,9 @@ func runWarp(ws warpSettings, dev wnet.Dev, routed []netip.Prefix, t *tcpRelay) 
 		t.always.Store(true)
 		logf("WARP: в этой сети сервисы Epic напрямую замерзали — всё из списка сразу через WARP")
 	}
+	// listed names wait for the tunnel instead of going directly, where they would freeze
+	t.warpWait.Store(true)
+	defer t.warpWait.Store(false)
 	adder, _ := dev.(interface{ AddRoute(netip.Prefix) error })
 	known := map[netip.Addr]bool{}
 	refresh := func() {
@@ -1037,6 +1049,7 @@ func runWarp(ws warpSettings, dev wnet.Dev, routed []netip.Prefix, t *tcpRelay) 
 		return
 	}
 	if err != nil {
+		t.warpWait.Store(false)
 		t.state.Store("не подключился: " + err.Error())
 		changes.Add(1)
 		logf("WARP не подключился: %v. Сервисы Epic идут напрямую.", err)
@@ -1051,6 +1064,7 @@ func runWarp(ws warpSettings, dev wnet.Dev, routed []netip.Prefix, t *tcpRelay) 
 	}
 	changes.Add(1)
 	logf("WARP подключён через %s: сервисы Epic идут через него, игра — напрямую", w.where())
+	rememberEndpoint(w)
 	if ex := w.exit(); ex != "" {
 		w.exitInfo.Store(ex)
 		logf("WARP: выход — %s", ex)
@@ -1062,6 +1076,7 @@ func runWarp(ws warpSettings, dev wnet.Dev, routed []netip.Prefix, t *tcpRelay) 
 	defer health.Stop()
 	tk := time.NewTicker(10 * time.Minute)
 	defer tk.Stop()
+	stallSeen := false // "stood still, the tunnel answers" logged once
 	for {
 		select {
 		case <-t.ctx.Done():
@@ -1069,7 +1084,8 @@ func runWarp(ws warpSettings, dev wnet.Dev, routed []netip.Prefix, t *tcpRelay) 
 		case <-tk.C:
 			refresh()
 		case <-health.C:
-			if w.works() {
+			// a second try: one lost check is no reason to cut everything going through it
+			if w.works() || w.works() {
 				if colo, _, _ := w.exitParts(); colo == "" {
 					if ex := w.exit(); ex != "" {
 						w.exitInfo.Store(ex)
@@ -1085,7 +1101,16 @@ func runWarp(ws warpSettings, dev wnet.Dev, routed []netip.Prefix, t *tcpRelay) 
 				return
 			}
 		case <-t.warpStall:
-			logf("WARP: соединение через %s встало посреди ответа — поднимаю туннель с другого порта", w.where())
+			// a connection stood still, but the tunnel may be fine (the server's own pause): it is
+			// rebuilt, cutting everything in it, only when it does not answer
+			if w.works() {
+				if !stallSeen {
+					stallSeen = true
+					logf("WARP: соединение через %s встало, но туннель отвечает — не трогаю", w.where())
+				}
+				continue
+			}
+			logf("WARP: соединение через %s встало, туннель не отвечает — поднимаю новый с другого порта", w.where())
 			w = t.rebuildWarp(ws, w)
 			if w == nil {
 				return
@@ -1094,19 +1119,20 @@ func runWarp(ws warpSettings, dev wnet.Dev, routed []netip.Prefix, t *tcpRelay) 
 	}
 }
 
-// The networks where Epic's sites froze directly, remembered for 3 days in warp-state.json next to
-// the program: learning them site by site took restarts of the game every evening
+// The networks where Epic's sites froze directly, remembered for 3 days in warp-freezes.json:
+// learning them site by site took restarts of the game every evening
 
 // warpStatePath: in %LOCALAPPDATA%\fnport, not next to the program: a new copy in another folder
-// would forget the network otherwise
+// would forget the network otherwise. warp-freezes.json, not warp-state.json: that one was
+// written after a single site, false alarms among them, and kept everything in WARP for days
 func warpStatePath() string {
 	dir, err := os.UserCacheDir()
 	if err != nil {
-		return filepath.Join(appDir(), "warp-state.json")
+		return filepath.Join(appDir(), "warp-freezes.json")
 	}
 	dir = filepath.Join(dir, "fnport")
 	os.MkdirAll(dir, 0o755)
-	return filepath.Join(dir, "warp-state.json")
+	return filepath.Join(dir, "warp-freezes.json")
 }
 
 // networkKey: this PC's address on the adapter towards the internet, telling home from a club
@@ -1159,6 +1185,7 @@ func (t *tcpRelay) rebuildWarp(ws warpSettings, old *warpTunnel) *warpTunnel {
 	changes.Add(1)
 	old.close()
 	for t.ctx.Err() == nil {
+		t.warpWait.Store(true)
 		if w, err := startWarp(ws); err == nil {
 			if t.ctx.Err() != nil {
 				w.close()
@@ -1169,9 +1196,12 @@ func (t *tcpRelay) rebuildWarp(ws warpSettings, old *warpTunnel) *warpTunnel {
 			}
 			t.warp.Store(w)
 			logf("WARP снова подключён, через %s", w.where())
+			rememberEndpoint(w)
 			changes.Add(1)
 			return w
 		}
+		// nothing waits for a tunnel that is not coming soon
+		t.warpWait.Store(false)
 		t.state.Store("не подключается, пробую снова через 5 минут")
 		logf("WARP не подключился: сервисы Epic идут напрямую, попробую снова через 5 минут")
 		select {
@@ -1180,6 +1210,44 @@ func (t *tcpRelay) rebuildWarp(ws warpSettings, old *warpTunnel) *warpTunnel {
 		}
 	}
 	return nil
+}
+
+// The endpoint that worked, per network, in %LOCALAPPDATA%\fnport\warp-endpoint.json: the next
+// start tries it first
+func warpEndpointPath() string {
+	return filepath.Join(filepath.Dir(warpStatePath()), "warp-endpoint.json")
+}
+
+func lastEndpoint() string {
+	k := networkKey()
+	if k == "" {
+		return ""
+	}
+	m := map[string]string{}
+	if b, err := os.ReadFile(warpEndpointPath()); err == nil {
+		json.Unmarshal(b, &m)
+	}
+	return m[k]
+}
+
+// rememberEndpoint: w's endpoint, when its exit is abroad (one in Russia is taken only for want
+// of another, and is not worth trying first)
+func rememberEndpoint(w *warpTunnel) {
+	k, ep := networkKey(), w.where()
+	if colo, _, _ := w.exitParts(); k == "" || ep == "" || coloCountry[colo] == "RU" {
+		return
+	}
+	m := map[string]string{}
+	if b, err := os.ReadFile(warpEndpointPath()); err == nil {
+		json.Unmarshal(b, &m)
+	}
+	if m[k] == ep {
+		return
+	}
+	m[k] = ep
+	if b, err := json.Marshal(m); err == nil {
+		os.WriteFile(warpEndpointPath(), b, 0o644)
+	}
 }
 
 func inPrefixes(a netip.Addr, ps []netip.Prefix) bool {

@@ -58,6 +58,7 @@ func main() {
 
 	ctl := newController(set)
 	g := &gui{ctl: ctl}
+	g.check.tunnel = ctl.warpTunnel
 	t := &tray{onOpen: g.show, onToggle: ctl.toggle, onQuit: g.quitApp, accent: icon.Gray, tip: "fnport: выключен",
 		isOn: func() bool { st, _ := ctl.state(); return st == stateOn }}
 	g.tray = t

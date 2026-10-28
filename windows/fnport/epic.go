@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"strings"
 	"time"
 
 	"github.com/YUNGSLXRD/fnport/windows/internal/geo"
@@ -63,9 +64,18 @@ func publicLookup(host string) netip.Addr {
 // fetchDirect: one HTTPS GET to ip, read until the end or a stall. Bytes that stop coming before
 // the end of the response mean the flow was frozen
 func fetchDirect(p epicProbe, ip netip.Addr) (string, int64) {
+	return fetchVia(p, ip, func(ctx context.Context, dst netip.AddrPort) (net.Conn, error) { return wnet.DialTCP(ctx, dst) })
+}
+
+// fetchWarp: the same through the WARP tunnel
+func fetchWarp(p epicProbe, ip netip.Addr, w *warpTunnel) (string, int64) {
+	return fetchVia(p, ip, func(_ context.Context, dst netip.AddrPort) (net.Conn, error) { return w.dial(dst) })
+}
+
+func fetchVia(p epicProbe, ip netip.Addr, dial func(context.Context, netip.AddrPort) (net.Conn, error)) (string, int64) {
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
-	conn, err := wnet.DialTCP(ctx, netip.AddrPortFrom(ip, 443))
+	conn, err := dial(ctx, netip.AddrPortFrom(ip, 443))
 	if err != nil {
 		return "connect", 0
 	}
@@ -88,18 +98,65 @@ func fetchDirect(p epicProbe, ip netip.Addr) (string, int64) {
 	return "ok", n
 }
 
-func checkEpic(k *checker) []epicResult {
+// checkEpic: the services directly and, with a tunnel, through WARP: whether WARP helps where
+// directly they freeze, and whether it works at all
+func checkEpic(k *checker, w *warpTunnel) (direct, warp []epicResult) {
 	k.say("Сервисы Epic напрямую (вход, сервисы Fortnite, загрузка, подбор матчей, пати, чат)…")
-	var out []epicResult
-	for _, p := range epicProbes {
+	ips := make([]netip.Addr, len(epicProbes))
+	for i, p := range epicProbes {
 		r := epicResult{Label: p.Label, State: "dns"}
-		if ip := publicLookup(p.Host); ip.IsValid() {
-			r.State, r.Bytes = fetchDirect(p, ip)
+		if ips[i] = publicLookup(p.Host); ips[i].IsValid() {
+			r.State, r.Bytes = fetchDirect(p, ips[i])
 		}
 		k.say("  %s: %s", r.Label, epicStateRU(r))
-		out = append(out, r)
+		direct = append(direct, r)
 	}
-	return out
+	if w == nil {
+		return direct, nil
+	}
+	k.say("Те же сервисы через WARP (%s)…", w.where())
+	for i, p := range epicProbes {
+		r := epicResult{Label: p.Label, State: "dns"}
+		if ips[i].IsValid() {
+			r.State, r.Bytes = fetchWarp(p, ips[i], w)
+		}
+		k.say("  %s: %s", r.Label, epicStateRU(r))
+		warp = append(warp, r)
+	}
+	return direct, warp
+}
+
+// warpVerdict: what WARP did for the services, for the summary; "" without a WARP check
+func warpVerdict(direct, warp []epicResult) string {
+	if len(warp) == 0 {
+		return ""
+	}
+	var helped, still, broke []string
+	for i, r := range warp {
+		d := direct[i].State == "ok"
+		switch {
+		case !d && r.State == "ok":
+			helped = append(helped, r.Label)
+		case !d:
+			still = append(still, r.Label)
+		case r.State != "ok":
+			broke = append(broke, r.Label)
+		}
+	}
+	var out []string
+	switch {
+	case len(helped) > 0:
+		out = append(out, fmt.Sprintf("WARP помогает: через него открывается то, что напрямую нет (%s).", strings.Join(helped, ", ")))
+	case len(still) == 0 && len(broke) == 0:
+		out = append(out, "Через WARP сервисы Epic открываются, но и напрямую тоже: сейчас WARP не нужен, и в режиме «Только то, что напрямую не открывается» он не мешает.")
+	}
+	if len(still) > 0 {
+		out = append(out, fmt.Sprintf("Через WARP тоже не открывается: %s.", strings.Join(still, ", ")))
+	}
+	if len(broke) > 0 {
+		out = append(out, fmt.Sprintf("Напрямую открывается, а через WARP нет: %s — режим «Всё из списка — всегда через WARP» здесь вреден.", strings.Join(broke, ", ")))
+	}
+	return strings.Join(out, " ")
 }
 
 func epicStateRU(r epicResult) string {

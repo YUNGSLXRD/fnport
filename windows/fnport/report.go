@@ -73,6 +73,13 @@ func (c *controller) report(r *checkResult) string {
 		}
 		line("Сервисы Epic напрямую", strings.Join(ep, "; "))
 	}
+	if len(r.EpicWarp) > 0 {
+		var ep []string
+		for _, e := range r.EpicWarp {
+			ep = append(ep, e.Label+": "+epicStateRU(e))
+		}
+		line("Сервисы Epic через WARP", strings.Join(ep, "; "))
+	}
 	if r.Settings.Warp.Enabled {
 		st := c.warpStatus(true)
 		if st == "" {

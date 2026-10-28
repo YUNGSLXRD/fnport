@@ -50,6 +50,7 @@ type checkResult struct {
 	WorksFrom int
 	Settings  settings     // what the check ran with
 	Epic      []epicResult // Epic's HTTPS services, straight from this PC
+	EpicWarp  []epicResult // the same through WARP; nil when there was no tunnel
 	Loss      int          // % of packets the line lost to the beacons without a freeze; 0 = none seen
 
 	PortKept  string // "yes", "no", "unknown"
@@ -67,6 +68,8 @@ type checker struct {
 	lines    []string
 	result   *checkResult
 	finished time.Time
+	tunnel   func() *warpTunnel // the running WARP tunnel, nil when there is none
+	own      *warpTunnel        // one brought up for the check
 }
 
 func (k *checker) state() (bool, []string, *checkResult, time.Duration) {
@@ -139,13 +142,45 @@ func (k *checker) probe(host netip.Addr, fake []byte, ttl int) []int {
 	return rs
 }
 
+// warpForCheck: the tunnel fnport runs, or, with WARP set up and fnport off, one brought up for
+// the check (closed when the check ends); nil without WARP
+func (k *checker) warpForCheck(cur settings) *warpTunnel {
+	if !cur.Warp.Enabled || !cur.Warp.ready() {
+		return nil
+	}
+	if k.tunnel != nil {
+		if w := k.tunnel(); w != nil {
+			return w
+		}
+	}
+	k.say("WARP: поднимаю туннель для проверки…")
+	w, err := startWarp(cur.Warp.withFake(cur))
+	if err != nil {
+		k.say("  WARP не подключился: %v", err)
+		return nil
+	}
+	k.mu.Lock()
+	k.own = w
+	k.mu.Unlock()
+	return w
+}
+
 func (k *checker) run(cur settings) *checkResult {
+	defer func() {
+		k.mu.Lock()
+		w := k.own
+		k.own = nil
+		k.mu.Unlock()
+		if w != nil {
+			w.close()
+		}
+	}()
 	r := &checkResult{PortKept: "unknown", Settings: cur}
 	usePhysical(cur.Adapter)
 
 	k.say("Сохраняет ли роутер исходящий порт…")
 	r.PortKept = checkPortKept(k)
-	r.Epic = checkEpic(k)
+	r.Epic, r.EpicWarp = checkEpic(k, k.warpForCheck(cur))
 
 	bs := resolveBeacons()
 	if len(bs) == 0 {
@@ -377,6 +412,9 @@ func finish(r *checkResult, cur settings) *checkResult {
 				"обновление, причина может быть в этом.", strings.Join(blocked, ", ")))
 		} else if len(r.Epic) > 0 {
 			add("Сервисы Epic напрямую открываются.")
+		}
+		if v := warpVerdict(r.Epic, r.EpicWarp); v != "" {
+			add(v)
 		}
 		if rec.Fake != cur.Fake || rec.FakeTTL != cur.FakeTTL {
 			r.Recommend = &rec

@@ -64,3 +64,28 @@ func TestFinishPortByFact(t *testing.T) {
 		t.Errorf("the fake not recommended: %+v", r.Recommend)
 	}
 }
+
+// with a WARP check, the summary says whether WARP helps
+func TestWarpVerdict(t *testing.T) {
+	d := []epicResult{{"вход", "ok", 900}, {"загрузка", "frozen", 16000}}
+	cases := []struct {
+		warp []epicResult
+		want string
+	}{
+		{[]epicResult{{"вход", "ok", 900}, {"загрузка", "ok", 90000}}, "WARP помогает: через него открывается то, что напрямую нет (загрузка)"},
+		{[]epicResult{{"вход", "ok", 900}, {"загрузка", "frozen", 3000}}, "Через WARP тоже не открывается: загрузка"},
+		{[]epicResult{{"вход", "tls", 0}, {"загрузка", "ok", 90000}}, "а через WARP нет: вход"},
+	}
+	for i, c := range cases {
+		if got := warpVerdict(d, c.warp); !strings.Contains(got, c.want) {
+			t.Errorf("%d: %q", i, got)
+		}
+	}
+	if warpVerdict(d, nil) != "" {
+		t.Error("a verdict without a WARP check")
+	}
+	ok := []epicResult{{"вход", "ok", 900}}
+	if got := warpVerdict(ok, ok); !strings.Contains(got, "сейчас WARP не нужен") {
+		t.Errorf("both open: %q", got)
+	}
+}

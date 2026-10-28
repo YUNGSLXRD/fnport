@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
+	"io"
 	"net"
 	"net/netip"
 	"strings"
@@ -177,40 +179,118 @@ func TestStalled(t *testing.T) {
 	c := &countConn{tls: true}
 	c.feed(rec(100))
 	c.last = time.Now().Add(-10 * time.Second)
-	if c.stalled() != 0 {
+	if d, _ := c.stalled(); d != 0 {
 		t.Error("idle between records taken for a freeze")
 	}
 	big := rec(16000)
 	c.feed(big[:9000])
 	c.last = time.Now().Add(-10 * time.Second)
-	if c.stalled() < 9*time.Second {
+	if d, in := c.stalled(); d < 9*time.Second || !in {
 		t.Error("a stop inside a record not seen")
 	}
 	c.feed(big[9000:])
-	if c.stalled() != 0 {
+	if d, _ := c.stalled(); d != 0 {
 		t.Error("the record's end not seen")
 	}
 	c.feed([]byte{23, 3})
 	c.last = time.Now().Add(-10 * time.Second)
-	if c.stalled() == 0 {
+	if d, in := c.stalled(); d == 0 || !in {
 		t.Error("a stop inside a record header not seen")
 	}
 }
 
-// a request that gets no answer for 10 s is a stall too; an answered one, then quiet, is not
+// a request that gets no answer for 10 s is a stall too, but not one inside a record (through
+// WARP it is no sign of a frozen tunnel); an answered one, then quiet, is not
 func TestStalledRequest(t *testing.T) {
 	c := &countConn{tls: true}
 	c.feed([]byte{23, 3, 3, 0, 2, 1, 2})
 	c.wrote = time.Now().Add(-11 * time.Second)
 	c.last = time.Now().Add(-12 * time.Second)
-	if c.stalled() < 6*time.Second {
+	if d, in := c.stalled(); d < 6*time.Second || in {
 		t.Error("an unanswered request not seen")
 	}
 	c.last = time.Now().Add(-10 * time.Second)
 	c.wrote = time.Now().Add(-11 * time.Second)
 	c.feed([]byte{23, 3, 3, 0, 1, 9}) // the answer, 6 s after the request, then 5 s of quiet
 	c.last = time.Now().Add(-5 * time.Second)
-	if c.stalled() != 0 {
+	if d, _ := c.stalled(); d != 0 {
 		t.Error("an answered request taken for a stall")
+	}
+}
+
+// HTTP/2's window updates and pings get no answer: they are not requests
+func TestSmallWriteNoRequest(t *testing.T) {
+	a, b := net.Pipe()
+	defer a.Close()
+	defer b.Close()
+	go io.Copy(io.Discard, b)
+	c := &countConn{Conn: a, tls: true}
+	c.Write(make([]byte, 35))
+	if !c.wrote.IsZero() {
+		t.Error("a window update taken for a request")
+	}
+	c.Write(make([]byte, 600))
+	if c.wrote.IsZero() {
+		t.Error("a request not noted")
+	}
+}
+
+// a connection that has to go through WARP waits while the tunnel comes up, not while it gives up
+func TestWaitWarp(t *testing.T) {
+	r := &tcpRelay{ctx: context.Background()}
+	if r.waitWarp(nil, time.Second) != nil {
+		t.Fatal("waited with no tunnel coming")
+	}
+	r.warpWait.Store(true)
+	w := &warpTunnel{}
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		r.warp.Store(w)
+	}()
+	if got := r.waitWarp(nil, 5*time.Second); got != w {
+		t.Fatal("the tunnel that came up not taken")
+	}
+	// the old tunnel is not the new one: wait for another, until the time runs out
+	t0 := time.Now()
+	if r.waitWarp(w, 500*time.Millisecond) != nil || time.Since(t0) < 400*time.Millisecond {
+		t.Fatal("the old tunnel taken for a new one")
+	}
+	r.warpWait.Store(false)
+	t0 = time.Now()
+	if r.waitWarp(w, 5*time.Second) != nil || time.Since(t0) > time.Second {
+		t.Fatal("waited after WARP gave up")
+	}
+}
+
+// one frozen site sends this run through WARP; the network is written down only after two
+func TestMarkBlocked(t *testing.T) {
+	r := &tcpRelay{ctx: context.Background()}
+	r.markBlocked("a.epicgames.com", "замёрзло")
+	if !r.always.Load() || r.remembered.Load() {
+		t.Fatal("one site: through WARP for this run, not remembered")
+	}
+	r.markBlocked("a.epicgames.com", "замёрзло")
+	if r.remembered.Load() {
+		t.Fatal("the same site twice remembered")
+	}
+	r.markBlocked("b.epicgames.com", "замёрзло")
+	if !r.remembered.Load() {
+		t.Fatal("two sites not remembered")
+	}
+}
+
+// a name that failed through a working tunnel goes directly for a while
+func TestWarpBad(t *testing.T) {
+	r := &tcpRelay{ctx: context.Background()}
+	if r.warpBadRecently("keys.epicgames.com") {
+		t.Fatal("bad before failing")
+	}
+	r.markWarpBad("keys.epicgames.com", "ничего не вернул")
+	if !r.warpBadRecently("keys.epicgames.com") || r.warpBadRecently("other.epicgames.com") {
+		t.Fatal("the failed name not kept apart")
+	}
+	r.warpBad.Store("keys.epicgames.com", time.Now().Add(-11*time.Minute))
+	if r.warpBadRecently("keys.epicgames.com") {
+		t.Fatal("kept direct past 10 minutes")
 	}
 }
