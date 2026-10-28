@@ -380,6 +380,10 @@ func finish(r *checkResult, cur settings) *checkResult {
 		}
 		if rec.Fake != cur.Fake || rec.FakeTTL != cur.FakeTTL {
 			r.Recommend = &rec
+		} else if helpless := r.PortKept == "no" && r.Freeze == "yes" && r.Fake != "works"; !helpless &&
+			(r.Freeze == "yes" || r.Freeze == "no") {
+			// users looked for "Apply" when there was nothing to apply
+			add("Настройки подходят, менять нечего, поэтому кнопки «Применить» нет: включайте fnport на главной.")
 		}
 	}()
 	if r.Loss > 0 {

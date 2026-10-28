@@ -49,6 +49,10 @@ func main() {
 		// the manifest asks for administrator rights; without them the adapter cannot be made
 		logf("нет прав администратора: включить fnport не получится")
 	}
+	wintunCheck = wnet.WintunMissing
+	if p := wnet.WintunMissing(); p != "" {
+		logf("%s", p)
+	}
 	// pings to the beacons leave by the physical interface even while the adapter is up
 	usePhysical(set.Adapter)
 

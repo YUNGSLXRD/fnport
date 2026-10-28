@@ -1,6 +1,7 @@
 package wnet
 
 import (
+	"errors"
 	"fmt"
 	"net/netip"
 	"sync"
@@ -47,10 +48,13 @@ func (d *wintunDev) AddRoute(p netip.Prefix) error {
 // OpenTun creates the adapter (removed again on Close, or when this process ends) and routes
 // the given networks into it
 func OpenTun(name string, routes []netip.Prefix) (Dev, netip.Addr, error) {
+	if p := WintunMissing(); p != "" {
+		return nil, netip.Addr{}, errors.New(p)
+	}
 	tun.WintunTunnelType = "fnport" // adapter type fnport, not WireGuard
 	dev, err := tun.CreateTUN(name, 1420)
 	if err != nil {
-		return nil, netip.Addr{}, fmt.Errorf("адаптер Wintun не создан: %w", err)
+		return nil, netip.Addr{}, wintunErr(err)
 	}
 	nt := dev.(*tun.NativeTun)
 	luid := winipcfg.LUID(nt.LUID())

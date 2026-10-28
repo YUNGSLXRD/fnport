@@ -109,6 +109,10 @@ const historyKeep = 60
 
 func newController(s settings) *controller { return &controller{set: s} }
 
+// wintunCheck: why the adapter cannot be made, shown on the main page before the switch is
+// pressed ("" when it can; main_windows.go looks next to the program)
+var wintunCheck = func() string { return "" }
+
 func (c *controller) settings() settings {
 	c.mu.Lock()
 	defer c.mu.Unlock()

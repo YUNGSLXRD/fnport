@@ -572,6 +572,8 @@ func (v *view) mainTab(gtx C) D {
 	}
 	if errText != "" && st == stateOff {
 		sub, subC = "Не включилось: "+errText, colRed
+	} else if p := wintunCheck(); p != "" && st == stateOff {
+		sub, subC = p, colRed
 	}
 	titleC, more := v.titleAnim.at(gtx.Now, c)
 	v.animating = v.animating || more
