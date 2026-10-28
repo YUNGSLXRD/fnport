@@ -294,3 +294,23 @@ func TestWarpBad(t *testing.T) {
 		t.Fatal("kept direct past 10 minutes")
 	}
 }
+
+// the summary in the log: busiest name first, which way it went, empty and cut ones
+func TestStatsSummary(t *testing.T) {
+	r := &tcpRelay{ctx: context.Background()}
+	if r.statsSummary() != "" {
+		t.Fatal("a summary of nothing")
+	}
+	r.note("keys.epicgames.com", true, 0, false)
+	r.note("keys.epicgames.com", true, 3000, false)
+	r.note("keys.epicgames.com", false, 16000, true)
+	r.note("login.epicgames.com", true, 900, false)
+	got := r.statsSummary()
+	want := "keys.epicgames.com: WARP 2, напрямую 1, пустых 1, оборвано 1, 19 КБ; login.epicgames.com: WARP 1, 1 КБ"
+	if got != want {
+		t.Errorf("got  %q\nwant %q", got, want)
+	}
+	if r.statsSummary() != "" {
+		t.Error("the summary not reset")
+	}
+}

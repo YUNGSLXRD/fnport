@@ -6,6 +6,8 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -47,6 +49,9 @@ type tcpRelay struct {
 	remembered atomic.Bool              // this network is written down as one that freezes Epic
 	warpStall  chan struct{}            // a connection through WARP stood still inside a record
 	state      atomic.Value             // string: how WARP is doing, for the window and the report
+
+	statsMu sync.Mutex
+	stats   map[string]*nameStat // Epic's names since the last summary in the log
 }
 
 // allowLoopback: tests only; the routes never send 127.0.0.0/8 into the adapter
@@ -171,6 +176,8 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort) {
 	var counted *countConn
 	var w *warpTunnel
 	listed, viaWarp := t.warpName(name) || (name == "" && t.epicIP(dst.Addr())), false
+	epic := listed
+	var cut atomic.Bool // the connection was cut as frozen
 	if listed && t.warpBadRecently(shown) {
 		// it failed through a working tunnel: directly, as without WARP (with WARP on, logins
 		// failed more often than with it off)
@@ -271,6 +278,7 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort) {
 					return
 				case <-tk.C:
 					if d, inRecord := counted.stalled(); inRecord && d > 6*time.Second {
+						cut.Store(true)
 						in.Close()
 						out.Close()
 						if w.works() {
@@ -304,6 +312,7 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort) {
 					return
 				case <-tk.C:
 					if d, inRecord := counted.stalled(); inRecord && d > 6*time.Second {
+						cut.Store(true)
 						t.markBlocked(shown, fmt.Sprintf("напрямую замёрзло (получено %d КБ) — дальше через WARP",
 							counted.n.Load()>>10))
 						in.Close()
@@ -315,6 +324,13 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort) {
 		}()
 	}
 	splice(in, out)
+	if epic {
+		var got int64 = -1 // not counted: directly without the TLS watch
+		if counted != nil {
+			got = counted.n.Load()
+		}
+		t.note(shown, viaWarp && w != nil, got, cut.Load())
+	}
 	if listed && !viaWarp {
 		return
 	}
@@ -322,6 +338,85 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort) {
 		w.fails.Add(1)
 		t.markWarpBad(shown, "ничего не вернул")
 	}
+}
+
+// nameStat: how one of Epic's names went since the last summary
+type nameStat struct {
+	warp, direct, empty, cut int
+	bytes                    int64
+}
+
+func (t *tcpRelay) note(name string, viaWarp bool, got int64, cut bool) {
+	t.statsMu.Lock()
+	defer t.statsMu.Unlock()
+	if t.stats == nil {
+		t.stats = map[string]*nameStat{}
+	}
+	st := t.stats[name]
+	if st == nil {
+		st = &nameStat{}
+		t.stats[name] = st
+	}
+	if viaWarp {
+		st.warp++
+	} else {
+		st.direct++
+	}
+	if got == 0 {
+		st.empty++
+	}
+	if got > 0 {
+		st.bytes += got
+	}
+	if cut {
+		st.cut++
+	}
+}
+
+// statsSummary: one line on how Epic's names went since the last call, busiest first; "" when
+// none came. In the log every 2 minutes: at an error in the game it shows whether the site went
+// through WARP or directly, and whether it got anything
+func (t *tcpRelay) statsSummary() string {
+	t.statsMu.Lock()
+	m := t.stats
+	t.stats = nil
+	t.statsMu.Unlock()
+	if len(m) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(m))
+	for n := range m {
+		names = append(names, n)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		a, b := m[names[i]], m[names[j]]
+		if a.warp+a.direct != b.warp+b.direct {
+			return a.warp+a.direct > b.warp+b.direct
+		}
+		return names[i] < names[j]
+	})
+	var parts []string
+	for _, n := range names {
+		st := m[n]
+		var p []string
+		if st.warp > 0 {
+			p = append(p, fmt.Sprintf("WARP %d", st.warp))
+		}
+		if st.direct > 0 {
+			p = append(p, fmt.Sprintf("напрямую %d", st.direct))
+		}
+		if st.empty > 0 {
+			p = append(p, fmt.Sprintf("пустых %d", st.empty))
+		}
+		if st.cut > 0 {
+			p = append(p, fmt.Sprintf("оборвано %d", st.cut))
+		}
+		if st.bytes > 0 {
+			p = append(p, fmt.Sprintf("%d КБ", (st.bytes+1023)>>10))
+		}
+		parts = append(parts, maskAddresses(n)+": "+strings.Join(p, ", "))
+	}
+	return strings.Join(parts, "; ")
 }
 
 // markWarpBad: the name goes directly for the next 10 minutes. Epic does not take every

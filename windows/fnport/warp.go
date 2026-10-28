@@ -1023,6 +1023,7 @@ func runWarp(ws warpSettings, dev wnet.Dev, routed []netip.Prefix, t *tcpRelay) 
 		for a := range known {
 			next[a] = true
 		}
+		added := 0
 		for _, h := range names {
 			for _, a := range lookupAll(h) {
 				if next[a] {
@@ -1031,8 +1032,14 @@ func runWarp(ws warpSettings, dev wnet.Dev, routed []netip.Prefix, t *tcpRelay) 
 				next[a] = true
 				if adder != nil && !inPrefixes(a, routed) {
 					adder.AddRoute(netip.PrefixFrom(a, 32))
+					added++
 				}
 			}
+		}
+		if len(known) > 0 && added > 0 {
+			// Epic's addresses move (Amazon's balancers, CDNs): until a new one is routed, the
+			// game's connections to it go past fnport, directly
+			logf("WARP: у сайтов Epic %d новых адресов, направлены в адаптер (всего %d)", added, len(next))
 		}
 		known = next
 		t.epicIPs.Store(&next)
@@ -1074,14 +1081,21 @@ func runWarp(ws warpSettings, dev wnet.Dev, routed []netip.Prefix, t *tcpRelay) 
 	// fall back to direct, so another one is looked for
 	health := time.NewTicker(time.Minute)
 	defer health.Stop()
-	tk := time.NewTicker(10 * time.Minute)
+	// every 2 minutes: Epic's addresses move, and a new one is reached directly until it is routed
+	tk := time.NewTicker(2 * time.Minute)
 	defer tk.Stop()
 	stallSeen := false // "stood still, the tunnel answers" logged once
 	for {
 		select {
 		case <-t.ctx.Done():
+			if s := t.statsSummary(); s != "" {
+				logf("WARP, сайты Epic до выключения: %s", s)
+			}
 			return
 		case <-tk.C:
+			if s := t.statsSummary(); s != "" {
+				logf("WARP, сайты Epic за 2 минуты: %s", s)
+			}
 			refresh()
 		case <-health.C:
 			// a second try: one lost check is no reason to cut everything going through it
