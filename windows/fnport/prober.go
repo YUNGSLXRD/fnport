@@ -74,7 +74,8 @@ type prober struct {
 	fakeOffUntil time.Time
 	fakeTries    int
 	fakeGood     int
-	ttl          int // the fake's TTL now: starts at the setting, moves with the DPI
+	ttl          int       // the fake's TTL now: starts at the setting, moves with the DPI
+	searchAfter  time.Time // no TTL search before
 
 	stat *counters
 }
@@ -114,22 +115,39 @@ func (p *prober) setTTL(n int, why string) {
 	}
 }
 
-// searchTTL: a port to dst that passed at another TTL, which becomes the fake's TTL
-func (p *prober) searchTTL(dst netip.AddrPort, t *target, busy func(int) bool) (int, bool) {
+// searchTTL: a port to dst that passed at another TTL, which becomes the fake's TTL. When none
+// passes but the current TTL got silence (the fake kills the flow there), the nearest TTL that
+// got any answer is taken: a freeze per port is what the port rounds work around, silence is not
+// (Telplus: TTL 5 killed every flow, 3 froze some, and the search kept 5). After a search the
+// next waits two minutes: it spends the probe budget the port rounds need
+func (p *prober) searchTTL(dst netip.AddrPort, t *target, busy func(int) bool, curSilent bool) (int, bool) {
+	if time.Now().Before(p.searchAfter) {
+		return 0, false
+	}
+	p.searchAfter = time.Now().Add(2 * time.Minute)
 	cur := p.fakeTTL()
+	answered := 0
 	for _, ttl := range ttlCandidates(cur, p.cfg.fakeTTL+2) {
 		if !p.budgetTake(1) {
-			return 0, false
+			break
 		}
 		c := freshPorts(t, 1, busy)
 		if len(c) == 0 {
-			return 0, false
+			break
 		}
 		t.tried[c[0]] = true
-		if got := p.probe(dst, c, false, p.fake(), ttl)[c[0]]; got >= probePass {
+		got := p.probe(dst, c, false, p.fake(), ttl)[c[0]]
+		if got >= probePass {
 			p.setTTL(ttl, fmt.Sprintf("с ним порт к %s прошёл, с TTL %d годных не было", dst, cur))
 			return c[0], true
 		}
+		if got > 0 && answered == 0 {
+			answered = ttl
+		}
+	}
+	if curSilent && answered > 0 {
+		p.setTTL(answered, fmt.Sprintf("с ним %s хотя бы отвечает, с TTL %d — тишина (фейк убивает соединение)", dst, cur))
+		return 0, false
 	}
 	logf("TTL фейка: ни один из соседних TTL не дал годного порта к %s", dst)
 	return 0, false
@@ -396,7 +414,7 @@ func (p *prober) refresh(dst netip.AddrPort, want int, busy func(int) bool) *tar
 	if !qos && withFake && len(results) > 0 && len(fresh) == 0 && (frozen > 0 || !t.answered) {
 		if t.badRounds++; t.badRounds >= 2 {
 			t.badRounds = 0
-			if port, ok := p.searchTTL(dst, t, busy); ok {
+			if port, ok := p.searchTTL(dst, t, busy, frozen == 0); ok {
 				t.good = append(t.good, port)
 				t.silentRounds = 0
 			}

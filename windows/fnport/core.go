@@ -233,6 +233,9 @@ func (c *controller) start() {
 		return
 	}
 	e := newEngine(cfg, dev, clientIP, tcp)
+	if n := int(checkTTL.Load()); n > 0 && n < cfg.fakeTTL && len(cfg.fakes) > 0 {
+		e.prober.setTTL(n, fmt.Sprintf("по проверке провайдера (в настройках %d, а с ним фейк убивает соединения)", cfg.fakeTTL))
+	}
 	e.gone = c.addHistory
 	go e.run()
 	if set.Warp.Enabled && set.Warp.ready() && !set.Passthrough {

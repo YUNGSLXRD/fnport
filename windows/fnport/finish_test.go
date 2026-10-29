@@ -89,3 +89,17 @@ func TestWarpVerdict(t *testing.T) {
 		t.Errorf("both open: %q", got)
 	}
 }
+
+// the check's safe TTL is kept for the start only when it is lower than the setting
+func TestNoteCheckTTL(t *testing.T) {
+	set := defaultSettings() // TTL 5
+	r := finish(&checkResult{Freeze: "no", Fake: "lower", TTL: 3, FakeFile: "quic_initial_vk_com.bin", Settings: set}, set)
+	noteCheckTTL(r)
+	if checkTTL.Load() != 3 {
+		t.Fatal("the lower TTL not kept:", checkTTL.Load())
+	}
+	noteCheckTTL(finish(&checkResult{Freeze: "no", Fake: "harmless", FakeFile: "quic_initial_vk_com.bin", Settings: set}, set))
+	if checkTTL.Load() != 0 {
+		t.Fatal("kept after a check that found nothing lower")
+	}
+}

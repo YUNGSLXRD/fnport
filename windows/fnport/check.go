@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/YUNGSLXRD/fnport/windows/internal/fakes"
@@ -102,12 +103,27 @@ func (k *checker) start(cur settings) bool {
 	changes.Add(1)
 	go func() {
 		r := k.run(cur)
+		noteCheckTTL(r)
 		k.mu.Lock()
 		k.running, k.result, k.finished = false, r, time.Now()
 		k.mu.Unlock()
 		changes.Add(1)
 	}()
 	return true
+}
+
+// checkTTL: a TTL the last check found safe where the one in the settings kills flows; fnport
+// starts with it even when «Apply» was not pressed (people skip it: Telplus kept TTL 5 and got
+// nothing but silence). 0 = none
+var checkTTL atomic.Int64
+
+func noteCheckTTL(r *checkResult) {
+	if r.Recommend != nil && r.Recommend.Fake != "" && r.Recommend.FakeTTL < r.Settings.FakeTTL &&
+		(r.Fake == "lower" || r.Fake == "works") {
+		checkTTL.Store(int64(r.Recommend.FakeTTL))
+	} else if r.Freeze != "" && r.Freeze != "no_reply" && r.Freeze != "unclear" {
+		checkTTL.Store(0) // the check had its say and found nothing lower to use
+	}
 }
 
 func fmtReplies(rs []int) string {
