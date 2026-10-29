@@ -27,7 +27,9 @@
 
 <p align="center"><img src="docs/img/windows-app.png" width="660" alt="fnport для Windows: главная, fnport работает, пинг до серверов Epic"></p>
 
-## Безопасность
+## Есть ли вирусы?
+
+Краткий ответ: **НЕТ.**
 
 - **Открытый код.** Всё, что делает fnport, лежит в этом репозитории. Файлы релизов собирает не автор на своём
   компьютере, а GitHub Actions из исходников ([workflow](.github/workflows/build.yml)).
