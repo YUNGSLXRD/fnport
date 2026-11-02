@@ -36,6 +36,9 @@ func (s connectionSettings) selects(owner wnet.ProcessOwner, domain string) bool
 	if !s.Enabled {
 		return false
 	}
+	if s.Epic && matchDomain(domain, warpDomains) {
+		return true
+	}
 	if s.Discord && (selectedProcess(owner.Name, []string{"Discord.exe", "DiscordPTB.exe", "DiscordCanary.exe"}) || matchDomain(domain, discordDomains)) {
 		return true
 	}

@@ -24,43 +24,25 @@ but IPv6 traffic is not redirected or inspected. Restarting the game is useful
 for observing connections created before tracing began. Existing DNS cache is
 read; the program does not clear it or issue bulk hostname probes.
 
-## Select a connection
+## Select a connection (dev2)
 
-Choose a protocol, enable the connection, select Discord or enter multiple
-executable basenames (one per line). The picker can select running applications.
-The trace process list is independent and never selects applications for tunnelling.
-Native AmneziaWG and native WARP cannot run together in this developer build because
-the embedded library shares protocol-header state. Disable WARP for Epic before
-selecting AmneziaWG; a WARP speed check must also finish first.
-Fortnite UDP on configured game ports keeps fnport processing even when the
-Fortnite process is selected for its TCP services. Other processes go directly.
-Only IPv4 routing is supported in this developer build; IPv6 remains direct.
-A missing or ambiguous process owner cannot safely select a process rule.
-
-WARP uses the key from the existing WARP card. Its Epic-service switch is separate:
-WARP can serve Discord while Epic rules stay disabled. It connects asynchronously;
-Discord connections may fail while WARP starts. Wait for connection before testing.
-Other protocols use a sing-box outbound JSON object with its type, or a JSON object
-containing outbounds/endpoints and optionally DNS. For multiple tagged objects,
-enter the final outbound tag in the UI. fnport owns listeners, routing and local
-SOCKS authentication; importing an exported whole config with inbounds/route is
-not supported. Protocol-specific options remain available in JSON. URI links and
-AmneziaWG .conf import are not implemented in this developer build.
-
-TCP-only transports cannot carry Discord voice. Unknown custom protocols are
-accepted for TCP but do not advertise UDP support. Core validation also checks
-compiled features and parameters; a listed protocol does not establish server
-reachability. Selecting Discord routes its desktop processes and visible Discord
-TLS names in browsers. Browser voice routing is not guaranteed when UDP ownership
-belongs to a shared browser process; select that browser explicitly if appropriate.
-Process selection then includes its other tabs too.
-
-AmneziaWG native JSON uses private_key, peer_key, address (IPv4 without mask),
-endpoint (IPv4:port), optional preshared_key, jc/jmin/jmax, s1/s2, numeric h1–h4,
-and i1–i5. It supports the parameters of the embedded AWG 1.5 library, not AWG 2.0.
-Configuration is hidden by default and stored locally in fnport.json. Never share
-that file or paste it into an issue. sing-box gets its runtime config through stdin;
-its raw diagnostics are not added to logs because they can contain credentials.
+Open Подключения, enable Использовать подключение, select one protocol.
+For WARP use Получить ключ WARP. For VLESS paste a vless:// link (TLS/Reality,
+TCP, WebSocket, HTTPUpgrade and gRPC supported) or an outbound JSON object.
+Other protocols currently accept JSON. Imported links are never logged.
+Select Сервисы Epic for login/store/downloads, Discord for Discord, or both.
+Press the fixed Применить button below the page. With fnport enabled, restart
+Fortnite so existing service connections use the newly selected route.
+There is only one selected service transport. The old separate WARP switches
+are no longer displayed; applying this page disables legacy WARP service routing.
+The game's UDP on configured Fortnite ports keeps using fnport directly.
+Extra process selection and JSON exit tags are under additional settings.
+Network tracing has a separate expandable section and does not select tunnel routes.
+IPv6 remains direct. Unknown/ambiguous owners cannot safely select process rules.
+WARP can take time to connect; wait for its state on the main page before testing.
+Native AWG 1.5 JSON remains supported; its endpoint must be IPv4:port and its address
+an IPv4 without mask. Native AWG and WARP cannot coexist because of library-global
+protocol headers. The application enforces this isolation.
 
 ## Core provenance and local build
 

@@ -256,6 +256,10 @@ func (c *controller) start() {
 		changes.Add(1)
 	}
 	set := c.settings()
+	// One selected transport owns service routing. Legacy WARP is migrated by the UI.
+	if set.Connection.Enabled {
+		set.Warp.Enabled = false
+	}
 	cfg, err := set.config()
 	if err != nil {
 		fail(err)

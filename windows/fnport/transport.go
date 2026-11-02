@@ -26,6 +26,7 @@ type connectionSettings struct {
 	Protocol  string          `json:"protocol"`
 	Config    json.RawMessage `json:"config"`
 	Processes []string        `json:"processes"`
+	Epic      bool            `json:"epic"`
 	Discord   bool            `json:"discord"`
 	Final     string          `json:"final"`
 }

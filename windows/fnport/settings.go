@@ -51,7 +51,7 @@ func defaultSettings() settings {
 		VerdictTTL:  90,
 		Theme:       "system",
 		Warp:        warpSettings{Jc: 4, Jmin: 40, Jmax: 70},
-		Connection:  connectionSettings{Protocol: "warp"},
+		Connection:  connectionSettings{Protocol: "warp", Epic: true},
 		Trace:       defaultNetworkTraceSettings(),
 	}
 }

@@ -25,20 +25,23 @@ import (
 // and buffered result channels, never editors or pointers to this state.
 // The parent owns connectionSettings, networkTraceSettings and the WARP card.
 type connectionView struct {
-	loaded                              bool
-	enabled, discord, trace, showConfig widget.Bool
-	protocol                            string
-	protocolOpen                        bool
-	protocolButton                      widget.Clickable
-	protocolChoices                     []widget.Clickable
-	protocolList                        widget.List
-	config, processes, traceProcesses   widget.Editor
-	final                               widget.Editor
-	picker, tracePicker                 connectionProcessPicker
-	save, saveTop, reset, openTrace     widget.Clickable
-	applyDone                           chan error
-	message                             string
-	failed                              bool
+	registering                               bool
+	loaded                                    bool
+	enabled, epic, discord, trace, showConfig widget.Bool
+	advanced, traceOpen                       widget.Clickable
+	advancedOpen, traceExpanded               bool
+	protocol                                  string
+	protocolOpen                              bool
+	protocolButton                            widget.Clickable
+	protocolChoices                           []widget.Clickable
+	protocolList                              widget.List
+	config, processes, traceProcesses         widget.Editor
+	final                                     widget.Editor
+	picker, tracePicker                       connectionProcessPicker
+	save, saveTop, reset, openTrace           widget.Clickable
+	applyDone                                 chan error
+	message                                   string
+	failed                                    bool
 }
 
 // Use backend IDs so new sing-box protocols appear without duplicating the
@@ -123,6 +126,12 @@ func connectionConfigJSON(text string, required bool) (json.RawMessage, error) {
 func (cv *connectionView) load(s settings) {
 	cv.enabled.Value = s.Connection.Enabled
 	cv.discord.Value = s.Connection.Discord
+	cv.epic.Value = s.Connection.Epic
+	if !s.Connection.Enabled && s.Warp.Enabled {
+		cv.enabled.Value = true
+		cv.epic.Value = true
+		s.Connection.Protocol = "warp"
+	}
 	cv.protocol = s.Connection.Protocol
 	if cv.protocol == "" {
 		cv.protocol = "warp"
@@ -143,12 +152,16 @@ func (cv *connectionView) load(s settings) {
 }
 
 func (cv *connectionView) draft() (connectionSettings, networkTraceSettings, error) {
-	raw, err := connectionConfigJSON(cv.config.Text(), cv.enabled.Value && cv.protocol != "warp")
+	raw, detected, err := importConnection(cv.config.Text(), cv.enabled.Value && cv.protocol != "warp")
 	if err != nil {
 		return connectionSettings{}, networkTraceSettings{}, err
 	}
+	protocol := cv.protocol
+	if detected != "" {
+		protocol = detected
+	}
 	return connectionSettings{
-		Enabled: cv.enabled.Value, Protocol: cv.protocol, Config: raw,
+		Enabled: cv.enabled.Value, Protocol: protocol, Config: raw, Epic: cv.epic.Value,
 		Processes: connectionProcessLines(cv.processes.Text()), Discord: cv.discord.Value,
 		Final: strings.TrimSpace(cv.final.Text()),
 	}, networkTraceSettings{
@@ -376,7 +389,13 @@ func (v *view) connectionsCard(gtx C) D {
 			if err != nil {
 				cv.message = "Не применено: " + err.Error()
 			} else {
-				cv.message = "Настройки сохранены"
+				if cv.registering {
+					cv.message = "Ключ получен. Нажми «Применить»."
+				} else {
+					cv.message = "Настройки применены"
+					cv.loaded = false
+				}
+				cv.registering = false
 				v.draftFor = 0
 			}
 		default:
@@ -401,6 +420,7 @@ func (v *view) connectionsCard(gtx C) D {
 			go func() {
 				done <- ctl.update(func(s *settings) error {
 					s.Connection, s.Trace = connection, trace
+					s.Warp.Enabled = false
 					return nil
 				})
 				changes.Add(1)
@@ -410,85 +430,124 @@ func (v *view) connectionsCard(gtx C) D {
 	if cv.applyDone != nil || cv.picker.done != nil || cv.tracePicker.done != nil {
 		gtx.Execute(op.InvalidateCmd{At: gtx.Now.Add(100 * time.Millisecond)})
 	}
-	return v.card(gtx, func(gtx C) D {
-		// Freeze the draft while applying so a successful result never appears to
-		// confirm edits made after the submitted snapshot.
-		form := gtx
-		if cv.applyDone != nil {
-			form = form.Disabled()
-		}
-		kids := v.sectionTitle("Подключения", "Туннель для выбранных приложений")
-		kids = append(kids, layout.Rigid(func(gtx C) D { return v.button(gtx, &cv.saveTop, "Применить", true, cv.applyDone == nil) }), vspace(8))
-		if cv.message != "" {
-			c := colMuted
-			if cv.failed {
-				c = colRed
+
+	if cv.advanced.Clicked(gtx) {
+		cv.advancedOpen = !cv.advancedOpen
+	}
+	if cv.traceOpen.Clicked(gtx) {
+		cv.traceExpanded = !cv.traceExpanded
+	}
+	if v.warpReg.Clicked(gtx) && cv.applyDone == nil {
+		cv.registering = true
+		cv.applyDone = make(chan error, 1)
+		done := cv.applyDone
+		ctl := v.ctl
+		go func() {
+			old := ctl.settings()
+			ws, err := registerWarp(old.Warp)
+			if err == nil {
+				err = ctl.update(func(s *settings) error {
+					s.Warp = ws
+					s.Warp.Enabled = false
+
+					return nil
+				})
 			}
-			kids = append(kids, layout.Rigid(v.label(12, c, cv.message).Layout), vspace(8))
-		}
-		kids = append(kids,
-			layout.Rigid(func(gtx C) D { return v.connectionToggle(gtx, &cv.enabled, "Включить подключение") }),
-			vspace(10),
-			layout.Rigid(v.label(13, colMuted, "Протокол").Layout), vspace(6),
-			layout.Rigid(func(gtx C) D { return v.connectionProtocolDropdown(gtx) }), vspace(10))
-		if cv.protocol == "warp" {
-			kids = append(kids, layout.Rigid(v.label(12, colMuted, "Ключ и режим WARP задаются в карточке WARP ниже.").Layout))
-		} else {
-			configLabel := "JSON sing-box: outbound или блок outbounds/endpoints"
-			if cv.protocol == "amneziawg" {
-				configLabel = "Нативный JSON AmneziaWG с endpoint и параметрами AWG"
-			}
-			kids = append(kids,
-				layout.Rigid(v.label(13, colMuted, configLabel).Layout),
-				layout.Rigid(func(gtx C) D {
-					return v.connectionCheck(gtx, &cv.showConfig, "Показать конфигурацию")
-				}),
-				layout.Rigid(func(gtx C) D {
+			done <- err
+			changes.Add(1)
+		}()
+	}
+
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(func(gtx C) D {
+			return v.card(gtx, func(gtx C) D {
+				if cv.applyDone != nil {
+					gtx = gtx.Disabled()
+				}
+				kids := []layout.FlexChild{layout.Rigid(func(gtx C) D { return v.connectionToggle(gtx, &cv.enabled, "Подключение") }), vspace(12), layout.Rigid(v.connectionProtocolDropdown), vspace(12)}
+				if cv.protocol == "warp" {
+					info, label := "Ключ не получен", "Получить ключ"
+					if v.ctl.settings().Warp.ready() {
+						info, label = "Ключ сохранён", "Обновить ключ"
+					}
+					if status := v.ctl.warpStatus(false); status != "" {
+						info = status
+					}
+					kids = append(kids, layout.Rigid(func(gtx C) D {
+						return layout.Flex{Alignment: layout.Middle}.Layout(gtx, layout.Flexed(1, v.label(13, colMuted, info).Layout), hspace(12), layout.Rigid(func(gtx C) D { return v.compactButton(gtx, &v.warpReg, label, false, cv.applyDone == nil) }))
+					}))
+				} else {
+					cv.config.SingleLine = true
 					cv.config.Mask = '•'
 					if cv.showConfig.Value {
 						cv.config.Mask = 0
 					}
-					return v.field(gtx, &cv.config, "Вставьте JSON", 5)
-				}))
-			if cv.protocol == "amneziawg" {
-				kids = append(kids, vspace(6),
-					layout.Rigid(v.label(12, colMuted, "endpoint: IPv4:порт; address: IPv4 без маски.").Layout),
-					layout.Rigid(v.label(12, colMuted, "Ключи: private_key, peer_key; PSK: preshared_key.").Layout),
-					layout.Rigid(v.label(12, colMuted, "Импорт .conf пока недоступен.").Layout))
-			} else {
-				kids = append(kids, vspace(8),
-					layout.Rigid(v.label(12, colMuted, "Выход (тег, обязателен для блока outbounds/endpoints)").Layout), vspace(4),
-					layout.Rigid(func(gtx C) D { return v.field(gtx, &cv.final, "proxy", 1) }))
+					hint := "vless://… или JSON"
+					if cv.protocol == "amneziawg" {
+						hint = "Конфигурация JSON"
+					}
+					kids = append(kids, layout.Rigid(v.label(12, colMuted, "Ссылка подключения").Layout), vspace(6), layout.Rigid(func(gtx C) D { return v.field(gtx, &cv.config, hint, 1) }), vspace(4), layout.Rigid(func(gtx C) D { return v.connectionCheck(gtx, &cv.showConfig, "Показать") }))
+				}
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
+			})
+		}), vspace(12),
+		layout.Rigid(func(gtx C) D {
+			return v.card(gtx, func(gtx C) D {
+				if cv.applyDone != nil {
+					gtx = gtx.Disabled()
+				}
+				kids := v.sectionTitle("Через подключение", "")
+				kids = append(kids, layout.Rigid(func(gtx C) D { return v.connectionCheck(gtx, &cv.epic, "Сервисы Epic") }), layout.Rigid(func(gtx C) D {
+					return layout.Inset{Left: 28, Bottom: 8}.Layout(gtx, v.label(12, colMuted, "Вход, магазин и загрузки").Layout)
+				}), layout.Rigid(func(gtx C) D { return v.connectionCheck(gtx, &cv.discord, "Discord") }), vspace(10), layout.Rigid(v.label(12, colMuted, "Матчи Fortnite идут напрямую через fnport.").Layout))
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
+			})
+		}), vspace(12), layout.Rigid(func(gtx C) D {
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx, layout.Rigid(func(gtx C) D { return v.compactButton(gtx, &cv.advanced, "Дополнительно", false, true) }), hspace(8), layout.Rigid(func(gtx C) D { return v.compactButton(gtx, &cv.traceOpen, "Диагностика", false, true) }))
+		}),
+		layout.Rigid(func(gtx C) D {
+			if !cv.advancedOpen {
+				return D{}
 			}
-		}
-		kids = append(kids,
-			vspace(8), layout.Rigid(v.label(12, colMuted, "Дев-сборка: маршрутизация IPv4. IPv6 остаётся напрямую.").Layout),
-			vspace(12), layout.Rigid(v.label(13, colMuted, "Приложения через туннель, по одному в строке").Layout), vspace(6),
-			layout.Rigid(func(gtx C) D { return v.connectionProcessEditor(gtx, &cv.processes, &cv.picker) }),
-			vspace(8), layout.Rigid(func(gtx C) D { return v.connectionToggle(gtx, &cv.discord, "Discord через туннель") }),
-			vspace(18), layout.Rigid(bold(v.label(15, colText, "Диагностика сети")).Layout), vspace(8),
-			layout.Rigid(func(gtx C) D {
-				return v.connectionToggle(gtx, &cv.trace, "Записывать сетевой след")
-			}),
-			vspace(6), layout.Rigid(v.label(12, colMuted, "Список только для записи. Домены видны по SNI и DNS-кэшу, часть имён может отсутствовать.").Layout),
-			vspace(6), layout.Rigid(v.label(13, colMuted, "Процессы для диагностики, по одному в строке").Layout), vspace(6),
-			layout.Rigid(func(gtx C) D { return v.connectionProcessEditor(gtx, &cv.traceProcesses, &cv.tracePicker) }),
-			vspace(8), layout.Rigid(v.label(12, colMuted, filepath.Join(appDir(), "network-trace")).Layout),
-			vspace(6), layout.Rigid(func(gtx C) D { return v.button(gtx, &cv.openTrace, "Открыть папку", false, v.open != nil) }),
-			vspace(16), layout.Rigid(func(gtx C) D {
-				return layout.Flex{Spacing: layout.SpaceBetween}.Layout(gtx,
-					layout.Rigid(func(gtx C) D { return v.button(gtx, &cv.save, "Сохранить", true, cv.applyDone == nil) }),
-					layout.Rigid(func(gtx C) D {
-						return v.button(gtx, &cv.reset, "Отменить изменения", false, cv.applyDone == nil)
+			return layout.Inset{Top: 12}.Layout(gtx, func(gtx C) D {
+				return v.card(gtx, func(gtx C) D {
+					return layout.Flex{Axis: layout.Vertical}.Layout(gtx, layout.Rigid(v.label(13, colMuted, "Другие приложения").Layout), vspace(8), layout.Rigid(func(gtx C) D { return v.connectionProcessEditor(gtx, &cv.processes, &cv.picker) }), vspace(12), layout.Rigid(v.label(12, colMuted, "Тег выхода · только для JSON с несколькими выходами").Layout), vspace(6), layout.Rigid(func(gtx C) D { return v.field(gtx, &cv.final, "Необязательно", 1) }))
+				})
+			})
+		}),
+		layout.Rigid(func(gtx C) D {
+			if !cv.traceExpanded {
+				return D{}
+			}
+			return layout.Inset{Top: 12}.Layout(gtx, func(gtx C) D {
+				return v.card(gtx, func(gtx C) D {
+					return layout.Flex{Axis: layout.Vertical}.Layout(gtx, layout.Rigid(func(gtx C) D {
+						return v.connectionCheck(gtx, &cv.trace, "Записывать сетевой след")
+					}), vspace(8), layout.Rigid(func(gtx C) D { return v.connectionProcessEditor(gtx, &cv.traceProcesses, &cv.tracePicker) }), vspace(8), layout.Rigid(func(gtx C) D {
+						return v.compactButton(gtx, &cv.openTrace, "Открыть логи", false, v.open != nil)
 					}))
-			}))
-		if cv.message != "" {
-			col := colMuted
-			if cv.failed {
-				col = colRed
+				})
+			})
+		}))
+}
+
+func (v *view) compactButton(gtx C, b *widget.Clickable, label string, primary, enabled bool) D {
+	gtx.Constraints.Min.X = 0
+	return v.button(gtx, b, label, primary, enabled)
+}
+
+func (v *view) warpTab(gtx C) D {
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, v.title("Подключения"), layout.Flexed(1, func(gtx C) D {
+		return v.list(gtx, &v.warpPage, 1, func(gtx C, _ int) D { return layout.Inset{Right: 10, Bottom: 12}.Layout(gtx, v.connectionsCard) })
+	}), vspace(12), layout.Rigid(func(gtx C) D {
+		return layout.Flex{Alignment: layout.Middle}.Layout(gtx, layout.Rigid(func(gtx C) D {
+			return v.compactButton(gtx, &v.connections.saveTop, "Применить", true, v.connections.applyDone == nil)
+		}), hspace(14), layout.Flexed(1, func(gtx C) D {
+			c := colMuted
+			if v.connections.failed {
+				c = colRed
 			}
-			kids = append(kids, vspace(8), layout.Rigid(v.label(12, col, cv.message).Layout))
-		}
-		return layout.Flex{Axis: layout.Vertical}.Layout(form, kids...)
-	})
+			return v.label(12, c, v.connections.message).Layout(gtx)
+		}))
+	}), vspace(6))
 }

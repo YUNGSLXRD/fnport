@@ -58,6 +58,7 @@ type networkTraceObservation struct {
 }
 
 type networkTraceEvent struct {
+	Count             uint64    `json:"count,omitempty"`
 	Timestamp         time.Time `json:"timestamp"`
 	Kind              string    `json:"kind"`
 	Protocol          uint8     `json:"protocol,omitempty"`
@@ -166,6 +167,7 @@ func (t *networkTrace) run(ctx context.Context, log *networkTraceLog, selected m
 	defer ticker.Stop()
 	var dns map[netip.Addr][]string
 	var dnsAt time.Time
+	var unresolved uint64
 	poll := func() bool {
 		rows, err := wnet.ProcessConnections()
 		if err != nil && !write(networkTraceEvent{Kind: "poll_error", Note: "Native endpoint enumeration failed or returned partial results."}) {
@@ -203,6 +205,12 @@ func (t *networkTrace) run(ctx context.Context, log *networkTraceLog, selected m
 				return false
 			}
 		}
+		if unresolved > 0 {
+			if !write(networkTraceEvent{Kind: "owner_unresolved", Count: unresolved, OwnerStatus: "aggregate"}) {
+				return false
+			}
+			unresolved = 0
+		}
 		if n := t.dropped.Swap(0); n > 0 {
 			return write(networkTraceEvent{Kind: "overflow", Dropped: n})
 		}
@@ -213,7 +221,8 @@ func (t *networkTrace) run(ctx context.Context, log *networkTraceLog, selected m
 		// Unknown ownership cannot establish membership in the chosen process set;
 		// keep only an aggregate count, never unrelated endpoints or domain names.
 		if err != nil {
-			return write(networkTraceEvent{Timestamp: o.at, Kind: "owner_unresolved", OwnerStatus: traceOwnerStatus(err)})
+			unresolved++
+			return true
 		}
 		if !selected[strings.ToLower(owner.Name)] {
 			return true

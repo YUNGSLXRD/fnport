@@ -13,8 +13,6 @@ import (
 	"gioui.org/f32"
 	"gioui.org/font"
 	"gioui.org/io/clipboard"
-	"gioui.org/io/event"
-	"gioui.org/io/pointer"
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/op/clip"
@@ -246,6 +244,7 @@ func (v *view) button(gtx C, c *widget.Clickable, s string, primary, enabled boo
 		bg, fg = colGreen, colOnGreen
 	}
 	if !enabled {
+		gtx = gtx.Disabled()
 		bg, fg = colLine, colGray
 	} else if c.Hovered() {
 		if primary {
@@ -607,7 +606,7 @@ func (v *view) mainColumn(gtx C, st state, titleC color.NRGBA, s, sub string, su
 		layout.Rigid(v.countersCard),
 		layout.Rigid(func(gtx C) D {
 			s := v.ctl.settings()
-			if st != stateOn || !(s.Warp.Enabled || (s.Connection.Enabled && s.Connection.Protocol == "warp")) {
+			if st != stateOn || !((s.Warp.Enabled && !s.Connection.Enabled) || (s.Connection.Enabled && s.Connection.Protocol == "warp")) {
 				return D{}
 			}
 			return layout.Inset{Top: 12}.Layout(gtx, v.warpMainCard)
@@ -1359,7 +1358,7 @@ func (v *view) fakeCard(gtx C) D {
 
 // warpTab: Epic's services through the user's own WARP, the game direct. The switch and the
 // key take effect at once, without "Save"
-func (v *view) warpTab(gtx C) D {
+func (v *view) legacyWarpTab(gtx C) D {
 	s := v.ctl.settings()
 	if v.warpReg.Clicked(gtx) && !v.warpBusy {
 		v.warpBusy, v.warpMsg, v.warpErr = true, "Получаю ключ у Cloudflare…", false
@@ -1687,46 +1686,5 @@ func (v *view) scrollOf(l *widget.List) *smoothScroll {
 
 // list lays out a scrollable list whose mouse wheel glides over a few frames
 func (v *view) list(gtx C, l *widget.List, n int, el layout.ListElement) D {
-	ss := v.scrollOf(l)
-	for {
-		ev, ok := gtx.Event(pointer.Filter{Target: ss, Kinds: pointer.Scroll, ScrollY: pointer.ScrollRange{Min: -1 << 20, Max: 1 << 20}})
-		if !ok {
-			break
-		}
-		if e, ok := ev.(pointer.Event); ok && e.Kind == pointer.Scroll {
-			ss.remain += e.Scroll.Y
-		}
-	}
-	first, off := l.Position.First, l.Position.Offset
-	if ss.remain != 0 {
-		// a third of what is left each frame: fast at first, soft at the end
-		step := ss.remain / 3
-		if math.Abs(float64(step)) < 1 {
-			step = ss.remain
-		}
-		px := int(math.Round(float64(step)))
-		if px == 0 {
-			px = int(math.Copysign(1, float64(ss.remain)))
-		}
-		l.Position.Offset += px
-		ss.remain -= float32(px)
-		if math.Abs(float64(ss.remain)) < 0.5 {
-			ss.remain = 0
-		}
-		if px < 0 {
-			l.Position.BeforeEnd = true // a list that sticks to its end must let go when scrolled up
-		}
-		v.animating = true
-	}
-	d := material.List(v.th, l).Layout(gtx, n, el)
-	// the list stopped at an end: drop the rest
-	if ss.remain != 0 && l.Position.First == first && l.Position.Offset == off {
-		ss.remain = 0
-	}
-	// the wheel area on top of the list takes the whole scroll, so the list's own scrolling never
-	// sees the wheel; pass-through, or it would also swallow every click on what lies under it
-	defer clip.Rect{Max: d.Size}.Push(gtx.Ops).Pop()
-	defer pointer.PassOp{}.Push(gtx.Ops).Pop()
-	event.Op(gtx.Ops, ss)
-	return d
+	return material.List(v.th, l).Layout(gtx, n, el)
 }
