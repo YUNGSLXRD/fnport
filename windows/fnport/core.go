@@ -186,6 +186,27 @@ func (c *controller) state() (state, string) {
 	return c.st, c.err
 }
 
+// startFromCheck applies only the recommendation's fake fields: the rest of the settings may
+// have changed since the check. start is a no-op when already on, so this never toggles it off.
+func (c *controller) startFromCheck(rec *settings) error {
+	if rec != nil {
+		s := c.settings()
+		s.Fake, s.FakeTTL = rec.Fake, rec.FakeTTL
+		if err := c.apply(s); err != nil {
+			return err
+		}
+	}
+	c.start()
+	st, why := c.state()
+	if st != stateOn {
+		if why == "" {
+			why = "Дождитесь завершения включения fnport и попробуйте снова."
+		}
+		return errorf("%s", why)
+	}
+	return nil
+}
+
 // start brings the adapter up and the engine in; a no-op when on
 func (c *controller) start() {
 	c.mu.Lock()

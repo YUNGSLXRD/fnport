@@ -170,6 +170,9 @@ type view struct {
 	licenses   widget.Clickable
 	runCheck   widget.Clickable
 	applyCheck widget.Clickable
+	checkDone  chan error // completion delivered back to the UI thread
+	checkMsg   string
+	checkErr   bool
 	adapters   []wnet.IfaceInfo
 	fakeFiles  []fakes.File
 	saveMsg    string
@@ -1099,10 +1102,26 @@ func (v *view) settingsTab(gtx C) D {
 			changes.Add(1)
 		}()
 	}
+	if v.checkDone != nil {
+		select {
+		case err := <-v.checkDone:
+			v.checkDone = nil
+			v.checkErr = err != nil
+			if err != nil {
+				v.checkMsg = err.Error()
+			} else {
+				v.checkMsg = "fnport включён. Можно искать матч."
+				v.draftFor = 0
+				v.prevTab, v.tab, v.tabSince = v.tab, tabMain, gtx.Now
+				v.animating = true
+			}
+		default:
+		}
+	}
 	running, lines, res, wait := v.check.state()
-	if v.runCheck.Clicked(gtx) && !running && wait <= 0 {
+	if v.runCheck.Clicked(gtx) && !running && wait <= 0 && v.checkDone == nil {
 		v.check.start(v.ctl.settings())
-		v.reportMsg = ""
+		v.reportMsg, v.checkMsg = "", ""
 	}
 	if v.copyReport.Clicked(gtx) && res != nil {
 		gtx.Execute(clipboard.WriteCmd{Type: "application/text", Data: io.NopCloser(strings.NewReader(v.ctl.report(res)))})
@@ -1111,17 +1130,18 @@ func (v *view) settingsTab(gtx C) D {
 	if v.openIssue.Clicked(gtx) && v.open != nil {
 		v.open(issueURL)
 	}
-	if v.applyCheck.Clicked(gtx) && res != nil && res.Recommend != nil {
-		rec := *res.Recommend
-		go func() {
-			if err := v.ctl.apply(rec); err == nil {
-				v.saveMsg, v.saveErr = "Рекомендация применена и сохранена.", false
-				v.draftFor = 0
-			} else {
-				v.saveMsg, v.saveErr = err.Error(), true
-			}
-			changes.Add(1)
-		}()
+	if v.applyCheck.Clicked(gtx) && res != nil && !running && v.checkDone == nil {
+		st, _ := v.ctl.state()
+		if st != stateStarting {
+			done := make(chan error, 1)
+			v.checkDone = done
+			v.checkMsg, v.checkErr = "Включаю fnport…", false
+			rec := res.Recommend
+			go func() {
+				done <- v.ctl.startFromCheck(rec)
+				changes.Add(1)
+			}()
+		}
 	}
 	sections := []layout.Widget{
 		func(gtx C) D { return v.checkCard(gtx, running, lines, res, wait) },
@@ -1161,6 +1181,24 @@ func (v *view) sectionTitle(s, hint string) []layout.FlexChild {
 	return append(kids, vspace(12))
 }
 
+// checkNextStep always gives a finished check a visible next action. Clean beacons do not
+// establish that game servers pass too; an inconclusive check can still be tried in a match.
+func checkNextStep(r *checkResult, st state) (string, string) {
+	if r.Recommend != nil {
+		if st == stateOn {
+			return "Применить настройки", "fnport уже включён. Применение рекомендации может перезапустить соединения."
+		}
+		return "Применить и включить fnport", "Кнопка сохранит рекомендованные фейк и TTL и включит fnport."
+	}
+	if st == stateOn {
+		return "fnport уже включён", "Попробуйте найти матч. Если не получится, скопируйте отчёт после попытки."
+	}
+	if r.Freeze == "no_reply" || r.Freeze == "unclear" || r.Freeze == "" {
+		return "Включить с текущими настройками", "Проверка не дала определённого результата. Можно попробовать текущие настройки в игре."
+	}
+	return "Включить fnport", "Проверка не предложила менять настройки. Включите fnport и попробуйте найти матч."
+}
+
 func (v *view) checkCard(gtx C, running bool, lines []string, res *checkResult, wait time.Duration) D {
 	return v.card(gtx, func(gtx C) D {
 		kids := v.sectionTitle("Проверка провайдера", "Сохраняет ли роутер порт, есть ли заморозка, какие фейк и TTL подходят. "+
@@ -1173,16 +1211,25 @@ func (v *view) checkCard(gtx C, running bool, lines []string, res *checkResult, 
 			label = fmt.Sprintf("Снова можно через %d с", int(wait.Seconds())+1)
 		}
 		kids = append(kids, layout.Rigid(func(gtx C) D {
-			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-				layout.Rigid(func(gtx C) D { return v.button(gtx, &v.runCheck, label, false, enabled) }),
-				hspace(10),
-				layout.Rigid(func(gtx C) D {
-					if res == nil || res.Recommend == nil || running {
-						return D{}
-					}
-					return v.button(gtx, &v.applyCheck, "Применить", true, true)
-				}))
+			return v.button(gtx, &v.runCheck, label, false, enabled && v.checkDone == nil)
 		}))
+		if res != nil && !running {
+			st, _ := v.ctl.state()
+			action, hint := checkNextStep(res, st)
+			canStart := st != stateStarting && (st != stateOn || res.Recommend != nil) && v.checkDone == nil
+			if v.checkDone != nil {
+				action = "Включаю fnport…"
+			}
+			kids = append(kids, vspace(12), layout.Rigid(v.label(13, colMuted, hint).Layout), vspace(8),
+				layout.Rigid(func(gtx C) D { return v.button(gtx, &v.applyCheck, action, true, canStart) }))
+			if v.checkMsg != "" {
+				c := colGreen
+				if v.checkErr {
+					c = colRed
+				}
+				kids = append(kids, vspace(8), layout.Rigid(v.label(13, c, v.checkMsg).Layout))
+			}
+		}
 		if len(lines) > 0 {
 			show := lines
 			if len(show) > 14 {

@@ -437,7 +437,7 @@ func finish(r *checkResult, cur settings) *checkResult {
 		} else if helpless := r.PortKept == "no" && r.Freeze == "yes" && r.Fake != "works"; !helpless &&
 			(r.Freeze == "yes" || r.Freeze == "no") {
 			// users looked for "Apply" when there was nothing to apply
-			add("Настройки подходят, менять нечего, поэтому кнопки «Применить» нет: включайте fnport на главной.")
+			add("Проверка не предложила менять фейк и TTL. Следующий шаг: включите fnport и попробуйте найти матч.")
 		}
 	}()
 	if r.Loss > 0 {

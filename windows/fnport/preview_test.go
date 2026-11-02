@@ -94,6 +94,9 @@ func TestPreview(t *testing.T) {
 	}{{"main-on", tabMain, stateOn, "dark"}, {"main-off", tabMain, stateOff, "dark"}, {"summary", tabSummary, stateOn, "dark"},
 		{"log", tabLog, stateOn, "dark"}, {"warp", tabWarp, stateOff, "dark"}, {"settings", tabSettings, stateOff, "dark"}, {"settings2", tabSettings, stateOff, "dark"},
 		{"main-light", tabMain, stateOn, "light"}, {"main-starting", tabMain, stateStarting, "dark"}, {"summary-light", tabSummary, stateOn, "light"},
+		{"check-no-change", tabSettings, stateOff, "dark"},
+		{"check-unclear", tabSettings, stateOff, "dark"},
+		{"check-on", tabSettings, stateOn, "dark"},
 		{"readme", tabMain, stateOn, "dark"}} {
 		if tc.name == "readme" {
 			// the README's picture: a calm evening, no freezes left in the last minutes
@@ -104,6 +107,14 @@ func TestPreview(t *testing.T) {
 			ping.list[1].RTT, ping.list[2].RTT = 78*time.Millisecond, 72*time.Millisecond
 		}
 		v.tab, ctl.st, ctl.set.Theme = tc.tab, tc.st, tc.theme
+		if tc.name == "check-no-change" || tc.name == "check-on" || tc.name == "check-unclear" {
+			chk.result = &checkResult{Freeze: "no", Summary: []string{"На маяках Epic заморозки сейчас нет."}}
+			if tc.name == "check-unclear" {
+				chk.result.Freeze = "unclear"
+				chk.result.Summary = []string{"Ответов мало, проверить заморозку не удалось."}
+			}
+			v.page.Position.First, v.page.Position.Offset = 0, 0
+		}
 		v.ringAnim, v.glyphAnim, v.fillAnim, v.titleAnim = colorAnim{}, colorAnim{}, colorAnim{}, colorAnim{}
 		if tc.name == "settings2" {
 			v.page.Position.First, v.page.Position.Offset = 1, 0

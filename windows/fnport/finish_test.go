@@ -34,7 +34,7 @@ func TestFinishPortByFact(t *testing.T) {
 		}
 	}
 	// nothing to apply: the summary says so, unless there is nothing to turn on either
-	nothing := "кнопки «Применить» нет"
+	nothing := "Проверка не предложила менять фейк и TTL"
 	for i, c := range []struct {
 		r    checkResult
 		says bool
