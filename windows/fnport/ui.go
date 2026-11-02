@@ -96,14 +96,15 @@ const (
 	tabSettings
 )
 
-var tabNames = []string{"Главная", "Сводка", "Журнал", "WARP", "Настройки"}
+var tabNames = []string{"Главная", "Сводка", "Журнал", "Подключения", "Настройки"}
 
 type view struct {
-	ctl    *controller
-	ping   *pinger
-	check  *checker
-	open   func(path string) // opens a file or folder in Windows
-	onQuit func()
+	connections connectionView
+	ctl         *controller
+	ping        *pinger
+	check       *checker
+	open        func(path string) // opens a file or folder in Windows
+	onQuit      func()
 
 	onTheme func(dark bool) // the window repaints its title bar
 
@@ -605,10 +606,26 @@ func (v *view) mainColumn(gtx C, st state, titleC color.NRGBA, s, sub string, su
 		vspace(12),
 		layout.Rigid(v.countersCard),
 		layout.Rigid(func(gtx C) D {
-			if st != stateOn || !v.ctl.settings().Warp.Enabled {
+			s := v.ctl.settings()
+			if st != stateOn || !(s.Warp.Enabled || (s.Connection.Enabled && s.Connection.Protocol == "warp")) {
 				return D{}
 			}
 			return layout.Inset{Top: 12}.Layout(gtx, v.warpMainCard)
+		}), layout.Rigid(func(gtx C) D {
+			cs := v.ctl.settings().Connection
+			if st != stateOn || !cs.Enabled || cs.Protocol == "warp" {
+				return D{}
+			}
+			status := v.ctl.connectionStatus()
+			if cs.Protocol == "amneziawg" {
+				status = "Устройство AmneziaWG запущено. Доступность сервера проверяется при соединении."
+			}
+			return layout.Inset{Top: 12}.Layout(gtx, func(gtx C) D {
+				return v.card(gtx, func(gtx C) D {
+					kids := v.sectionTitle("Подключение: "+connectionProtocolLabel(cs.Protocol), status)
+					return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
+				})
+			})
 		}))
 }
 
@@ -1094,7 +1111,12 @@ func (v *view) settingsTab(gtx C) D {
 	if v.save.Clicked(gtx) {
 		s := v.draft()
 		go func() {
-			if err := v.ctl.apply(s); err != nil {
+			if err := v.ctl.update(func(cur *settings) error {
+				cur.Adapter, cur.Fake, cur.FakeTTL, cur.Passthrough, cur.Theme = s.Adapter, s.Fake, s.FakeTTL, s.Passthrough, s.Theme
+				cur.Routes, cur.GamePorts = s.Routes, s.GamePorts
+				cur.ProbeBatch, cur.MaxRounds, cur.ProbeBudget = s.ProbeBatch, s.MaxRounds, s.ProbeBudget
+				return nil
+			}); err != nil {
 				v.saveMsg, v.saveErr = err.Error(), true
 			} else {
 				v.saveMsg, v.saveErr = "Сохранено.", false
@@ -1347,8 +1369,11 @@ func (v *view) warpTab(gtx C) D {
 				v.warpMsg, v.warpErr = "Не получилось: "+err.Error(), true
 			} else {
 				ws.Enabled = true
-				cur.Warp = ws
-				if err := v.ctl.apply(cur); err != nil {
+				if err := v.ctl.update(func(next *settings) error {
+					ws.Domains, ws.Always = next.Warp.Domains, next.Warp.Always
+					next.Warp = ws
+					return nil
+				}); err != nil {
 					v.warpMsg, v.warpErr = err.Error(), true
 				} else {
 					v.warpMsg, v.warpErr = "Ключ получен и сохранён, WARP включён.", false
@@ -1374,8 +1399,10 @@ func (v *view) warpTab(gtx C) D {
 		m := v.warpMode.Value
 		go func() {
 			cur := v.ctl.settings()
-			cur.Warp.Enabled, cur.Warp.Always = m != "off", m == "always"
-			if err := v.ctl.apply(cur); err != nil {
+			if err := v.ctl.update(func(next *settings) error {
+				next.Warp.Enabled, next.Warp.Always = m != "off", m == "always"
+				return nil
+			}); err != nil {
 				v.warpMsg, v.warpErr = err.Error(), true
 			} else if m != "off" && !cur.Warp.ready() {
 				v.warpMsg, v.warpErr = "Включено, но ключа ещё нет: нажмите «Получить ключ WARP».", false
@@ -1391,7 +1418,7 @@ func (v *view) warpTab(gtx C) D {
 		v.warpList.SetText(strings.Join(s.Warp.domains(), "\n"))
 		v.warpDraft = true
 	}
-	if v.warpSpeed.Clicked(gtx) && !v.speedBusy {
+	if v.warpSpeed.Clicked(gtx) && !v.speedBusy && !v.ctl.nativeAWGActive() {
 		v.speedBusy, v.warpMsg, v.warpErr = true, "Меряю скорость: 15 с напрямую, потом через WARP (если fnport выключен, сначала подниму WARP)…", false
 		go func() {
 			s := v.ctl.settings()
@@ -1409,8 +1436,11 @@ func (v *view) warpTab(gtx C) D {
 				v.warpMsg, v.warpErr = err.Error(), true
 			} else {
 				ws.Enabled = true
-				cur.Warp = ws
-				if err := v.ctl.apply(cur); err != nil {
+				if err := v.ctl.update(func(next *settings) error {
+					ws.Domains, ws.Always = next.Warp.Domains, next.Warp.Always
+					next.Warp = ws
+					return nil
+				}); err != nil {
 					v.warpMsg, v.warpErr = err.Error(), true
 				} else {
 					v.warpMsg, v.warpErr = "Конфиг принят и сохранён, WARP включён.", false
@@ -1431,12 +1461,10 @@ func (v *view) warpTab(gtx C) D {
 			}
 		}
 		go func() {
-			cur := v.ctl.settings()
-			cur.Warp.Domains = list
 			if strings.Join(warpSettings{Domains: list}.domains(), " ") == strings.Join(warpSettings{}.domains(), " ") {
-				cur.Warp.Domains = nil // the default list: follows updates of the program
+				list = nil
 			}
-			if err := v.ctl.apply(cur); err != nil {
+			if err := v.ctl.update(func(next *settings) error { next.Warp.Domains = list; return nil }); err != nil {
 				v.warpMsg, v.warpErr = err.Error(), true
 			} else {
 				v.warpMsg, v.warpErr = "Список сохранён.", false
@@ -1455,6 +1483,7 @@ func (v *view) warpTab(gtx C) D {
 		lines = lines[len(lines)-200:]
 	}
 	sections := []layout.Widget{
+		func(gtx C) D { return v.connectionsCard(gtx) },
 		func(gtx C) D { return v.warpCard(gtx, s) },
 		func(gtx C) D { return v.warpListCard(gtx) },
 		func(gtx C) D {
@@ -1478,7 +1507,7 @@ func (v *view) warpTab(gtx C) D {
 		},
 	}
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-		v.title("WARP"),
+		v.title("Подключения"),
 		layout.Flexed(1, func(gtx C) D {
 			return v.list(gtx, &v.warpPage, len(sections), func(gtx C, i int) D {
 				return layout.Inset{Bottom: 12, Right: 10}.Layout(gtx, sections[i])
@@ -1549,7 +1578,7 @@ func (v *view) warpCard(gtx C, s settings) D {
 					layout.Rigid(func(gtx C) D { return v.button(gtx, &v.warpReg, label, false, !v.warpBusy) }),
 					hspace(10),
 					layout.Rigid(func(gtx C) D {
-						return v.button(gtx, &v.warpSpeed, "Проверить скорость", false, !v.speedBusy)
+						return v.button(gtx, &v.warpSpeed, "Проверить скорость", false, !v.speedBusy && !v.ctl.nativeAWGActive())
 					}),
 					hspace(12),
 					layout.Flexed(1, v.label(13, msgC, v.warpMsg).Layout))

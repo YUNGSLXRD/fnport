@@ -151,7 +151,7 @@ func game(t *testing.T, dev *chanDev, cport uint16, server netip.AddrPort, from,
 func flowOf(e *engine, cport uint16, dst netip.AddrPort) *uflow {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.flows[flowKey{cport, dst}]
+	return e.flows[flowKey{cport, dst, e.clientIP}]
 }
 
 func TestGameFlowGetsGoodPort(t *testing.T) {

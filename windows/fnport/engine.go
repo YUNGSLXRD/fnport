@@ -29,6 +29,7 @@ const (
 )
 
 type config struct {
+	captureAll  bool // must match installed routes even if the optional trace fails
 	passthrough bool // no probes, no fake: only through the adapter (fnport on the router does the rest)
 	gameRanges  [][2]uint16
 	pairFrom    [2]uint16
@@ -70,6 +71,7 @@ func (c *counters) add(v *int, n int) {
 type flowKey struct {
 	cport uint16
 	dst   netip.AddrPort
+	srcIP netip.Addr
 }
 
 type uflow struct {
@@ -78,14 +80,19 @@ type uflow struct {
 	match  bool // the match itself (9xxx), not the control connection
 	noGood bool // no probed port was found: it went from an untested one
 
-	mu      sync.Mutex
-	conn    *net.UDPConn // nil while the port is being chosen
-	port    int
-	pending [][]byte
-	remaps  int
-	frozen  bool // reported, waiting for a remap
-	last    time.Time
-	started time.Time
+	mu         sync.Mutex
+	retryAfter time.Time
+	reported   bool
+	send       chan []byte
+	failed     bool         // a selected transport failed: do not retry/log every game packet
+	tunnel     net.Conn     // selected process datagrams through WARP or sing-box
+	conn       *net.UDPConn // nil while the port is being chosen
+	port       int
+	pending    [][]byte
+	remaps     int
+	frozen     bool // reported, waiting for a remap
+	last       time.Time
+	started    time.Time
 
 	out, in           atomic.Int64 // since the current port
 	totalOut, totalIn atomic.Int64
@@ -113,12 +120,13 @@ func (f *uflow) info(active bool) flowInfo {
 }
 
 type engine struct {
-	cfg      *config
-	dev      wnet.Dev
-	clientIP netip.Addr
-	prober   *prober
-	tcp      *tcpRelay
-	stat     *counters
+	connection *connectionRouter
+	cfg        *config
+	dev        wnet.Dev
+	clientIP   netip.Addr
+	prober     *prober
+	tcp        *tcpRelay
+	stat       *counters
 
 	mu    sync.Mutex
 	flows map[flowKey]*uflow
@@ -165,7 +173,7 @@ func (e *engine) run() {
 			}
 		case 17:
 			p, err := wnet.ParseUDP4(pkt)
-			if err != nil || p.Src.Addr() != e.clientIP || !e.routed(p.Dst.Addr()) {
+			if err != nil || (p.Src.Addr() != e.clientIP && p.Src.Addr() != wnet.PhysAddr) || !e.routed(p.Dst.Addr()) {
 				continue // broadcasts and multicast of network discovery
 			}
 			e.udp(p)
@@ -174,6 +182,9 @@ func (e *engine) run() {
 }
 
 func (e *engine) routed(a netip.Addr) bool {
+	if e.cfg.captureAll {
+		return true
+	}
 	for _, r := range e.cfg.routes {
 		if r.Contains(a) {
 			return true
@@ -183,24 +194,38 @@ func (e *engine) routed(a netip.Addr) bool {
 }
 
 func (e *engine) udp(p wnet.UDPPacket) {
-	key := flowKey{p.Src.Port(), p.Dst}
+	key := flowKey{p.Src.Port(), p.Dst, p.Src.Addr()}
 	e.mu.Lock()
 	f := e.flows[key]
 	isNew := f == nil
 	if isNew {
-		f = &uflow{key: key, game: e.cfg.gamePort(p.Dst.Port()), last: time.Now(), started: time.Now()}
+		f = &uflow{key: key, game: e.cfg.gamePort(p.Dst.Port()) && inPrefixes(p.Dst.Addr(), e.cfg.routes), last: time.Now(), started: time.Now()}
 		f.match = f.game && !(e.cfg.pairOffset != 0 && p.Dst.Port() >= e.cfg.pairFrom[0] && p.Dst.Port() <= e.cfg.pairFrom[1])
 		e.flows[key] = f
 	}
 	e.mu.Unlock()
 	if isNew {
 		e.stat.add(&e.stat.flows, 1)
+		if e.connection != nil {
+			e.connection.observe(17, p.Src, p.Dst, "", "")
+		}
 	}
 
 	f.mu.Lock()
 	f.last = time.Now()
-	c := f.conn
-	if c == nil {
+	if f.failed {
+		if time.Now().Before(f.retryAfter) {
+			f.mu.Unlock()
+			return
+		}
+		f.failed = false
+		f.pending = append(f.pending, append([]byte(nil), p.Payload...))
+		f.mu.Unlock()
+		go e.assignConnection(f)
+		return
+	}
+	c, tunnel, send := f.conn, f.tunnel, f.send
+	if c == nil && tunnel == nil {
 		if len(f.pending) < maxPending {
 			f.pending = append(f.pending, append([]byte(nil), p.Payload...))
 		}
@@ -211,9 +236,16 @@ func (e *engine) udp(p wnet.UDPPacket) {
 		return
 	}
 	f.mu.Unlock()
-	f.out.Add(1)
-	f.totalOut.Add(1)
-	c.WriteToUDPAddrPort(p.Payload, p.Dst)
+	if tunnel != nil {
+		select {
+		case send <- append([]byte(nil), p.Payload...):
+		default:
+		}
+	} else {
+		f.out.Add(1)
+		f.totalOut.Add(1)
+		c.WriteToUDPAddrPort(p.Payload, p.Dst)
+	}
 }
 
 // openPort binds port, or any free port when it is taken
@@ -238,6 +270,10 @@ func openPort(port int) (*net.UDPConn, int, error) {
 // assign picks the flow's source port (probing for game flows), sends what was held meanwhile
 func (e *engine) assign(f *uflow) {
 	dst := f.key.dst
+	if e.connection != nil && e.connection.selectedUDP(netip.AddrPortFrom(f.key.srcIP, f.key.cport), dst, f.game) {
+		e.assignConnection(f)
+		return
+	}
 	port, how := 0, ""
 	t0 := time.Now()
 	if f.game {
@@ -294,7 +330,7 @@ func (e *engine) assign(f *uflow) {
 // back carries the server's replies into the adapter
 func (e *engine) back(f *uflow, c *net.UDPConn) {
 	buf := make([]byte, 65536)
-	client := netip.AddrPortFrom(e.clientIP, f.key.cport)
+	client := netip.AddrPortFrom(f.key.srcIP, f.key.cport)
 	for {
 		n, from, err := c.ReadFromUDPAddrPort(buf)
 		if err != nil {
@@ -337,22 +373,33 @@ func (e *engine) watch() {
 		for _, f := range all {
 			f.mu.Lock()
 			c, port, idle, frozen, remaps := f.conn, f.port, time.Since(f.last) > idleAfter, f.frozen, f.remaps
+			tunnel := f.tunnel
 			f.mu.Unlock()
-			if c == nil {
+			if c == nil && tunnel == nil {
+				if idle {
+					e.mu.Lock()
+					delete(e.flows, f.key)
+					e.mu.Unlock()
+				}
 				continue
 			}
 			if idle {
-				c.Close()
+				if c != nil {
+					c.Close()
+				}
+				if tunnel != nil {
+					tunnel.Close()
+				}
 				e.mu.Lock()
 				delete(e.flows, f.key)
 				e.mu.Unlock()
-				if f.game && e.gone != nil {
+				if f.game && tunnel == nil && e.gone != nil {
 					e.gone(f.info(false))
 				}
 				continue
 			}
 			out, in := f.out.Load(), f.in.Load()
-			if !f.game || out < freezeOut || in > freezeIn || frozen {
+			if tunnel != nil || !f.game || out < freezeOut || in > freezeIn || frozen {
 				continue
 			}
 			f.mu.Lock()
@@ -412,7 +459,10 @@ func (e *engine) gameFlows() []flowInfo {
 	e.mu.Lock()
 	var fs []*uflow
 	for _, f := range e.flows {
-		if f.game {
+		f.mu.Lock()
+		game := f.game && f.tunnel == nil
+		f.mu.Unlock()
+		if game {
 			fs = append(fs, f)
 		}
 	}
@@ -442,6 +492,9 @@ func (e *engine) close() {
 		f.mu.Lock()
 		if f.conn != nil {
 			f.conn.Close()
+		}
+		if f.tunnel != nil {
+			f.tunnel.Close()
 		}
 		f.mu.Unlock()
 	}

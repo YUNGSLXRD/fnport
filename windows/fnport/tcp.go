@@ -29,13 +29,14 @@ import (
 // connection on the server's behalf and joins it to an ordinary connection of this PC.
 
 type tcpRelay struct {
-	stack  *stack.Stack
-	ep     *channel.Endpoint
-	ctx    context.Context
-	cancel context.CancelFunc
-	active atomic.Int64
-	total  atomic.Int64
-	failed atomic.Int64
+	connection *connectionRouter
+	stack      *stack.Stack
+	ep         *channel.Endpoint
+	ctx        context.Context
+	cancel     context.CancelFunc
+	active     atomic.Int64
+	total      atomic.Int64
+	failed     atomic.Int64
 
 	// WARP for Epic's services: nil until (unless) the tunnel is up
 	warp       atomic.Pointer[warpTunnel]
@@ -105,7 +106,7 @@ func (t *tcpRelay) inject(b []byte) {
 func (t *tcpRelay) accept(r *tcp.ForwarderRequest) {
 	id := r.ID()
 	dst := netip.AddrPortFrom(netip.AddrFrom4(id.LocalAddress.As4()), id.LocalPort)
-	if (t.warp.Load() != nil || t.warpWait.Load()) && (dst.Port() == 443 || t.epicIP(dst.Addr())) {
+	if (t.connection != nil && (t.connection.settings.Enabled || t.connection.trace != nil)) || (t.warp.Load() != nil || t.warpWait.Load()) && (dst.Port() == 443 || t.epicIP(dst.Addr())) {
 		t.acceptSplit(r, dst)
 		return
 	}
@@ -152,6 +153,7 @@ func (t *tcpRelay) epicIP(a netip.Addr) bool {
 // start the search for an endpoint took a minute, and the game, started meanwhile, failed to
 // load its content keys and timed out logging in)
 func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort) {
+	id := r.ID()
 	var wq waiter.Queue
 	ep, terr := r.CreateEndpoint(&wq)
 	if terr != nil {
@@ -165,6 +167,34 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort) {
 	if dst.Port() == 443 {
 		hello = readHello(in)
 		name = sniOf(hello)
+	}
+	if t.connection != nil && (t.connection.settings.Enabled || t.connection.trace != nil) {
+		src := netip.AddrPortFrom(netip.AddrFrom4(id.RemoteAddress.As4()), id.RemotePort)
+		t.connection.observe(6, src, dst, name, "tls_sni")
+		owner := t.connection.owner(6, src, dst)
+		if t.connection.settings.selects(owner, name) {
+			ctx, cancel := connectionContext(t.ctx)
+			out, err := t.connection.dial(ctx, dst, false)
+			cancel()
+			if err != nil {
+				t.failed.Add(1)
+				in.Close()
+				logf("Подключения: TCP к %s не установлено через %s", dst, t.connection.settings.Protocol)
+				return
+			}
+			if len(hello) > 0 {
+				if _, err := out.Write(hello); err != nil {
+					in.Close()
+					out.Close()
+					return
+				}
+			}
+			t.total.Add(1)
+			t.active.Add(1)
+			defer t.active.Add(-1)
+			splice(in, out)
+			return
+		}
 	}
 	shown := name
 	if shown == "" {
@@ -610,6 +640,20 @@ func splice(a, b net.Conn) {
 }
 
 func (t *tcpRelay) close() {
+	if t.connection != nil {
+		if t.connection.cancel != nil {
+			t.connection.cancel()
+		}
+		if t.connection.trace != nil {
+			t.connection.trace.close()
+		}
+		if t.connection.native != nil {
+			t.connection.native.close()
+		}
+		if t.connection.transport != nil {
+			t.connection.transport.close()
+		}
+	}
 	t.cancel()
 	if w := t.warp.Swap(nil); w != nil {
 		w.close()

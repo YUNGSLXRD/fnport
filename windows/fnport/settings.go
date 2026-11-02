@@ -17,21 +17,23 @@ import (
 // Anything missing from the file takes its default.
 
 type settings struct {
-	Adapter     string       `json:"adapter"`  // network adapter by name; "" = the one Windows uses toward AWS
-	Fake        string       `json:"fake"`     // file in the fakes folder; "" = no fake
-	FakeTTL     int          `json:"fake_ttl"` // hops from this PC: past the ISP's DPI, before the server
-	Routes      []string     `json:"routes"`   // networks sent through fnport
-	GamePorts   []string     `json:"game_ports"`
-	PairFrom    string       `json:"pair_from"`   // control ports whose match port is probed ahead
-	PairOffset  int          `json:"pair_offset"` // 15062 -> 9062
-	QoSPort     int          `json:"qos_port"`
-	ProbeBatch  int          `json:"probe_batch"`  // ports probed at once
-	MaxRounds   int          `json:"max_rounds"`   // rounds per flow
-	ProbeBudget int          `json:"probe_budget"` // probe sockets per minute, all servers together
-	VerdictTTL  int          `json:"verdict_ttl"`  // seconds a good port is trusted
-	Passthrough bool         `json:"passthrough"`  // no probes, no fake: fnport on the router does the work
-	Theme       string       `json:"theme"`        // "system", "dark", "light"
-	Warp        warpSettings `json:"warp"`         // Epic's services through WARP
+	Adapter     string               `json:"adapter"`  // network adapter by name; "" = the one Windows uses toward AWS
+	Fake        string               `json:"fake"`     // file in the fakes folder; "" = no fake
+	FakeTTL     int                  `json:"fake_ttl"` // hops from this PC: past the ISP's DPI, before the server
+	Routes      []string             `json:"routes"`   // networks sent through fnport
+	GamePorts   []string             `json:"game_ports"`
+	PairFrom    string               `json:"pair_from"`   // control ports whose match port is probed ahead
+	PairOffset  int                  `json:"pair_offset"` // 15062 -> 9062
+	QoSPort     int                  `json:"qos_port"`
+	ProbeBatch  int                  `json:"probe_batch"`  // ports probed at once
+	MaxRounds   int                  `json:"max_rounds"`   // rounds per flow
+	ProbeBudget int                  `json:"probe_budget"` // probe sockets per minute, all servers together
+	VerdictTTL  int                  `json:"verdict_ttl"`  // seconds a good port is trusted
+	Passthrough bool                 `json:"passthrough"`  // no probes, no fake: fnport on the router does the work
+	Theme       string               `json:"theme"`        // "system", "dark", "light"
+	Connection  connectionSettings   `json:"connection"`
+	Trace       networkTraceSettings `json:"network_trace"`
+	Warp        warpSettings         `json:"warp"` // Epic's services through WARP
 }
 
 func defaultSettings() settings {
@@ -49,6 +51,8 @@ func defaultSettings() settings {
 		VerdictTTL:  90,
 		Theme:       "system",
 		Warp:        warpSettings{Jc: 4, Jmin: 40, Jmax: 70},
+		Connection:  connectionSettings{Protocol: "warp"},
+		Trace:       defaultNetworkTraceSettings(),
 	}
 }
 
@@ -82,7 +86,7 @@ func (s settings) save() error {
 		return err
 	}
 	tmp := settingsPath() + ".tmp"
-	if err := os.WriteFile(tmp, append(b, '\n'), 0o644); err != nil {
+	if err := os.WriteFile(tmp, append(b, '\n'), 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, settingsPath())
@@ -104,6 +108,12 @@ func parseRange(r string) ([2]uint16, error) {
 
 // config checks the settings and turns them into what the engine runs with
 func (s settings) config() (*config, error) {
+	if s.Connection.Enabled && s.Connection.Protocol == "amneziawg" && s.Warp.Enabled {
+		return nil, fmt.Errorf("для AmneziaWG отключите WARP для Epic: одновременная работа пока не поддерживается")
+	}
+	if err := s.Connection.validate(); err != nil {
+		return nil, err
+	}
 	cfg := &config{passthrough: s.Passthrough, pairOffset: s.PairOffset, verdictTTL: time.Duration(s.VerdictTTL) * time.Second}
 	in := func(v, lo, hi int, what string) error {
 		if v < lo || v > hi {

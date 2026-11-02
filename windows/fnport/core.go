@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/netip"
 	"os"
@@ -90,6 +91,8 @@ const (
 )
 
 type controller struct {
+	applyMu sync.Mutex
+	persist func(settings) error // nil uses settings.save; testable persistence boundary
 	mu      sync.Mutex
 	set     settings
 	cfg     *config // what the engine runs with while on
@@ -155,17 +158,43 @@ func usePhysical(name string) {
 
 // apply checks and saves new settings; if fnport is on, it restarts with them
 func (c *controller) apply(s settings) error {
+	c.applyMu.Lock()
+	defer c.applyMu.Unlock()
+	return c.applyLocked(s)
+}
+
+// Update only the fields a control owns, against the latest serialized snapshot.
+func (c *controller) update(change func(*settings) error) error {
+	c.applyMu.Lock()
+	defer c.applyMu.Unlock()
+	s := c.settings()
+	if err := change(&s); err != nil {
+		return err
+	}
+	return c.applyLocked(s)
+}
+
+func (c *controller) applyLocked(s settings) error {
 	if _, err := s.config(); err != nil {
 		return err
 	}
-	if err := s.save(); err != nil {
+	c.mu.Lock()
+	if c.st == stateStarting {
+		c.mu.Unlock()
+		return errorf("дождитесь завершения включения fnport и примените настройки снова")
+	}
+	save := c.persist
+	if save == nil {
+		save = func(s settings) error { return s.save() }
+	}
+	if err := save(s); err != nil {
+		c.mu.Unlock()
 		return errorf("не сохранить fnport.json: %v", err)
 	}
-	c.mu.Lock()
-	old := c.set
+	old, st := c.set, c.st
 	c.set = s
-	st := c.st
 	c.mu.Unlock()
+
 	logf("настройки сохранены")
 	// the theme alone does not need fnport restarted
 	same := s
@@ -173,6 +202,9 @@ func (c *controller) apply(s settings) error {
 	if st == stateOn && !reflect.DeepEqual(same, old) {
 		c.stop()
 		c.start()
+		if st, why := c.state(); st != stateOn {
+			return errorf("настройки сохранены, но включение не удалось: %s", why)
+		}
 	} else {
 		usePhysical(s.Adapter)
 	}
@@ -190,9 +222,7 @@ func (c *controller) state() (state, string) {
 // have changed since the check. start is a no-op when already on, so this never toggles it off.
 func (c *controller) startFromCheck(rec *settings) error {
 	if rec != nil {
-		s := c.settings()
-		s.Fake, s.FakeTTL = rec.Fake, rec.FakeTTL
-		if err := c.apply(s); err != nil {
+		if err := c.update(func(s *settings) error { s.Fake, s.FakeTTL = rec.Fake, rec.FakeTTL; return nil }); err != nil {
 			return err
 		}
 	}
@@ -242,7 +272,48 @@ func (c *controller) start() {
 	if info.Tunnel {
 		logf("ВНИМАНИЕ: похоже, это VPN. Игра пойдёт через него, а не напрямую: выключите VPN/WARP.")
 	}
-	dev, clientIP, err := wnet.OpenTun("fnport", cfg.routes)
+	// Bring up the helper before installing catch-all routes. Some protocols resolve
+	// server hostnames during initialization; routing DNS into an unread TUN would hang.
+	life, cancelConnection := context.WithCancel(context.Background())
+	var helper *connectionTransport
+	var native *warpTunnel
+	owned := false
+	defer func() {
+		if !owned {
+			cancelConnection()
+			if helper != nil {
+				helper.close()
+			}
+			if native != nil {
+				native.close()
+			}
+		}
+	}()
+	if set.Connection.Enabled && set.Connection.Protocol != "warp" && set.Connection.Protocol != "amneziawg" {
+		helper, err = startConnection(life, set.Connection, info.Alias)
+		if err != nil {
+			fail(err)
+			return
+		}
+	}
+	if set.Connection.Enabled && set.Connection.Protocol == "amneziawg" {
+		native, err = nativeAWGConfig(set.Connection.Config)
+		if err != nil {
+			fail(err)
+			return
+		}
+	}
+	routed := cfg.routes
+	cfg.captureAll = set.Connection.Enabled || set.Trace.Enabled
+	if cfg.captureAll {
+		// A single ingress also sees Discord and HTTPS outside the AWS game prefixes.
+		routed = append(append([]netip.Prefix(nil), cfg.routes...), netip.MustParsePrefix("0.0.0.0/1"), netip.MustParsePrefix("128.0.0.0/1"))
+	}
+	if set.Connection.Enabled && set.Connection.Protocol == "warp" && !set.Warp.ready() {
+		fail(errorf("для выбранного подключения сначала получите ключ WARP"))
+		return
+	}
+	dev, clientIP, err := wnet.OpenTun("fnport", routed)
 	if err != nil {
 		fail(err)
 		return
@@ -253,16 +324,31 @@ func (c *controller) start() {
 		fail(err)
 		return
 	}
+	router := &connectionRouter{settings: set.Connection, tcp: tcp, transport: helper, native: native, cancel: cancelConnection}
+	tcp.connection = router
+	owned = true
+	if set.Trace.Enabled {
+		trace, err := startNetworkTrace(tcp.ctx, set.Trace)
+		if err != nil {
+			logf("Сетевой журнал не запущен: не удалось открыть файлы диагностики")
+		}
+		router.trace = trace
+	}
 	e := newEngine(cfg, dev, clientIP, tcp)
+	e.connection = router
+	if set.Connection.Enabled || set.Trace.Enabled {
+		logf("Подключения: перехват IPv4 включён, остальные процессы идут напрямую. IPv6 не перенаправляется.")
+	}
 	if n := int(checkTTL.Load()); n > 0 && n < cfg.fakeTTL && len(cfg.fakes) > 0 {
 		e.prober.setTTL(n, fmt.Sprintf("по проверке провайдера (в настройках %d, а с ним фейк убивает соединения)", cfg.fakeTTL))
 	}
 	e.gone = c.addHistory
 	go e.run()
-	if set.Warp.Enabled && set.Warp.ready() && !set.Passthrough {
+	if (set.Warp.Enabled || (set.Connection.Enabled && set.Connection.Protocol == "warp")) && set.Warp.ready() && (!set.Passthrough || set.Connection.Enabled) {
 		ws := set.Warp.withFake(set)
+		ws.servicesOff = !set.Warp.Enabled
 		ws.ttlNow = e.prober.fakeTTL // the tunnel's fake follows the game's
-		go runWarp(ws, dev, cfg.routes, tcp)
+		go runWarp(ws, dev, routed, tcp)
 	}
 
 	stop := make(chan struct{})
@@ -390,7 +476,7 @@ func (c *controller) warpTunnel() *warpTunnel {
 // warpStatus: "" when WARP is off or fnport is
 func (c *controller) warpStatus(full bool) string {
 	c.mu.Lock()
-	t, on := c.tcp, c.set.Warp.Enabled
+	t, on := c.tcp, c.set.Warp.Enabled || (c.set.Connection.Enabled && c.set.Connection.Protocol == "warp")
 	c.mu.Unlock()
 	if t == nil || !on {
 		return ""

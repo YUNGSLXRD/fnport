@@ -80,6 +80,37 @@ func warpLoopback(t *testing.T, i1 string) {
 	if !w.setEndpoint(fmt.Sprintf("127.0.0.1:%d", port)) {
 		t.Fatal("endpoint")
 	}
+	udpEcho, err := snet.ListenUDP(7777)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udpEcho.Close()
+	go func() {
+		buf := make([]byte, 2048)
+		for {
+			n, peer, err := udpEcho.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			udpEcho.WriteTo(buf[:n], peer)
+		}
+	}()
+	uc, err := w.net.DialUDP(netip.MustParseAddrPort("10.9.0.1:7777"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer uc.Close()
+	uc.SetDeadline(time.Now().Add(5 * time.Second))
+	for _, payload := range [][]byte{[]byte("voice"), make([]byte, 1200)} {
+		if _, err := uc.Write(payload); err != nil {
+			t.Fatal(err)
+		}
+		back := make([]byte, 2048)
+		n, err := uc.Read(back)
+		if err != nil || string(back[:n]) != string(payload) {
+			t.Fatalf("UDP tunnel echo: %v", err)
+		}
+	}
 	c, err := w.dial(netip.MustParseAddrPort("10.9.0.1:443"))
 	if err != nil {
 		t.Fatal("dial through the tunnel:", err)

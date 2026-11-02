@@ -7,6 +7,7 @@ package awgnet
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"sync"
@@ -21,6 +22,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
+	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 )
 
 type Net struct {
@@ -38,7 +40,7 @@ type Net struct {
 func New(addr netip.Addr, mtu int) (tun.Device, *Net, error) {
 	s := stack.New(stack.Options{
 		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol},
-		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol},
+		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol},
 		HandleLocal:        true,
 	})
 	n := &Net{ep: channel.New(1024, uint32(mtu), ""), stack: s, events: make(chan tun.Event, 10),
@@ -62,6 +64,16 @@ func New(addr netip.Addr, mtu int) (tun.Device, *Net, error) {
 func (n *Net) DialTCP(ctx context.Context, dst netip.AddrPort) (*gonet.TCPConn, error) {
 	fa := tcpip.FullAddress{NIC: 1, Addr: tcpip.AddrFromSlice(dst.Addr().AsSlice()), Port: dst.Port()}
 	return gonet.DialContextTCP(ctx, n.stack, fa, ipv4.ProtocolNumber)
+}
+
+// DialUDP opens a connected datagram endpoint through the tunnel.
+func (n *Net) DialUDP(dst netip.AddrPort) (net.Conn, error) {
+	fa := tcpip.FullAddress{NIC: 1, Addr: tcpip.AddrFromSlice(dst.Addr().AsSlice()), Port: dst.Port()}
+	c, err := gonet.DialUDP(n.stack, nil, &fa, ipv4.ProtocolNumber)
+	if err != nil {
+		return nil, fmt.Errorf("UDP: %s", err)
+	}
+	return c, nil
 }
 
 // WriteNotify: the stack has a packet for the tunnel. After Close the packet is dropped: the
@@ -138,4 +150,14 @@ func (d *device) Close() error {
 // ListenTCP: for tests, a server end inside the stack
 func (n *Net) ListenTCP(port uint16) (*gonet.TCPListener, error) {
 	return gonet.ListenTCP(n.stack, tcpip.FullAddress{NIC: 1, Port: port}, ipv4.ProtocolNumber)
+}
+
+// ListenUDP supplies an in-stack datagram endpoint, also used by loopback tests.
+func (n *Net) ListenUDP(port uint16) (net.PacketConn, error) {
+	addr := tcpip.FullAddress{NIC: 1, Port: port}
+	c, err := gonet.DialUDP(n.stack, &addr, nil, ipv4.ProtocolNumber)
+	if err != nil {
+		return nil, fmt.Errorf("UDP listener: %s", err)
+	}
+	return c, nil
 }

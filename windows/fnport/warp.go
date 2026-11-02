@@ -52,9 +52,11 @@ type warpSettings struct {
 
 	// fnport's fake before the tunnel's first packet to an endpoint, at the fake's TTL: the TSPU
 	// freezes UDP to Cloudflare as to AWS, after the handshake and a few packets
-	fake    []byte
-	fakeTTL int
-	ttlNow  func() int // the engine's TTL as it moves; nil = fakeTTL
+	fake        []byte
+	fakeTTL     int
+	exclusive   bool       // custom AWG headers require exclusive use of process-global library state
+	servicesOff bool       // tunnel for selected processes only; Epic rules disabled
+	ttlNow      func() int // the engine's TTL as it moves; nil = fakeTTL
 }
 
 // withFake: the fake and TTL of the settings for the tunnel's UDP
@@ -489,15 +491,17 @@ func warpEndpoints(first string) []string {
 }
 
 type warpTunnel struct {
-	dev      *device.Device
-	net      *awgnet.Net
-	peer     string // hex public key
-	endpoint atomic.Value
-	exitInfo atomic.Value // string from exit()
-	exitKV   atomic.Value // [3]string: colo, loc, ip
-	bind     *physBind
-	conns    atomic.Int64
-	fails    atomic.Int64
+	closeOnce sync.Once
+	release   func()
+	dev       *device.Device
+	net       *awgnet.Net
+	peer      string // hex public key
+	endpoint  atomic.Value
+	exitInfo  atomic.Value // string from exit()
+	exitKV    atomic.Value // [3]string: colo, loc, ip
+	bind      *physBind
+	conns     atomic.Int64
+	fails     atomic.Int64
 }
 
 func b64hex(s string) (string, error) {
@@ -509,7 +513,33 @@ func b64hex(s string) (string, error) {
 }
 
 // newWarpDev: the AWG device with the key, up, no endpoint yet
+var awgMode sync.RWMutex
+
+func acquireAWGMode(exclusive bool) (func(), error) {
+	if exclusive {
+		if !awgMode.TryLock() {
+			return nil, errors.New("завершите подключение или проверку WARP перед запуском AmneziaWG")
+		}
+		return awgMode.Unlock, nil
+	}
+	if !awgMode.TryRLock() {
+		return nil, errors.New("пока работает AmneziaWG, WARP недоступен")
+	}
+	return awgMode.RUnlock, nil
+}
+
 func newWarpDev(ws warpSettings) (*warpTunnel, error) {
+	release, err := acquireAWGMode(ws.exclusive)
+	if err != nil {
+		return nil, err
+	}
+	keep := false
+	defer func() {
+		if !keep {
+			release()
+		}
+	}()
+
 	addr, err := netip.ParseAddr(ws.Address)
 	if err != nil {
 		return nil, errors.New("адрес WARP испорчен")
@@ -540,7 +570,8 @@ func newWarpDev(ws warpSettings) (*warpTunnel, error) {
 		dev.Close()
 		return nil, err
 	}
-	return &warpTunnel{dev: dev, net: tnet, peer: peer, bind: bind}, nil
+	keep = true
+	return &warpTunnel{dev: dev, net: tnet, peer: peer, bind: bind, release: release}, nil
 }
 
 // setEndpoint: the peer made anew with the endpoint. A new peer with keepalive sends its
@@ -807,7 +838,14 @@ func (w *warpTunnel) where() string {
 	return s
 }
 
-func (w *warpTunnel) close() { w.dev.Close() }
+func (w *warpTunnel) close() {
+	w.closeOnce.Do(func() {
+		w.dev.Close()
+		if w.release != nil {
+			w.release()
+		}
+	})
+}
 
 // localPort: the tunnel's own UDP port, for the log
 func (w *warpTunnel) localPort() int {
@@ -1013,9 +1051,12 @@ func (b *physBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 // up again every 10 minutes while fnport is on
 func runWarp(ws warpSettings, dev wnet.Dev, routed []netip.Prefix, t *tcpRelay) {
 	names := ws.domains()
+	if ws.servicesOff {
+		names = nil
+	}
 	t.names.Store(&names)
 	t.always.Store(ws.Always)
-	if !ws.Always && networkFreezes() {
+	if !ws.servicesOff && !ws.Always && networkFreezes() {
 		t.always.Store(true)
 		logf("WARP: в этой сети сервисы Epic напрямую замерзали — всё из списка сразу через WARP")
 	}
@@ -1076,7 +1117,11 @@ func runWarp(ws warpSettings, dev wnet.Dev, routed []netip.Prefix, t *tcpRelay) 
 		return
 	}
 	changes.Add(1)
-	logf("WARP подключён через %s: сервисы Epic идут через него, игра — напрямую", w.where())
+	if ws.servicesOff {
+		logf("WARP подключён через %s: для выбранных процессов", w.where())
+	} else {
+		logf("WARP подключён через %s: сервисы Epic идут через него, игра — напрямую", w.where())
+	}
 	rememberEndpoint(w)
 	if ex := w.exit(); ex != "" {
 		w.exitInfo.Store(ex)

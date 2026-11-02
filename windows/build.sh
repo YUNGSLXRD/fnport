@@ -13,7 +13,10 @@ cp ../fnport/files/quic_initial_*.bin internal/fakes/
 # licenses PKG: the license texts of Go and of every module compiled into PKG for Windows
 licenses() {
 	printf '%s\n\n' "Licenses of the Go code compiled into this program."
-	printf '%s\n\n%s\n\n' "== Go $(go env GOVERSION | sed 's/^go//') (standard library and runtime)" "$(cat "$(go env GOROOT)/LICENSE")"
+	go_license="$(go env GOROOT)/LICENSE"
+ if [ ! -f "$go_license" ]; then go_license="$(go env GOROOT)/../LICENSE"; fi
+ test -f "$go_license" || { echo "Go license not found" >&2; exit 1; }
+ printf '%s\n\n%s\n\n' "== Go $(go env GOVERSION | sed 's/^go//') (standard library and runtime)" "$(cat "$go_license")"
 	GOOS=windows GOARCH=amd64 go list -deps -f '{{with .Module}}{{if not .Main}}{{.Path}} {{.Version}} {{.Dir}}{{end}}{{end}}' "$1" |
 		sort -u | while read -r path ver dir; do
 			f=$(ls "$dir" | grep -i -E '^(licen[cs]e|copying|unlicense)' | head -n 1)
@@ -40,7 +43,8 @@ go test -count=1 ./...
 # the Go checksum database vouches for the module, the hash pins the file
 WINTUN_MOD=github.com/sagernet/sing-tun@v0.9.6
 WINTUN_SHA256=e5da8447dc2c320edc0fc52fa01885c103de8c118481f683643cacc3220dafce
-tmp=$(mktemp -d)
+mkdir -p dist
+tmp=$(mktemp -d "$PWD/dist/build.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 # (the module's zip: extracting it would need the module's newer Go)
 modzip=$(cd "$tmp" && GOFLAGS= go mod download -json "$WINTUN_MOD" | sed -n 's/^[[:space:]]*"Zip": "\(.*\)",$/\1/p')
@@ -57,8 +61,14 @@ go run ./tools/mkicon fnport/winres
 pack() {
 	out="$tmp/$1"
 	mkdir -p "$out" dist
-	GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=$VER ${4:-}" -o "$out/$1.exe" "./$2"
+	GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=$VER -X main.devTrace=${FNPORT_DEV_TRACE:-off} ${4:-}" -o "$out/$1.exe" "./$2"
 	cp "$dll" "$out/wintun.dll"
+ if [ "$1" = fnport ] && [ -n "${FNPORT_SING_BOX_DIR:-}" ]; then
+  cp "$FNPORT_SING_BOX_DIR/sing-box.exe" "$out/sing-box.exe"
+  cp "$FNPORT_SING_BOX_DIR/LICENSE" "$out/sing-box-LICENSE.txt"
+  if [ -f "$FNPORT_SING_BOX_DIR/libcronet.dll" ]; then cp "$FNPORT_SING_BOX_DIR/libcronet.dll" "$out/libcronet.dll"; fi
+  cp ../docs/connections-dev.md "$out/README-dev.md"
+ fi
 	if [ "$1" != fnport ]; then
 		cp third_party/wintun-LICENSE.txt "$out/wintun-LICENSE.txt"
 		cp ../fnport/files/quic_initial_vk_com.bin.LICENSE "$out/quic-fakes-LICENSE.txt"
