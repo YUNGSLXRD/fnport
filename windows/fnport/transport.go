@@ -296,6 +296,8 @@ type connectionTransport struct {
 	done                    chan struct{}
 	mu                      sync.Mutex
 	closed                  bool
+	exitCode                int
+	exitUnexpected          bool
 	conns                   map[*connectionTracked]struct{}
 	once                    sync.Once
 }
@@ -367,14 +369,28 @@ func startConnectionCommand(ctx context.Context, s connectionSettings, iface str
 	connectionPrepareCommand(cmd)
 	cmd.Stdin = bytes.NewReader(config)
 	cmd.Stdout = io.Discard
-	cmd.Stderr = io.Discard
+	var diagnostic connectionCoreDiagnostic
+	cmd.Stderr = &diagnostic
+	started := time.Now()
 	if cmd.Start() != nil {
 		stop()
 		return nil, errors.New("cannot start bundled sing-box.exe")
 	}
 	c := &connectionTransport{address: net.JoinHostPort("127.0.0.1", fmt.Sprint(port)), user: user, password: password, udpSupported: udp,
 		ctx: life, cancel: stop, done: make(chan struct{}), conns: map[*connectionTracked]struct{}{}}
-	go func() { _ = cmd.Wait(); close(c.done); c.close() }()
+	go func() {
+		_ = cmd.Wait()
+		c.mu.Lock()
+		c.exitCode = cmd.ProcessState.ExitCode()
+		c.exitUnexpected = !c.closed && life.Err() == nil
+		unexpected, code := c.exitUnexpected, c.exitCode
+		c.mu.Unlock()
+		if unexpected {
+			logf("Подключения: sing-box неожиданно завершился; код %d (0x%08X), работал %s, диагностика %s. Дополнительное подключение недоступно.", code, uint32(code), time.Since(started).Round(time.Millisecond), diagnostic.category())
+		}
+		close(c.done)
+		c.close()
+	}()
 	go func() { <-life.Done(); c.close() }()
 	ready, finish := context.WithTimeout(life, 8*time.Second)
 	defer finish()
@@ -489,27 +505,27 @@ func connectionIOContext(ctx context.Context, conn net.Conn) func() {
 func (c *connectionTransport) authenticate(ctx context.Context) (net.Conn, error) {
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", c.address)
 	if err != nil {
-		return nil, errors.New("local SOCKS unavailable")
+		return nil, connectionFailure("local_connect", err)
 	}
 	reset := connectionIOContext(ctx, conn)
 	defer reset()
-	fail := func() (net.Conn, error) { conn.Close(); return nil, errors.New("local SOCKS authentication failed") }
-	if connectionWrite(conn, []byte{5, 1, 2}) != nil {
-		return fail()
+	fail := func(err error) (net.Conn, error) { conn.Close(); return nil, connectionFailure("local_auth", err) }
+	if err := connectionWrite(conn, []byte{5, 1, 2}); err != nil {
+		return fail(err)
 	}
 	var reply [2]byte
 	if _, err = io.ReadFull(conn, reply[:]); err != nil || reply != [2]byte{5, 2} {
-		return fail()
+		return fail(err)
 	}
 	auth := []byte{1, byte(len(c.user))}
 	auth = append(auth, c.user...)
 	auth = append(auth, byte(len(c.password)))
 	auth = append(auth, c.password...)
-	if connectionWrite(conn, auth) != nil {
-		return fail()
+	if err = connectionWrite(conn, auth); err != nil {
+		return fail(err)
 	}
 	if _, err = io.ReadFull(conn, reply[:]); err != nil || reply != [2]byte{1, 0} {
-		return fail()
+		return fail(err)
 	}
 	return conn, nil
 }
@@ -563,12 +579,15 @@ func connectionRequest(ctx context.Context, conn net.Conn, cmd byte, dst netip.A
 	reset := connectionIOContext(ctx, conn)
 	defer reset()
 	req := append([]byte{5, cmd, 0}, connectionAddress(dst)...)
-	if connectionWrite(conn, req) != nil {
-		return netip.AddrPort{}, errors.New("SOCKS request failed")
+	if err := connectionWrite(conn, req); err != nil {
+		return netip.AddrPort{}, connectionFailure("socks_write", err)
 	}
 	var head [3]byte
-	if _, err := io.ReadFull(conn, head[:]); err != nil || head != [3]byte{5, 0, 0} {
-		return netip.AddrPort{}, errors.New("SOCKS request rejected; selected protocol or destination may be unsupported")
+	if _, err := io.ReadFull(conn, head[:]); err != nil {
+		return netip.AddrPort{}, connectionFailure("socks_read", err)
+	}
+	if head != [3]byte{5, 0, 0} {
+		return netip.AddrPort{}, &connectionSetupError{stage: "socks_reply", code: uint32(head[1])}
 	}
 	addr, err := connectionReadAddress(conn)
 	if err != nil {

@@ -28,7 +28,7 @@ but IPv6 traffic is not redirected or inspected. Restarting the game is useful
 for observing connections created before tracing began. Existing DNS cache is
 read; the program does not clear it or issue bulk hostname probes.
 
-## Select a connection (dev5)
+## Select a connection (dev6)
 
 Open Подключения, select WARP or one VPN protocol (Выключено disables the connection).
 For WARP use Получить ключ WARP. For VLESS paste a vless:// link (TLS/Reality,
@@ -84,3 +84,14 @@ connection time and first-response time after acceptance. They do not contain
 HTTP bodies, authorization headers or TLS plaintext. A first-response value of
 -1 means no server bytes have been observed yet. Domain DNS-cache associations
 remain candidates, not evidence of application queries or successful downloads.
+
+## Core failure diagnosis (dev6)
+
+Unexpected core termination is recorded immediately, with numeric exit code,
+process lifetime and a fixed runtime diagnostic category. Raw stderr, core
+configuration and credentials are never logged. Normal requested shutdown is
+not reported as a crash. TCP/UDP setup failures identify the local SOCKS phase,
+numeric OS or SOCKS reply code, and timeout flag. Repeated failures are counted
+and logged at most once per ten seconds for each protocol, rather than once
+per application retry. This build diagnoses the dev5 outage; it does not yet
+claim to fix its root cause or the Discord Internet RTT.

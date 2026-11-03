@@ -180,7 +180,7 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort) {
 			if err != nil {
 				t.failed.Add(1)
 				in.Close()
-				logf("Подключения: TCP к %s не установлено через %s", dst, t.connection.settings.Protocol)
+				t.connection.reportFailure(false, err)
 				return
 			}
 			if t.connection.trace != nil {

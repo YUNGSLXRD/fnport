@@ -22,7 +22,7 @@ func (e *engine) assignConnection(f *uflow) {
 		f.pending = nil
 		f.mu.Unlock()
 		if report {
-			logf("Подключения: UDP к %s не установлено через %s, повторю при следующем трафике", f.key.dst, e.connection.settings.Protocol)
+			e.connection.reportFailure(true, err)
 		}
 		return
 	}

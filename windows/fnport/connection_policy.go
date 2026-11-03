@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/YUNGSLXRD/fnport/windows/internal/wnet"
@@ -46,6 +47,8 @@ func (s connectionSettings) selects(owner wnet.ProcessOwner, domain string) bool
 }
 
 type connectionRouter struct {
+	failuresMu  sync.Mutex
+	failures    [2]connectionFailureWindow
 	cancel      context.CancelFunc
 	settings    connectionSettings
 	transport   *connectionTransport
@@ -132,7 +135,10 @@ func (c *controller) connectionStatus() string {
 	if tr != nil {
 		select {
 		case <-tr.done:
-			return "Ядро завершилось. Выключите и включите fnport для повторного запуска."
+			tr.mu.Lock()
+			code := tr.exitCode
+			tr.mu.Unlock()
+			return fmt.Sprintf("Ядро завершилось (код %d). Выключите и включите fnport для повторного запуска.", code)
 		default:
 		}
 	}
