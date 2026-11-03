@@ -13,6 +13,8 @@ import (
 	"gioui.org/f32"
 	"gioui.org/font"
 	"gioui.org/io/clipboard"
+	"gioui.org/io/event"
+	"gioui.org/io/pointer"
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/op/clip"
@@ -97,6 +99,7 @@ const (
 var tabNames = []string{"Главная", "Сводка", "Журнал", "Подключения", "Настройки"}
 
 type view struct {
+	switches    map[*widget.Bool]*switchMotion
 	connections connectionView
 	ctl         *controller
 	ping        *pinger
@@ -1686,5 +1689,53 @@ func (v *view) scrollOf(l *widget.List) *smoothScroll {
 
 // list lays out a scrollable list whose mouse wheel glides over a few frames
 func (v *view) list(gtx C, l *widget.List, n int, el layout.ListElement) D {
-	return material.List(v.th, l).Layout(gtx, n, el)
+	ss := v.scrollOf(l)
+	lo, hi := -1<<20, 1<<20
+	if l.Position.First == 0 {
+		lo = min(0, -l.Position.Offset)
+	}
+	if l.Position.First+l.Position.Count >= n {
+		hi = max(0, -l.Position.OffsetLast)
+	}
+	for {
+		ev, ok := gtx.Event(pointer.Filter{Target: ss, Kinds: pointer.Scroll, ScrollY: pointer.ScrollRange{Min: lo, Max: hi}})
+		if !ok {
+			break
+		}
+		if e, ok := ev.(pointer.Event); ok {
+			ss.remain += e.Scroll.Y
+		}
+	}
+	if ss.remain != 0 {
+		step := ss.remain / 3
+		if math.Abs(float64(step)) < 1 {
+			step = ss.remain
+		}
+		px := int(math.Round(float64(step)))
+		if px == 0 {
+			px = int(math.Copysign(1, float64(ss.remain)))
+		}
+		l.Position.Offset += px
+		ss.remain -= float32(px)
+		if math.Abs(float64(ss.remain)) < 0.5 {
+			ss.remain = 0
+		}
+		l.Position.BeforeEnd = true
+		v.animating = true
+		gtx.Execute(op.InvalidateCmd{})
+	}
+	return material.List(v.th, l).Layout(gtx, n, func(gtx C, i int) D {
+		// Register before content: a nested list's wheel handler is above its parent.
+		// The old full-viewport overlay was registered after children and stole events.
+		rec := op.Record(gtx.Ops)
+		d := el(gtx, i)
+		call := rec.Stop()
+		area := clip.Rect{Max: d.Size}.Push(gtx.Ops)
+		pass := pointer.PassOp{}.Push(gtx.Ops)
+		event.Op(gtx.Ops, ss)
+		pass.Pop()
+		call.Add(gtx.Ops)
+		area.Pop()
+		return d
+	})
 }

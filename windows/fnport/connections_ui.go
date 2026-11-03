@@ -46,20 +46,9 @@ type connectionView struct {
 
 // Use backend IDs so new sing-box protocols appear without duplicating the
 // transport catalog. Native WARP and AmneziaWG are separate parent transports.
-var connectionUIProtocols = func() []struct{ id, label string } {
-	options := []struct{ id, label string }{{"warp", "WARP"}, {"amneziawg", "AmneziaWG"}}
-	for _, protocol := range connectionProtocols() {
-		if protocol.ID == "warp" || protocol.ID == "amneziawg" {
-			continue
-		}
-		label := protocol.Label
-		if protocol.ID == "custom" {
-			label = "sing-box JSON"
-		}
-		options = append(options, struct{ id, label string }{protocol.ID, label})
-	}
-	return options
-}()
+var connectionUIProtocols = []struct{ id, label string }{
+	{"off", "Выключено"}, {"warp", "WARP"}, {"vless", "VLESS"}, {"amneziawg", "AmneziaWG"}, {"hysteria2", "Hysteria 2"}, {"trojan", "Trojan"}, {"shadowsocks", "Shadowsocks"}, {"vmess", "VMess"}, {"tuic", "TUIC"}, {"anytls", "AnyTLS"}, {"wireguard", "WireGuard"}, {"socks", "SOCKS5"}, {"http", "HTTP"},
+}
 
 type connectionProcessChoice struct {
 	name    string
@@ -72,6 +61,9 @@ type connectionProcessResult struct {
 }
 
 type connectionProcessPicker struct {
+	search       widget.Editor
+	manual       widget.Clickable
+	manualOpen   bool
 	open         bool
 	button       widget.Clickable
 	refresh      widget.Clickable
@@ -135,6 +127,9 @@ func (cv *connectionView) load(s settings) {
 	cv.protocol = s.Connection.Protocol
 	if cv.protocol == "" {
 		cv.protocol = "warp"
+	}
+	if !cv.enabled.Value {
+		cv.protocol = "off"
 	}
 	cv.config.SetText(string(s.Connection.Config))
 	cv.config.Mask = '•'
@@ -254,13 +249,7 @@ func (v *view) connectionCheck(gtx C, state *widget.Bool, label string) D {
 }
 
 func (v *view) connectionToggle(gtx C, state *widget.Bool, label string) D {
-	return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-		layout.Flexed(1, v.label(14, colText, label).Layout),
-		layout.Rigid(func(gtx C) D {
-			sw := material.Switch(v.th, state, label)
-			sw.Color.Enabled, sw.Color.Track, sw.Color.Disabled = colGreen, colGray, colLine
-			return sw.Layout(gtx)
-		}))
+	return v.switchRow(gtx, state, label, "")
 }
 
 func (v *view) connectionProcessEditor(gtx C, editor *widget.Editor, p *connectionProcessPicker) D {
@@ -291,40 +280,43 @@ func (v *view) connectionProcessEditor(gtx C, editor *widget.Editor, p *connecti
 	for _, row := range p.rows {
 		row.checked.Value = selected[strings.ToLower(row.name)]
 	}
-	kids := []layout.FlexChild{
-		layout.Rigid(func(gtx C) D { return v.field(gtx, editor, "Приложение.exe", 3) }),
-		vspace(6),
-		layout.Rigid(func(gtx C) D {
-			label := "Выбрать запущенные ▾"
-			if p.open {
-				label = "Скрыть процессы ▴"
-			}
-			return v.button(gtx, &p.button, label, false, true)
-		}),
+
+	if p.manual.Clicked(gtx) {
+		p.manualOpen = !p.manualOpen
 	}
-	if p.open {
-		kids = append(kids, vspace(6), layout.Rigid(func(gtx C) D {
-			label := "Обновить"
-			if p.done != nil {
-				label = "Загрузка…"
-			}
-			return v.button(gtx, &p.refresh, label, false, p.done == nil)
+	p.search.SingleLine = true
+	if !p.open {
+		p.open = true
+		p.fetch()
+	}
+	selectedNames := connectionProcessLines(editor.Text())
+	query := strings.ToLower(strings.TrimSpace(p.search.Text()))
+	var rows []*connectionProcessChoice
+	for _, row := range p.rows {
+		if query == "" || strings.Contains(strings.ToLower(row.name), query) {
+			rows = append(rows, row)
+		}
+	}
+	kids := []layout.FlexChild{layout.Rigid(func(gtx C) D {
+		return layout.Flex{Alignment: layout.Middle}.Layout(gtx, layout.Flexed(1, v.label(12, colMuted, fmt.Sprintf("Выбрано: %d", len(selectedNames))).Layout), layout.Rigid(func(gtx C) D { return v.compactButton(gtx, &p.refresh, "Обновить", false, p.done == nil) }))
+	}), vspace(8), layout.Rigid(func(gtx C) D { return v.field(gtx, &p.search, "Поиск приложения", 1) }), vspace(8)}
+	if len(selectedNames) > 0 {
+		kids = append(kids, layout.Rigid(v.label(12, colGreen, strings.Join(selectedNames, ", ")).Layout), vspace(8))
+	}
+	kids = append(kids, layout.Rigid(func(gtx C) D {
+		gtx.Constraints.Min.Y = 0
+		gtx.Constraints.Max.Y = min(gtx.Constraints.Max.Y, gtx.Dp(220))
+		return v.list(gtx, &p.list, len(rows), func(gtx C, i int) D {
+			return layout.Inset{Top: 5, Bottom: 5, Left: 4, Right: 4}.Layout(gtx, func(gtx C) D { return v.connectionCheck(gtx, &rows[i].checked, rows[i].name) })
+		})
+	}), vspace(8), layout.Rigid(func(gtx C) D { return v.compactButton(gtx, &p.manual, "Добавить вручную", false, true) }))
+	if p.manualOpen {
+		kids = append(kids, vspace(8), layout.Rigid(func(gtx C) D {
+			return v.field(gtx, editor, "Приложение.exe · по одному в строке", 2)
 		}))
-		if p.errorMessage != "" {
-			kids = append(kids, vspace(6), layout.Rigid(v.label(12, colRed, p.errorMessage).Layout))
-		} else if len(p.rows) == 0 && p.done == nil {
-			kids = append(kids, vspace(6), layout.Rigid(v.label(12, colMuted, "Нет доступных процессов").Layout))
-		}
-		if len(p.rows) > 0 {
-			kids = append(kids, layout.Rigid(func(gtx C) D {
-				gtx.Constraints.Min.Y = 0
-				gtx.Constraints.Max.Y = min(gtx.Constraints.Max.Y, gtx.Dp(192))
-				return material.List(v.th, &p.list).Layout(gtx, len(p.rows), func(gtx C, i int) D {
-					row := p.rows[i]
-					return v.connectionCheck(gtx, &row.checked, row.name)
-				})
-			}))
-		}
+	}
+	if p.errorMessage != "" {
+		kids = append(kids, layout.Rigid(v.label(12, colRed, p.errorMessage).Layout))
 	}
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
 }
@@ -337,6 +329,7 @@ func (v *view) connectionProtocolDropdown(gtx C) D {
 	for i := range cv.protocolChoices {
 		if cv.protocolChoices[i].Clicked(gtx) {
 			cv.protocol, cv.protocolOpen = connectionUIProtocols[i].id, false
+			cv.enabled.Value = cv.protocol != "off"
 		}
 	}
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
@@ -368,11 +361,39 @@ func (v *view) connectionProtocolDropdown(gtx C) D {
 				return D{}
 			}
 			gtx.Constraints.Min.Y = 0
-			gtx.Constraints.Max.Y = min(gtx.Constraints.Max.Y, gtx.Dp(192))
-			return material.List(v.th, &cv.protocolList).Layout(gtx, len(connectionUIProtocols), func(gtx C, i int) D {
-				p := connectionUIProtocols[i]
-				return v.button(gtx, &cv.protocolChoices[i], p.label, p.id == cv.protocol, true)
-			})
+			gtx.Constraints.Max.Y = gtx.Dp(240)
+			rec := op.Record(gtx.Ops)
+			menuBG := mix(colLine, colBg, 0.18)
+			offset := op.Offset(image.Pt(0, gtx.Dp(5))).Push(gtx.Ops)
+			inner := op.Record(gtx.Ops)
+			d := func(gtx C) D {
+				return v.list(gtx, &cv.protocolList, len(connectionUIProtocols), func(gtx C, i int) D {
+					p := connectionUIProtocols[i]
+					return cv.protocolChoices[i].Layout(gtx, func(gtx C) D {
+						bg := menuBG
+						fg := colText
+						if p.id == cv.protocol {
+							bg = mix(menuBG, colGreen, 0.10)
+							fg = colGreen
+						} else if cv.protocolChoices[i].Hovered() {
+							bg = mix(menuBG, colText, 0.05)
+						}
+						return layout.Background{}.Layout(gtx, func(gtx C) D { return fill(gtx, bg, 0) }, func(gtx C) D {
+							return layout.Inset{Top: 10, Bottom: 10, Left: 16, Right: 16}.Layout(gtx, v.label(14, fg, p.label).Layout)
+						})
+					})
+				})
+			}(gtx)
+			contents := inner.Stop()
+			rounded := clip.UniformRRect(image.Rectangle{Max: d.Size}, gtx.Dp(8)).Push(gtx.Ops)
+			paint.Fill(gtx.Ops, menuBG)
+			contents.Add(gtx.Ops)
+			rounded.Pop()
+			offset.Pop()
+
+			call := rec.Stop()
+			op.Defer(gtx.Ops, call)
+			return D{}
 		}))
 }
 
@@ -464,7 +485,7 @@ func (v *view) connectionsCard(gtx C) D {
 				if cv.applyDone != nil {
 					gtx = gtx.Disabled()
 				}
-				kids := []layout.FlexChild{layout.Rigid(func(gtx C) D { return v.connectionToggle(gtx, &cv.enabled, "Подключение") }), vspace(12), layout.Rigid(v.connectionProtocolDropdown), vspace(12)}
+				kids := []layout.FlexChild{layout.Rigid(func(gtx C) D { return bold(v.label(15, colText, "Подключение")).Layout(gtx) }), vspace(12), layout.Rigid(v.connectionProtocolDropdown), vspace(12)}
 				if cv.protocol == "warp" {
 					info, label := "Ключ не получен", "Получить ключ"
 					if v.ctl.settings().Warp.ready() {
@@ -497,9 +518,9 @@ func (v *view) connectionsCard(gtx C) D {
 					gtx = gtx.Disabled()
 				}
 				kids := v.sectionTitle("Через подключение", "")
-				kids = append(kids, layout.Rigid(func(gtx C) D { return v.connectionCheck(gtx, &cv.epic, "Сервисы Epic") }), layout.Rigid(func(gtx C) D {
-					return layout.Inset{Left: 28, Bottom: 8}.Layout(gtx, v.label(12, colMuted, "Вход, магазин и загрузки").Layout)
-				}), layout.Rigid(func(gtx C) D { return v.connectionCheck(gtx, &cv.discord, "Discord") }), vspace(10), layout.Rigid(v.label(12, colMuted, "Матчи Fortnite идут напрямую через fnport.").Layout))
+				kids = append(kids, layout.Rigid(func(gtx C) D {
+					return v.switchRow(gtx, &cv.epic, "Сервисы Epic", "Вход, магазин и загрузки")
+				}), layout.Rigid(func(gtx C) D { return v.switchRow(gtx, &cv.discord, "Discord", "") }), vspace(10), layout.Rigid(v.label(12, colMuted, "Матчи Fortnite идут напрямую через fnport.").Layout))
 				return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
 			})
 		}), vspace(12), layout.Rigid(func(gtx C) D {
@@ -522,7 +543,7 @@ func (v *view) connectionsCard(gtx C) D {
 			return layout.Inset{Top: 12}.Layout(gtx, func(gtx C) D {
 				return v.card(gtx, func(gtx C) D {
 					return layout.Flex{Axis: layout.Vertical}.Layout(gtx, layout.Rigid(func(gtx C) D {
-						return v.connectionCheck(gtx, &cv.trace, "Записывать сетевой след")
+						return v.switchRow(gtx, &cv.trace, "Записывать сетевой след", "")
 					}), vspace(8), layout.Rigid(func(gtx C) D { return v.connectionProcessEditor(gtx, &cv.traceProcesses, &cv.tracePicker) }), vspace(8), layout.Rigid(func(gtx C) D {
 						return v.compactButton(gtx, &cv.openTrace, "Открыть логи", false, v.open != nil)
 					}))

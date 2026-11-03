@@ -60,11 +60,19 @@ func sockControl(physical, udp bool) func(network, address string, c syscall.Raw
 // ListenUDP opens a UDP socket on port (0 = any); physical sends it out of PhysIndex
 func ListenUDP(port int, physical bool) (*net.UDPConn, error) {
 	lc := net.ListenConfig{Control: sockControl(physical, true)}
-	pc, err := lc.ListenPacket(context.Background(), "udp4", fmt.Sprintf("0.0.0.0:%d", port))
+	host := "0.0.0.0"
+	if physical && PhysAddr.IsValid() {
+		host = PhysAddr.String()
+	}
+	pc, err := lc.ListenPacket(context.Background(), "udp4", net.JoinHostPort(host, fmt.Sprint(port)))
 	if err != nil {
 		return nil, err
 	}
-	return pc.(*net.UDPConn), nil
+	c := pc.(*net.UDPConn)
+	if physical {
+		rememberUDP(c)
+	}
+	return c, nil
 }
 
 // PhysAddr: the physical interface's own address, set with PhysIndex

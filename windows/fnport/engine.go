@@ -176,12 +176,18 @@ func (e *engine) run() {
 			if err != nil || (p.Src.Addr() != e.clientIP && p.Src.Addr() != wnet.PhysAddr) || !e.routed(p.Dst.Addr()) {
 				continue // broadcasts and multicast of network discovery
 			}
+			if p.Src.Addr() == wnet.PhysAddr && wnet.IsOwnUDP(p.Src) {
+				continue
+			}
 			e.udp(p)
 		}
 	}
 }
 
 func (e *engine) routed(a netip.Addr) bool {
+	if !a.IsValid() || a.IsMulticast() || a.IsUnspecified() || a == netip.MustParseAddr("255.255.255.255") {
+		return false
+	}
 	if e.cfg.captureAll {
 		return true
 	}

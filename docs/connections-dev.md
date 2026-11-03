@@ -24,9 +24,9 @@ but IPv6 traffic is not redirected or inspected. Restarting the game is useful
 for observing connections created before tracing began. Existing DNS cache is
 read; the program does not clear it or issue bulk hostname probes.
 
-## Select a connection (dev2)
+## Select a connection (dev3)
 
-Open Подключения, enable Использовать подключение, select one protocol.
+Open Подключения, select WARP or one VPN protocol (Выключено disables the connection).
 For WARP use Получить ключ WARP. For VLESS paste a vless:// link (TLS/Reality,
 TCP, WebSocket, HTTPUpgrade and gRPC supported) or an outbound JSON object.
 Other protocols currently accept JSON. Imported links are never logged.

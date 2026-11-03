@@ -118,10 +118,10 @@ func TestConnectionProtocolDropdownCollapsesAndSelects(t *testing.T) {
 	}
 	click(15)
 	opened := frame()
-	if !v.connections.protocolOpen || opened.Size.Y <= closed.Size.Y || opened.Size.Y > closed.Size.Y+192 {
+	if !v.connections.protocolOpen || opened.Size.Y != closed.Size.Y {
 		t.Fatalf("dropdown must expand into a bounded list: closed=%v open=%v", closed.Size, opened.Size)
 	}
-	click(float32(closed.Size.Y + 15))
+	click(float32(closed.Size.Y + 55))
 	selected := frame()
 	if v.connections.protocolOpen || v.connections.protocol != "warp" || selected.Size.Y != closed.Size.Y {
 		t.Fatalf("selection did not collapse dropdown: protocol=%q size=%v", v.connections.protocol, selected.Size)
@@ -154,14 +154,15 @@ func TestConnectionCatalogMatchesBackendAndNativeProtocols(t *testing.T) {
 		}
 		ids[p.id] = true
 	}
-	if !ids["warp"] || !ids["amneziawg"] || !ids["custom"] || connectionProtocolLabel("warp") != "WARP" {
+	if !ids["warp"] || !ids["amneziawg"] || connectionProtocolLabel("warp") != "WARP" {
 		t.Fatal("missing native protocol or raw JSON option")
 	}
-	for _, p := range connectionProtocols() {
-		if !ids[p.ID] {
-			t.Fatalf("backend protocol %q missing in UI", p.ID)
+	for _, id := range []string{"selector", "urltest", "custom", "bridge", "direct", "block", "dns"} {
+		if ids[id] {
+			t.Fatalf("internal protocol exposed: %s", id)
 		}
 	}
+
 	s := defaultSettings()
 	s.Connection.Protocol = "amneziawg"
 	s.Connection.Enabled = true

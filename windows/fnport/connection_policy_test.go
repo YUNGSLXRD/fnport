@@ -195,3 +195,16 @@ func TestTraceFailureStillForwardsInstalledRoutes(t *testing.T) {
 		t.Fatal("trace failure blackholed non-AWS UDP")
 	}
 }
+
+func TestCaptureRejectsMulticast(t *testing.T) {
+	e := newEngine(&config{captureAll: true}, newChanDev(), clientIP, nil)
+	defer e.close()
+	for _, s := range []string{"239.255.255.250", "224.0.0.251", "224.0.0.252", "255.255.255.255", "0.0.0.0"} {
+		if e.routed(netip.MustParseAddr(s)) {
+			t.Errorf("non-unicast routed: %s", s)
+		}
+	}
+	if !e.routed(netip.MustParseAddr("1.1.1.1")) {
+		t.Fatal("public UDP blocked")
+	}
+}

@@ -96,6 +96,9 @@ func TestNestedListOwnsWheelAndClicks(t *testing.T) {
 	if outer.Position.First != 0 || outer.Position.Offset != 0 {
 		t.Fatal("outer list stole the wheel")
 	}
+	for i := 0; i < 40; i++ {
+		frame()
+	}
 	r.Queue(pointer.Event{Kind: pointer.Press, Source: pointer.Mouse, Buttons: pointer.ButtonPrimary, Position: at}, pointer.Event{Kind: pointer.Release, Source: pointer.Mouse, Position: at})
 	frame()
 	if picked < 3 {

@@ -300,6 +300,9 @@ func (c *controller) start() {
 			return
 		}
 	}
+	if helper != nil {
+		logf("Подключение %s: ядро готово; сервисы Epic: %t, Discord: %t", set.Connection.Protocol, set.Connection.Epic, set.Connection.Discord)
+	}
 	if set.Connection.Enabled && set.Connection.Protocol == "amneziawg" {
 		native, err = nativeAWGConfig(set.Connection.Config)
 		if err != nil {
