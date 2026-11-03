@@ -532,7 +532,9 @@ func (v *view) connectionsBody(gtx C) D {
 				kids := v.sectionTitle("Через подключение", "")
 				kids = append(kids, layout.Rigid(func(gtx C) D {
 					return v.switchRow(gtx, &cv.epic, "Сервисы Epic", "Вход, магазин и загрузки")
-				}), layout.Rigid(func(gtx C) D { return v.switchRow(gtx, &cv.discord, "Discord", "") }), layout.Rigid(v.label(12, colMuted, "Матчи Fortnite идут напрямую через fnport.").Layout))
+				}), layout.Rigid(func(gtx C) D {
+					return v.switchRowWithInset(gtx, &cv.discord, "Discord", "", layout.Inset{Top: 9})
+				}), layout.Rigid(v.label(12, colMuted, "Матчи Fortnite идут напрямую через fnport.").Layout))
 				return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
 			})
 		}), vspace(12), layout.Rigid(func(gtx C) D {

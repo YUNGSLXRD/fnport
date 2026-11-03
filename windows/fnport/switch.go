@@ -48,6 +48,10 @@ func (a *switchMotion) at(now time.Time, on bool) (float64, bool) {
 
 // The label and switch form one hit target; state and animation stay on the UI thread.
 func (v *view) switchRow(gtx C, state *widget.Bool, label, detail string) D {
+	return v.switchRowWithInset(gtx, state, label, detail, layout.Inset{Top: 9, Bottom: 9})
+}
+
+func (v *view) switchRowWithInset(gtx C, state *widget.Bool, label, detail string, inset layout.Inset) D {
 	state.Update(gtx)
 	if v.switches == nil {
 		v.switches = map[*widget.Bool]*switchMotion{}
@@ -63,7 +67,7 @@ func (v *view) switchRow(gtx C, state *widget.Bool, label, detail string) D {
 		gtx.Execute(op.InvalidateCmd{})
 	}
 	return state.Layout(gtx, func(gtx C) D {
-		return layout.Inset{Top: 9, Bottom: 9}.Layout(gtx, func(gtx C) D {
+		return inset.Layout(gtx, func(gtx C) D {
 			return layout.Flex{Alignment: layout.Middle}.Layout(gtx, layout.Flexed(1, func(gtx C) D {
 				kids := []layout.FlexChild{layout.Rigid(v.label(14, colText, label).Layout)}
 				if detail != "" {
