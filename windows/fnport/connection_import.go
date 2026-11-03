@@ -11,6 +11,10 @@ import (
 // Never include input or URL parser diagnostics in an error: links contain keys.
 func importConnection(text string, required bool) (json.RawMessage, string, error) {
 	text = strings.TrimSpace(text)
+	if looksLikeAWGConf(text) {
+		raw, err := importAWGConf(text)
+		return raw, "amneziawg", err
+	}
 	if !strings.Contains(text, "://") {
 		b, e := connectionConfigJSON(text, required)
 		return b, "", e

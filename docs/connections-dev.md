@@ -28,12 +28,13 @@ but IPv6 traffic is not redirected or inspected. Restarting the game is useful
 for observing connections created before tracing began. Existing DNS cache is
 read; the program does not clear it or issue bulk hostname probes.
 
-## Select a connection (dev7)
+## Select a connection (dev8)
 
 Open Подключения, select WARP or one VPN protocol (Выключено disables the connection).
 For WARP use Получить ключ WARP. For VLESS paste a vless:// link (TLS/Reality,
 TCP, WebSocket, HTTPUpgrade and gRPC supported) or an outbound JSON object.
-Other protocols currently accept JSON. Imported links are never logged.
+AmneziaWG 1.5 accepts the contents of an exported .conf file or JSON. Other
+protocols currently accept JSON. Imported links are never logged.
 Select Сервисы Epic for login/store/downloads, Discord for Discord, or both.
 Press the fixed Применить button below the page. With fnport enabled, restart
 Fortnite so existing service connections use the newly selected route.
@@ -44,8 +45,12 @@ Extra process selection and JSON exit tags are under additional settings.
 Network tracing has a separate expandable section and does not select tunnel routes.
 IPv6 remains direct. Unknown/ambiguous owners cannot safely select process rules.
 WARP can take time to connect; wait for its state on the main page before testing.
-Native AWG 1.5 JSON remains supported; its endpoint must be IPv4:port and its address
-an IPv4 without mask. Native AWG and WARP cannot coexist because of library-global
+Native AWG 1.5 JSON remains supported. Exported configs normalize an IPv4 address
+from Address (with or without prefix); endpoint accepts IPv4:port or hostname:port.
+Hostname resolution runs when starting, outside the UI thread. MTU 576–1420 and
+PersistentKeepalive are preserved. DNS and AllowedIPs do not install system-wide
+DNS/routes: fnport keeps routing only selected services/processes. One peer is
+supported. Nonzero S3/S4 and H1–H4 ranges require AWG 2.0 and are rejected explicitly. Native AWG and WARP cannot coexist because of library-global
 protocol headers. The application enforces this isolation.
 
 ## Core provenance and local build
@@ -100,3 +105,18 @@ claim to fix its root cause or the Discord Internet RTT.
 
 Removed the extra bottom inset below the Discord switch row. The following
 Fortnite note now uses the same text spacing as the Epic description.
+
+## WARP exit selection (dev8)
+
+Only LV, PL, EE and FI are preferred. The lowest measured TCP connect RTT among
+qualified preferred candidates wins; DE is a fallback only. Other and unknown
+locations are rejected. If no usable allowed exit is found, connection fails
+instead of silently selecting another country. This filters observed Cloudflare
+colo values; it cannot force Cloudflare anycast to offer a particular country.
+
+Up to sixteen addresses are tried, covering the initial ranges and comparing
+three preferred successes when available. Each accepted candidate must deliver
+one MiB within the existing eight-second HTTP deadline; small bursts followed
+by a stall no longer qualify. Transfer rate and selected RTT are logged. This
+startup check is not a sustained speed guarantee. Cancellation stops selection
+and closes the currently probed tunnel. The game's direct route is unchanged.

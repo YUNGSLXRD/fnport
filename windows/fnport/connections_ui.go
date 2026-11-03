@@ -131,6 +131,7 @@ func (cv *connectionView) load(s settings) {
 	if !cv.enabled.Value {
 		cv.protocol = "off"
 	}
+	cv.config.SingleLine = cv.protocol != "amneziawg"
 	cv.config.SetText(string(s.Connection.Config))
 	cv.config.Mask = '•'
 	cv.showConfig.Value = false
@@ -510,16 +511,27 @@ func (v *view) connectionsBody(gtx C) D {
 						return layout.Flex{Alignment: layout.Middle}.Layout(gtx, layout.Flexed(1, v.label(13, colMuted, info).Layout), hspace(12), layout.Rigid(func(gtx C) D { return v.compactButton(gtx, &v.warpReg, label, false, cv.applyDone == nil) }))
 					}))
 				} else {
-					cv.config.SingleLine = true
+					cv.config.SingleLine = cv.protocol != "amneziawg"
 					cv.config.Mask = '•'
 					if cv.showConfig.Value {
 						cv.config.Mask = 0
 					}
 					hint := "vless://… или JSON"
 					if cv.protocol == "amneziawg" {
-						hint = "Конфигурация JSON"
+						hint = "Содержимое файла .conf или JSON"
 					}
-					kids = append(kids, layout.Rigid(v.label(12, colMuted, "Ссылка подключения").Layout), vspace(6), layout.Rigid(func(gtx C) D { return v.field(gtx, &cv.config, hint, 1) }), vspace(4), layout.Rigid(func(gtx C) D { return v.connectionCheck(gtx, &cv.showConfig, "Показать") }))
+					fieldLabel := "Ссылка подключения"
+					lines := 1
+					if cv.protocol == "amneziawg" {
+						fieldLabel = "Конфигурация"
+						lines = 4
+					}
+					kids = append(kids, layout.Rigid(v.label(12, colMuted, fieldLabel).Layout), vspace(6), layout.Rigid(func(gtx C) D {
+						if cv.protocol == "amneziawg" {
+							gtx.Constraints.Max.Y = gtx.Dp(100)
+						}
+						return v.field(gtx, &cv.config, hint, lines)
+					}), vspace(4), layout.Rigid(func(gtx C) D { return v.connectionCheck(gtx, &cv.showConfig, "Показать") }))
 				}
 				return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
 			})

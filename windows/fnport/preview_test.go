@@ -93,7 +93,7 @@ func TestPreview(t *testing.T) {
 		st    state
 		theme string
 	}{{"main-on", tabMain, stateOn, "dark"}, {"main-off", tabMain, stateOff, "dark"}, {"summary", tabSummary, stateOn, "dark"},
-		{"log", tabLog, stateOn, "dark"}, {"warp", tabWarp, stateOff, "dark"}, {"connections-vless", tabWarp, stateOff, "dark"}, {"connections-menu", tabWarp, stateOff, "dark"}, {"connections-processes", tabWarp, stateOff, "dark"}, {"switch-middle", tabWarp, stateOff, "dark"}, {"settings", tabSettings, stateOff, "dark"}, {"settings2", tabSettings, stateOff, "dark"},
+		{"log", tabLog, stateOn, "dark"}, {"warp", tabWarp, stateOff, "dark"}, {"connections-vless", tabWarp, stateOff, "dark"}, {"connections-awg", tabWarp, stateOff, "dark"}, {"connections-menu", tabWarp, stateOff, "dark"}, {"connections-processes", tabWarp, stateOff, "dark"}, {"switch-middle", tabWarp, stateOff, "dark"}, {"settings", tabSettings, stateOff, "dark"}, {"settings2", tabSettings, stateOff, "dark"},
 		{"main-light", tabMain, stateOn, "light"}, {"main-starting", tabMain, stateStarting, "dark"}, {"summary-light", tabSummary, stateOn, "light"},
 		{"check-no-change", tabSettings, stateOff, "dark"},
 		{"check-unclear", tabSettings, stateOff, "dark"},
@@ -108,10 +108,15 @@ func TestPreview(t *testing.T) {
 			ping.list[1].RTT, ping.list[2].RTT = 78*time.Millisecond, 72*time.Millisecond
 		}
 		v.tab, ctl.st, ctl.set.Theme = tc.tab, tc.st, tc.theme
-		if tc.name == "connections-vless" || tc.name == "connections-menu" || tc.name == "connections-processes" || tc.name == "switch-middle" {
+		if tc.name == "connections-awg" || tc.name == "connections-vless" || tc.name == "connections-menu" || tc.name == "connections-processes" || tc.name == "switch-middle" {
 			v.connections.load(ctl.settings())
 			v.connections.protocol = "vless"
 			v.connections.enabled.Value = true
+			if tc.name == "connections-awg" {
+				v.connections.protocol = "amneziawg"
+				v.connections.config.SingleLine = false
+				v.connections.config.SetText(sampleAWGConf)
+			}
 			if tc.name == "switch-middle" {
 				v.switches = map[*widget.Bool]*switchMotion{&v.connections.epic: {from: 0, to: 1, start: time.Now().Add(-60 * time.Millisecond), ready: true}}
 			}

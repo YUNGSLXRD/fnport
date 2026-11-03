@@ -189,6 +189,7 @@ var coloCity = map[string]string{
 	"ZRH": "Цюрих", "GVA": "Женева", "KBP": "Киев", "OTP": "Бухарест", "SOF": "София", "BUD": "Будапешт",
 	"IST": "Стамбул", "ALA": "Алматы", "NQZ": "Астана", "TBS": "Тбилиси", "EVN": "Ереван", "DUB": "Дублин",
 	"BRU": "Брюссель", "LUX": "Люксембург", "KIV": "Кишинёв", "MSQ": "Минск",
+	"HKG": "Гонконг", "TKU": "Турку", "TMP": "Тампере", "KRK": "Краков", "GDN": "Гданьск", "WRO": "Вроцлав", "POZ": "Познань", "TAY": "Тарту",
 }
 
 // coloCountry: where Cloudflare's point is. The trace's own country ("loc") is the WARP
@@ -200,7 +201,7 @@ var coloCountry = map[string]string{
 	"BER": "DE", "TXL": "DE", "STR": "DE", "CPH": "DK", "OSL": "NO", "MAD": "ES", "BCN": "ES", "MXP": "IT",
 	"FCO": "IT", "ZRH": "CH", "GVA": "CH", "KBP": "UA", "OTP": "RO", "SOF": "BG", "BUD": "HU", "IST": "TR",
 	"ALA": "KZ", "NQZ": "KZ", "TBS": "GE", "EVN": "AM", "DUB": "IE", "BRU": "BE", "LUX": "LU", "KIV": "MD",
-	"MSQ": "BY",
+	"MSQ": "BY", "HKG": "HK", "TKU": "FI", "TMP": "FI", "KRK": "PL", "GDN": "PL", "WRO": "PL", "POZ": "PL", "TAY": "EE",
 }
 
 var countryRU = map[string]string{
@@ -209,5 +210,5 @@ var countryRU = map[string]string{
 	"DK": "Дания", "NO": "Норвегия", "ES": "Испания", "IT": "Италия", "CH": "Швейцария", "UA": "Украина",
 	"RO": "Румыния", "BG": "Болгария", "HU": "Венгрия", "TR": "Турция", "KZ": "Казахстан", "GE": "Грузия",
 	"AM": "Армения", "IE": "Ирландия", "BE": "Бельгия", "LU": "Люксембург", "US": "США",
-	"MD": "Молдова", "BY": "Беларусь",
+	"MD": "Молдова", "BY": "Беларусь", "HK": "Гонконг",
 }

@@ -5,13 +5,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/netip"
+	"strconv"
 	"strings"
 )
 
 // Native AWG 1.5, separate from Cloudflare endpoint discovery. This config must
 // never be passed to sing-box's plain WireGuard endpoint.
 type nativeAWGSettings struct {
+	MTU          int    `json:"mtu,omitempty"`
+	Keepalive    *int   `json:"persistent_keepalive,omitempty"`
 	PrivateKey   string `json:"private_key"`
 	Address      string `json:"address"`
 	PeerKey      string `json:"peer_key"`
@@ -37,7 +42,7 @@ func parseNativeAWG(raw json.RawMessage) (nativeAWGSettings, error) {
 	s := nativeAWGSettings{H1: 1, H2: 2, H3: 3, H4: 4}
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.DisallowUnknownFields()
-	if d.Decode(&s) != nil {
+	if d.Decode(&s) != nil || d.Decode(new(any)) != io.EOF {
 		return s, errors.New("нужен JSON конфигурации AmneziaWG 1.5; неизвестные параметры не поддерживаются")
 	}
 	if _, err := b64hex(s.PrivateKey); err != nil {
@@ -54,8 +59,14 @@ func parseNativeAWG(raw json.RawMessage) (nativeAWGSettings, error) {
 	if a, err := netip.ParseAddr(s.Address); err != nil || !a.Is4() {
 		return s, errors.New("address AmneziaWG должен быть IPv4 без маски")
 	}
-	if a, err := netip.ParseAddrPort(s.Endpoint); err != nil || !a.Addr().Is4() || a.Port() == 0 {
-		return s, errors.New("endpoint AmneziaWG должен быть IPv4:порт")
+	if !validateAWGEndpoint(s.Endpoint) {
+		return s, errors.New("endpoint AmneziaWG должен быть IPv4:порт или домен:порт")
+	}
+	if s.MTU != 0 && (s.MTU < 576 || s.MTU > 1420) {
+		return s, errors.New("MTU AmneziaWG должен быть от 576 до 1420")
+	}
+	if s.Keepalive != nil && (*s.Keepalive < 0 || *s.Keepalive > 65535) {
+		return s, errors.New("некорректный PersistentKeepalive AmneziaWG")
 	}
 	if s.Jc < 0 || s.Jc > 128 || s.Jmin < 0 || s.Jmax < s.Jmin || s.Jmax > 1280 || s.S1 < 0 || s.S1 > 1024 || s.S2 < 0 || s.S2 > 1024 {
 		return s, errors.New("некорректные параметры пакетов AmneziaWG")
@@ -75,7 +86,7 @@ func nativeAWGConfig(raw json.RawMessage) (*warpTunnel, error) {
 	if err != nil {
 		return nil, err
 	}
-	w, err := newWarpDev(warpSettings{exclusive: true, PrivateKey: s.PrivateKey, Address: s.Address, PeerKey: s.PeerKey, Jc: s.Jc, Jmin: s.Jmin, Jmax: s.Jmax})
+	w, err := newWarpDev(warpSettings{exclusive: true, PrivateKey: s.PrivateKey, Address: s.Address, PeerKey: s.PeerKey, Jc: s.Jc, Jmin: s.Jmin, Jmax: s.Jmax, MTU: s.MTU})
 	if err != nil {
 		return nil, errors.New("не удалось создать устройство AmneziaWG")
 	}
@@ -89,7 +100,21 @@ func nativeAWGConfig(raw json.RawMessage) (*warpTunnel, error) {
 		w.close()
 		return nil, errors.New("не приняты параметры AmneziaWG 1.5")
 	}
-	peerCfg := "replace_peers=true\npublic_key=" + w.peer + "\nendpoint=" + s.Endpoint + "\nallowed_ip=0.0.0.0/0\npersistent_keepalive_interval=15\n"
+	endpoint := s.Endpoint
+	host, port, _ := net.SplitHostPort(endpoint)
+	if _, err := netip.ParseAddr(host); err != nil {
+		ips := lookupAll(host)
+		if len(ips) == 0 {
+			w.close()
+			return nil, errors.New("не найден IPv4 сервера AmneziaWG")
+		}
+		endpoint = net.JoinHostPort(ips[0].String(), port)
+	}
+	keepalive := 15
+	if s.Keepalive != nil {
+		keepalive = *s.Keepalive
+	}
+	peerCfg := "replace_peers=true\npublic_key=" + w.peer + "\nendpoint=" + endpoint + "\nallowed_ip=0.0.0.0/0\npersistent_keepalive_interval=" + strconv.Itoa(keepalive) + "\n"
 	if s.PresharedKey != "" {
 		key, _ := b64hex(s.PresharedKey)
 		peerCfg += "preshared_key=" + key + "\n"
