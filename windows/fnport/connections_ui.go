@@ -285,11 +285,13 @@ func (v *view) connectionProcessEditor(gtx C, editor *widget.Editor, p *connecti
 		p.manualOpen = !p.manualOpen
 	}
 	p.search.SingleLine = true
-	if !p.open {
-		p.open = true
-		p.fetch()
-	}
+
 	selectedNames := connectionProcessLines(editor.Text())
+	if !p.open {
+		return layout.Flex{Alignment: layout.Middle}.Layout(gtx, layout.Flexed(1, v.label(12, colMuted, fmt.Sprintf("Выбрано приложений: %d", len(selectedNames))).Layout), layout.Rigid(func(gtx C) D {
+			return v.compactButton(gtx, &p.button, "Выбрать приложения", false, true)
+		}))
+	}
 	query := strings.ToLower(strings.TrimSpace(p.search.Text()))
 	var rows []*connectionProcessChoice
 	for _, row := range p.rows {
@@ -298,7 +300,7 @@ func (v *view) connectionProcessEditor(gtx C, editor *widget.Editor, p *connecti
 		}
 	}
 	kids := []layout.FlexChild{layout.Rigid(func(gtx C) D {
-		return layout.Flex{Alignment: layout.Middle}.Layout(gtx, layout.Flexed(1, v.label(12, colMuted, fmt.Sprintf("Выбрано: %d", len(selectedNames))).Layout), layout.Rigid(func(gtx C) D { return v.compactButton(gtx, &p.refresh, "Обновить", false, p.done == nil) }))
+		return layout.Flex{Alignment: layout.Middle}.Layout(gtx, layout.Flexed(1, v.label(12, colMuted, fmt.Sprintf("Выбрано: %d", len(selectedNames))).Layout), layout.Rigid(func(gtx C) D { return v.compactButton(gtx, &p.button, "Свернуть", false, true) }), hspace(8), layout.Rigid(func(gtx C) D { return v.compactButton(gtx, &p.refresh, "Обновить", false, p.done == nil) }))
 	}), vspace(8), layout.Rigid(func(gtx C) D { return v.field(gtx, &p.search, "Поиск приложения", 1) }), vspace(8)}
 	if len(selectedNames) > 0 {
 		kids = append(kids, layout.Rigid(v.label(12, colGreen, strings.Join(selectedNames, ", ")).Layout), vspace(8))
@@ -397,7 +399,7 @@ func (v *view) connectionProtocolDropdown(gtx C) D {
 		}))
 }
 
-func (v *view) connectionsCard(gtx C) D {
+func (v *view) updateConnections(gtx C) {
 	cv := &v.connections
 	if !cv.loaded {
 		cv.load(v.ctl.settings())
@@ -479,6 +481,16 @@ func (v *view) connectionsCard(gtx C) D {
 		}()
 	}
 
+}
+
+func (v *view) connectionsCard(gtx C) D { v.updateConnections(gtx); return v.connectionsBody(gtx) }
+
+func (v *view) connectionsBody(gtx C) D {
+	cv := &v.connections
+	if !cv.loaded {
+		cv.load(v.ctl.settings())
+	}
+
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(func(gtx C) D {
 			return v.card(gtx, func(gtx C) D {
@@ -520,11 +532,16 @@ func (v *view) connectionsCard(gtx C) D {
 				kids := v.sectionTitle("Через подключение", "")
 				kids = append(kids, layout.Rigid(func(gtx C) D {
 					return v.switchRow(gtx, &cv.epic, "Сервисы Epic", "Вход, магазин и загрузки")
-				}), layout.Rigid(func(gtx C) D { return v.switchRow(gtx, &cv.discord, "Discord", "") }), vspace(10), layout.Rigid(v.label(12, colMuted, "Матчи Fortnite идут напрямую через fnport.").Layout))
+				}), layout.Rigid(func(gtx C) D { return v.switchRow(gtx, &cv.discord, "Discord", "") }), layout.Rigid(v.label(12, colMuted, "Матчи Fortnite идут напрямую через fnport.").Layout))
 				return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
 			})
 		}), vspace(12), layout.Rigid(func(gtx C) D {
-			return layout.Flex{Alignment: layout.Middle}.Layout(gtx, layout.Rigid(func(gtx C) D { return v.compactButton(gtx, &cv.advanced, "Дополнительно", false, true) }), hspace(8), layout.Rigid(func(gtx C) D { return v.compactButton(gtx, &cv.traceOpen, "Диагностика", false, true) }))
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx, layout.Rigid(func(gtx C) D { return v.compactButton(gtx, &cv.advanced, "Дополнительно", false, true) }), hspace(8), layout.Rigid(func(gtx C) D {
+				if !traceAvailable() {
+					return D{}
+				}
+				return v.compactButton(gtx, &cv.traceOpen, "Диагностика", false, true)
+			}))
 		}),
 		layout.Rigid(func(gtx C) D {
 			if !cv.advancedOpen {
@@ -537,7 +554,7 @@ func (v *view) connectionsCard(gtx C) D {
 			})
 		}),
 		layout.Rigid(func(gtx C) D {
-			if !cv.traceExpanded {
+			if !traceAvailable() || !cv.traceExpanded {
 				return D{}
 			}
 			return layout.Inset{Top: 12}.Layout(gtx, func(gtx C) D {
@@ -558,8 +575,9 @@ func (v *view) compactButton(gtx C, b *widget.Clickable, label string, primary, 
 }
 
 func (v *view) warpTab(gtx C) D {
+	v.updateConnections(gtx)
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, v.title("Подключения"), layout.Flexed(1, func(gtx C) D {
-		return v.list(gtx, &v.warpPage, 1, func(gtx C, _ int) D { return layout.Inset{Right: 10, Bottom: 12}.Layout(gtx, v.connectionsCard) })
+		return v.list(gtx, &v.warpPage, 1, func(gtx C, _ int) D { return layout.Inset{Right: 10, Bottom: 12}.Layout(gtx, v.connectionsBody) })
 	}), vspace(12), layout.Rigid(func(gtx C) D {
 		return layout.Flex{Alignment: layout.Middle}.Layout(gtx, layout.Rigid(func(gtx C) D {
 			return v.compactButton(gtx, &v.connections.saveTop, "Применить", true, v.connections.applyDone == nil)

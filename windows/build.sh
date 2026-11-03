@@ -6,6 +6,8 @@ set -eu
 cd "$(dirname "$0")"
 VER=${1:-$(git describe --tags --always 2>/dev/null || echo dev)}
 export GOTOOLCHAIN=local CGO_ENABLED=0
+BUILD_TAGS=
+if [ "${FNPORT_DEV_TRACE:-off}" = on ]; then BUILD_TAGS=devtrace; fi
 
 # the fakes are the package's own files, embedded into the program
 cp ../fnport/files/quic_initial_*.bin internal/fakes/
@@ -17,7 +19,7 @@ licenses() {
  if [ ! -f "$go_license" ]; then go_license="$(go env GOROOT)/../LICENSE"; fi
  test -f "$go_license" || { echo "Go license not found" >&2; exit 1; }
  printf '%s\n\n%s\n\n' "== Go $(go env GOVERSION | sed 's/^go//') (standard library and runtime)" "$(cat "$go_license")"
-	GOOS=windows GOARCH=amd64 go list -deps -f '{{with .Module}}{{if not .Main}}{{.Path}} {{.Version}} {{.Dir}}{{end}}{{end}}' "$1" |
+	GOOS=windows GOARCH=amd64 go list -tags "$BUILD_TAGS" -deps -f '{{with .Module}}{{if not .Main}}{{.Path}} {{.Version}} {{.Dir}}{{end}}{{end}}' "$1" |
 		sort -u | while read -r path ver dir; do
 			f=$(ls "$dir" | grep -i -E '^(licen[cs]e|copying|unlicense)' | head -n 1)
 			test -n "$f" || { echo "no license file in $path" >&2; exit 1; }
@@ -35,9 +37,9 @@ licenses() {
 	printf '%s\n\n%s\n' "== Fake QUIC Initials (fakes/*.bin), from zapret" "$(cat ../fnport/files/quic_initial_vk_com.bin.LICENSE)"
 } > fnport/licenses.txt
 
-go vet ./...
-GOOS=windows GOARCH=amd64 go vet ./...
-go test -count=1 ./...
+go vet -tags "$BUILD_TAGS" ./...
+GOOS=windows GOARCH=amd64 go vet -tags "$BUILD_TAGS" ./...
+go test -tags "$BUILD_TAGS" -count=1 ./...
 
 # wintun.dll 0.14.1, signed by WireGuard LLC, taken unmodified from the sing-tun Go module:
 # the Go checksum database vouches for the module, the hash pins the file
@@ -61,7 +63,7 @@ go run ./tools/mkicon fnport/winres
 pack() {
 	out="$tmp/$1"
 	mkdir -p "$out" dist
-	GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=$VER -X main.devTrace=${FNPORT_DEV_TRACE:-off} ${4:-}" -o "$out/$1.exe" "./$2"
+	GOOS=windows GOARCH=amd64 go build -tags "$BUILD_TAGS" -trimpath -ldflags "-s -w -X main.version=$VER -X main.devTrace=${FNPORT_DEV_TRACE:-off} ${4:-}" -o "$out/$1.exe" "./$2"
 	cp "$dll" "$out/wintun.dll"
  if [ "$1" = fnport ] && [ -n "${FNPORT_SING_BOX_DIR:-}" ]; then
   cp "$FNPORT_SING_BOX_DIR/sing-box.exe" "$out/sing-box.exe"

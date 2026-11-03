@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"github.com/YUNGSLXRD/fnport/windows/internal/wnet"
 	"io"
+	"net"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -70,5 +72,104 @@ func TestImportVLESSRealCoreCheck(t *testing.T) {
 		if err != nil {
 			t.Fatal("core rejected imported VLESS configuration")
 		}
+	}
+}
+
+func TestImportedVLESSRoundTrip(t *testing.T) {
+	core := os.Getenv("FNPORT_TEST_SING_BOX")
+	if core == "" {
+		t.Skip("native core not configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	reserve, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := reserve.Addr().(*net.TCPAddr).Port
+	reserve.Close()
+	uuid := "00000000-0000-4000-8000-000000000001"
+	config, _ := json.Marshal(map[string]any{"log": map[string]any{"disabled": true}, "inbounds": []any{map[string]any{"type": "vless", "listen": "127.0.0.1", "listen_port": port, "users": []any{map[string]any{"uuid": uuid}}}}, "outbounds": []any{map[string]any{"type": "direct", "tag": "direct"}}, "route": map[string]any{"final": "direct"}})
+	server := exec.CommandContext(ctx, core, "run", "-c", "stdin")
+	server.Stdin = bytes.NewReader(config)
+	server.Stdout = io.Discard
+	server.Stderr = io.Discard
+	server.WaitDelay = time.Second
+	if err := server.Start(); err != nil {
+		t.Fatal("test VLESS server did not start")
+	}
+	defer func() { cancel(); server.Wait() }()
+	address := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	ready := false
+	for i := 0; i < 100; i++ {
+		c, e := net.DialTimeout("tcp4", address, 50*time.Millisecond)
+		if e == nil {
+			c.Close()
+			ready = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !ready {
+		t.Fatal("test VLESS listener unavailable")
+	}
+	raw, _, err := importConnection("vless://"+uuid+"@"+address+"?security=none&type=tcp", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := startConnectionCommand(ctx, connectionSettings{Enabled: true, Protocol: "vless", Config: raw, Epic: true, Discord: true}, "lo0", func(ctx context.Context, args ...string) *exec.Cmd { return exec.CommandContext(ctx, core, args...) })
+	if err != nil {
+		t.Fatal("imported VLESS client did not start", err)
+	}
+	defer client.close()
+	tcpEcho, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tcpEcho.Close()
+	go func() {
+		c, e := tcpEcho.Accept()
+		if e == nil {
+			io.Copy(c, c)
+			c.Close()
+		}
+	}()
+	dst := tcpEcho.Addr().(*net.TCPAddr).AddrPort()
+	tcpConn, err := client.dial(ctx, dst)
+	if err != nil {
+		t.Fatal("TCP via VLESS", err)
+	}
+	defer tcpConn.Close()
+	tcpConn.SetDeadline(time.Now().Add(3 * time.Second))
+	payload := []byte("Epic service test")
+	tcpConn.Write(payload)
+	back := make([]byte, len(payload))
+	if _, err := io.ReadFull(tcpConn, back); err != nil || !bytes.Equal(back, payload) {
+		t.Fatal("VLESS TCP roundtrip failed", err)
+	}
+	udpEcho, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udpEcho.Close()
+	go func() {
+		b := make([]byte, 2048)
+		n, p, e := udpEcho.ReadFromUDP(b)
+		if e == nil {
+			udpEcho.WriteToUDP(b[:n], p)
+		}
+	}()
+	udpConn, err := client.udp(ctx, udpEcho.LocalAddr().(*net.UDPAddr).AddrPort())
+	if err != nil {
+		t.Fatal("UDP via VLESS", err)
+	}
+	defer udpConn.Close()
+	udpConn.SetDeadline(time.Now().Add(3 * time.Second))
+	payload = []byte("Discord voice test")
+	udpConn.Write(payload)
+	back = make([]byte, 128)
+	n, err := udpConn.Read(back)
+	if err != nil || !bytes.Equal(back[:n], payload) {
+		t.Fatal("VLESS UDP roundtrip failed", err)
 	}
 }

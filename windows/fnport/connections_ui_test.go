@@ -276,3 +276,47 @@ func TestConnectionPickerConsumesClickBeforeRefresh(t *testing.T) {
 		})
 	}
 }
+
+func TestConnectionMenuApplyPersistsVLESS(t *testing.T) {
+	s := defaultSettings()
+	s.Fake = ""
+	ctl := newController(s)
+	saved := make(chan settings, 1)
+	ctl.persist = func(s settings) error { saved <- s; return nil }
+	v := newView(ctl, &pinger{}, &checker{}, nil, func() {})
+	router := new(input.Router)
+	frame := func() {
+		ops := new(op.Ops)
+		gtx := connectionTestContext(router, ops)
+		gtx.Constraints = layout.Exact(image.Pt(680, 800))
+		v.warpTab(gtx)
+		router.Frame(ops)
+	}
+	frame()
+	v.connections.protocolButton.Click()
+	frame()
+	for i, p := range connectionUIProtocols {
+		if p.id == "vless" {
+			v.connections.protocolChoices[i].Click()
+		}
+	}
+	frame()
+	if !v.connections.enabled.Value || v.connections.protocol != "vless" {
+		t.Fatal("menu did not enable chosen connection")
+	}
+	v.connections.config.SetText("vless://00000000-0000-4000-8000-000000000001@127.0.0.1:443?security=tls&sni=example.org")
+	v.connections.epic.Value = true
+	v.connections.discord.Value = true
+	at := f32.Pt(50, 775)
+	router.Queue(pointer.Event{Kind: pointer.Press, Source: pointer.Mouse, Buttons: pointer.ButtonPrimary, Position: at}, pointer.Event{Kind: pointer.Release, Source: pointer.Mouse, Position: at})
+	frame()
+	select {
+	case result := <-saved:
+		c := result.Connection
+		if !c.Enabled || c.Protocol != "vless" || !c.Epic || !c.Discord || len(c.Config) == 0 || result.Warp.Enabled {
+			t.Fatal("chosen VPN was not persisted for both services")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("save was not submitted: %s", v.connections.message)
+	}
+}

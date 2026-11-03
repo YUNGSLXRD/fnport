@@ -8,6 +8,10 @@ connections. Native WARP and AmneziaWG 1.5 use the existing AWG implementation.
 
 Extract the entire ZIP to a writable folder, start fnport.exe, open Подключения.
 The developer build enables network tracing by default on a fresh configuration.
+The collector is compiled only with the devtrace build tag. Regular builds have
+no tracing UI, collector implementation or default Fortnite process list.
+Trace-only operation does not install catch-all routes. Process lists stay
+collapsed until explicitly opened.
 If an older fnport.json has tracing disabled, enable Записывать сетевой след and
 save. Enable fnport on the main page, restart Fortnite and reproduce the problem,
 then turn fnport off to finish writing the log. No tunnel is needed for tracing.
@@ -24,7 +28,7 @@ but IPv6 traffic is not redirected or inspected. Restarting the game is useful
 for observing connections created before tracing began. Existing DNS cache is
 read; the program does not clear it or issue bulk hostname probes.
 
-## Select a connection (dev3)
+## Select a connection (dev4)
 
 Open Подключения, select WARP or one VPN protocol (Выключено disables the connection).
 For WARP use Получить ключ WARP. For VLESS paste a vless:// link (TLS/Reality,

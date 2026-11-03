@@ -1,3 +1,5 @@
+//go:build devtrace
+
 package main
 
 import (
@@ -17,11 +19,6 @@ import (
 
 	"github.com/YUNGSLXRD/fnport/windows/internal/wnet"
 )
-
-type networkTraceSettings struct {
-	Enabled   bool     `json:"enabled"`
-	Processes []string `json:"processes,omitempty"`
-}
 
 func defaultNetworkTraceSettings() networkTraceSettings {
 	return networkTraceSettings{Enabled: devTrace == "on", Processes: []string{
@@ -478,3 +475,5 @@ func parseNetworkTraceDNS(b []byte) (map[netip.Addr][]string, error) {
 	}
 	return out, nil
 }
+
+func traceAvailable() bool { return true }

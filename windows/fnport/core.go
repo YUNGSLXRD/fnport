@@ -256,6 +256,7 @@ func (c *controller) start() {
 		changes.Add(1)
 	}
 	set := c.settings()
+	set.Trace.Enabled = set.Trace.Enabled && traceAvailable()
 	// One selected transport owns service routing. Legacy WARP is migrated by the UI.
 	if set.Connection.Enabled {
 		set.Warp.Enabled = false
@@ -311,7 +312,7 @@ func (c *controller) start() {
 		}
 	}
 	routed := cfg.routes
-	cfg.captureAll = set.Connection.Enabled || set.Trace.Enabled
+	cfg.captureAll = set.Connection.Enabled
 	if cfg.captureAll {
 		// A single ingress also sees Discord and HTTPS outside the AWS game prefixes.
 		routed = append(append([]netip.Prefix(nil), cfg.routes...), netip.MustParsePrefix("0.0.0.0/1"), netip.MustParsePrefix("128.0.0.0/1"))
@@ -343,11 +344,17 @@ func (c *controller) start() {
 	}
 	e := newEngine(cfg, dev, clientIP, tcp)
 	e.connection = router
-	if set.Connection.Enabled || set.Trace.Enabled {
+	if cfg.captureAll {
 		logf("Подключения: перехват IPv4 включён, остальные процессы идут напрямую. IPv6 не перенаправляется.")
 	}
 	if n := int(checkTTL.Load()); n > 0 && n < cfg.fakeTTL && len(cfg.fakes) > 0 {
 		e.prober.setTTL(n, fmt.Sprintf("по проверке провайдера (в настройках %d, а с ним фейк убивает соединения)", cfg.fakeTTL))
+	}
+	if !set.Connection.Enabled && !set.Warp.Enabled {
+		logf("Дополнительное подключение выключено: сервисы Epic и Discord идут напрямую")
+	}
+	if set.Trace.Enabled && !cfg.captureAll {
+		logf("Сетевой след: запись без дополнительных маршрутов")
 	}
 	e.gone = c.addHistory
 	go e.run()

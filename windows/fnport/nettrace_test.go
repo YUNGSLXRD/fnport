@@ -1,3 +1,5 @@
+//go:build devtrace
+
 package main
 
 import (
