@@ -208,3 +208,25 @@ func TestCaptureRejectsMulticast(t *testing.T) {
 		t.Fatal("public UDP blocked")
 	}
 }
+
+func TestEpicResourceHostsAndDiscordPreset(t *testing.T) {
+	s := connectionSettings{Enabled: true, Epic: true}
+	for _, host := range []string{"fortnite-vod.akamaized.net", "fortnite-storage-live.s3.amazonaws.com"} {
+		if !s.selects(wnet.ProcessOwner{}, host) {
+			t.Errorf("Epic resource not selected: %s", host)
+		}
+	}
+	for _, host := range []string{"unrelated.akamaized.net", "other.s3.amazonaws.com"} {
+		if s.selects(wnet.ProcessOwner{}, host) {
+			t.Errorf("unrelated resource selected: %s", host)
+		}
+	}
+	owner := wnet.ProcessOwner{Name: "Discord.exe", PID: 1}
+	preset := connectionSettings{Enabled: true, Discord: true}
+	manual := connectionSettings{Enabled: true, Processes: []string{"Discord.exe"}}
+	for _, host := range []string{"", "discord.com", "unrelated.example"} {
+		if preset.selects(owner, host) != manual.selects(owner, host) {
+			t.Fatal("Discord preset differs from manual executable selection")
+		}
+	}
+}

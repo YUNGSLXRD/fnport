@@ -336,7 +336,9 @@ func (c *controller) start() {
 	tcp.connection = router
 	owned = true
 	if set.Trace.Enabled {
-		trace, err := startNetworkTrace(tcp.ctx, set.Trace)
+		ts := set.Trace
+		ts.Processes = append(append([]string(nil), ts.Processes...), "Discord.exe", "DiscordPTB.exe", "DiscordCanary.exe")
+		trace, err := startNetworkTrace(tcp.ctx, ts)
 		if err != nil {
 			logf("Сетевой журнал не запущен: не удалось открыть файлы диагностики")
 		}

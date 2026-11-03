@@ -79,6 +79,7 @@ func (w warpSettings) ready() bool { return w.PrivateKey != "" && w.Address != "
 // sees those connections at all. Epic's own list of the launcher's hosts and what the store,
 // login and downloads use besides: AWS in the US, Cloudflare, Akamai, CloudFront, Fastly
 var warpDomains = []string{
+	"fortnite-vod.akamaized.net", "fortnite-storage-live.s3.amazonaws.com",
 	"epicgames.com", "epicgames.dev", "epicgames.net", "epicgamescdn.com", "unrealengine.com", "fortnite.com",
 	"easyanticheat.net", "hcaptcha.com", "epicgames-download1.akamaized.net", "egdownload.fastly-edge.com",
 	"account-public-service-prod.ol.epicgames.com", "account-public-service-prod03.ol.epicgames.com",

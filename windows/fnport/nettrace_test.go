@@ -7,6 +7,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -197,5 +199,30 @@ func TestNetworkTraceWorkerCloseAndOverflowRecord(t *testing.T) {
 	}
 	if !stop {
 		t.Fatal("missing final stop record")
+	}
+}
+
+func TestTraceTCPCountsWithoutReadingContent(t *testing.T) {
+	a, b := net.Pipe()
+	defer a.Close()
+	defer b.Close()
+	a.SetDeadline(time.Now().Add(time.Second))
+	b.SetDeadline(time.Now().Add(time.Second))
+	c := &traceTCPConn{Conn: a, started: time.Now().Add(-time.Millisecond)}
+	go b.Write([]byte("response"))
+	buf := make([]byte, 8)
+	if _, err := io.ReadFull(c, buf); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { _, err := io.ReadFull(b, make([]byte, 7)); done <- err }()
+	if _, err := c.Write([]byte("request")); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if c.read.Load() != 8 || c.written.Load() != 7 || c.first.Load() <= 0 {
+		t.Fatal("incorrect TCP diagnostic counters")
 	}
 }

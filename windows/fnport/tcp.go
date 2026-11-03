@@ -153,6 +153,7 @@ func (t *tcpRelay) epicIP(a netip.Addr) bool {
 // start the search for an endpoint took a minute, and the game, started meanwhile, failed to
 // load its content keys and timed out logging in)
 func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort) {
+	flowStarted := time.Now()
 	id := r.ID()
 	var wq waiter.Queue
 	ep, terr := r.CreateEndpoint(&wq)
@@ -181,6 +182,11 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort) {
 				in.Close()
 				logf("Подключения: TCP к %s не установлено через %s", dst, t.connection.settings.Protocol)
 				return
+			}
+			if t.connection.trace != nil {
+				var finish func()
+				out, finish = t.connection.trace.tcpConn(out, src, dst, name, t.connection.settings.Protocol, flowStarted, 0)
+				defer finish()
 			}
 			if len(hello) > 0 {
 				if _, err := out.Write(hello); err != nil {
@@ -274,6 +280,16 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort) {
 			return
 		}
 		out = c
+	}
+	if t.connection != nil && t.connection.trace != nil {
+		src := netip.AddrPortFrom(netip.AddrFrom4(id.RemoteAddress.As4()), id.RemotePort)
+		route := "direct"
+		if viaWarp && w != nil {
+			route = "warp"
+		}
+		var finish func()
+		out, finish = t.connection.trace.tcpConn(out, src, dst, name, route, flowStarted, len(first))
+		defer finish()
 	}
 	if len(hello) > 0 && !sent {
 		if _, err := out.Write(hello); err != nil {

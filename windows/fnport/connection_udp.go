@@ -3,6 +3,7 @@ package main
 import (
 	"net"
 	"net/netip"
+	"sync/atomic"
 	"time"
 
 	"github.com/YUNGSLXRD/fnport/windows/internal/wnet"
@@ -36,9 +37,9 @@ func (e *engine) assignConnection(f *uflow) {
 	default:
 	}
 	f.mu.Lock()
-	queue := make(chan []byte, maxPending)
+	queue := make(chan queuedUDP, maxPending)
 	for _, b := range f.pending {
-		queue <- b
+		queue <- e.queued(b)
 	}
 	f.pending = nil
 	f.tunnel, f.send = c, queue
@@ -56,10 +57,18 @@ func (e *engine) assignConnection(f *uflow) {
 				c.Close()
 				return
 			case b := <-queue:
-				c.SetWriteDeadline(time.Now().Add(5 * time.Second))
-				if _, err := c.Write(b); err != nil {
+				measured := !b.arrived.IsZero()
+				started := time.Now()
+				if measured {
+					maxDuration(&f.queueMaxNS, started.Sub(b.arrived))
+				}
+				c.SetWriteDeadline(started.Add(5 * time.Second))
+				if _, err := c.Write(b.payload); err != nil {
 					c.Close()
 					return
+				}
+				if measured {
+					maxDuration(&f.writeMaxNS, time.Since(started))
 				}
 				f.out.Add(1)
 				f.totalOut.Add(1)
@@ -91,6 +100,22 @@ func (e *engine) backConnection(f *uflow, c net.Conn) {
 		f.last = time.Now()
 		f.mu.Unlock()
 		if e.dev.WritePacket(wnet.BuildUDP4(f.key.dst, client, buf[:n], uint16(e.ipID.Add(1)))) != nil {
+			return
+		}
+	}
+}
+
+func (e *engine) queued(b []byte) queuedUDP {
+	q := queuedUDP{payload: append([]byte(nil), b...)}
+	if e.connection != nil && e.connection.trace != nil {
+		q.arrived = time.Now()
+	}
+	return q
+}
+func maxDuration(v *atomic.Int64, d time.Duration) {
+	n := d.Nanoseconds()
+	for old := v.Load(); n > old; old = v.Load() {
+		if v.CompareAndSwap(old, n) {
 			return
 		}
 	}

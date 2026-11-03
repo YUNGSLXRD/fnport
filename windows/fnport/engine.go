@@ -74,6 +74,11 @@ type flowKey struct {
 	srcIP netip.Addr
 }
 
+type queuedUDP struct {
+	payload []byte
+	arrived time.Time
+}
+
 type uflow struct {
 	key    flowKey
 	game   bool
@@ -82,8 +87,12 @@ type uflow struct {
 
 	mu         sync.Mutex
 	retryAfter time.Time
+	traceAt    time.Time
+	queueMaxNS atomic.Int64
+	writeMaxNS atomic.Int64
+	queueDrops atomic.Uint64
 	reported   bool
-	send       chan []byte
+	send       chan queuedUDP
 	failed     bool         // a selected transport failed: do not retry/log every game packet
 	tunnel     net.Conn     // selected process datagrams through WARP or sing-box
 	conn       *net.UDPConn // nil while the port is being chosen
@@ -244,8 +253,11 @@ func (e *engine) udp(p wnet.UDPPacket) {
 	f.mu.Unlock()
 	if tunnel != nil {
 		select {
-		case send <- append([]byte(nil), p.Payload...):
+		case send <- e.queued(p.Payload):
 		default:
+			if e.connection != nil && e.connection.trace != nil {
+				f.queueDrops.Add(1)
+			}
 		}
 	} else {
 		f.out.Add(1)
@@ -380,7 +392,14 @@ func (e *engine) watch() {
 			f.mu.Lock()
 			c, port, idle, frozen, remaps := f.conn, f.port, time.Since(f.last) > idleAfter, f.frozen, f.remaps
 			tunnel := f.tunnel
+			traceNow := tunnel != nil && e.connection != nil && e.connection.trace != nil && time.Since(f.traceAt) >= 10*time.Second
+			if traceNow {
+				f.traceAt = time.Now()
+			}
 			f.mu.Unlock()
+			if traceNow {
+				e.connection.trace.udpStats(netip.AddrPortFrom(f.key.srcIP, f.key.cport), f.key.dst, networkUDPStats{QueueMaxMS: float64(f.queueMaxNS.Swap(0)) / 1e6, WriteMaxMS: float64(f.writeMaxNS.Swap(0)) / 1e6, QueueDropped: f.queueDrops.Swap(0), Out: f.totalOut.Load(), In: f.totalIn.Load(), Queued: len(f.send)})
+			}
 			if c == nil && tunnel == nil {
 				if idle {
 					e.mu.Lock()

@@ -28,7 +28,7 @@ but IPv6 traffic is not redirected or inspected. Restarting the game is useful
 for observing connections created before tracing began. Existing DNS cache is
 read; the program does not clear it or issue bulk hostname probes.
 
-## Select a connection (dev4)
+## Select a connection (dev5)
 
 Open Подключения, select WARP or one VPN protocol (Выключено disables the connection).
 For WARP use Получить ключ WARP. For VLESS paste a vless:// link (TLS/Reality,
@@ -72,3 +72,15 @@ A live Windows Discord/Fortnite session has not been tested. A broader earlier
 race run reported an amneziawg-go race in TestWarpTunnelCloseBusy and failures in
 TestWarpTunnelMany/TestWarpWholePath; the complete application is not claimed to
 pass the entire race-enabled stress suite. Keep this build experimental.
+
+## Focused latency and resource diagnosis (dev5)
+
+When tracing is enabled, Discord desktop processes are included automatically.
+The trace emits udp_stats for tunnelled datagrams every ten seconds, with the
+maximum time waiting inside fnport, maximum local socket-write duration, queue
+occupancy and queue drops. These are local timings, not an Internet RTT.
+TCP progress records include the selected route, bytes received/sent, elapsed
+connection time and first-response time after acceptance. They do not contain
+HTTP bodies, authorization headers or TLS plaintext. A first-response value of
+-1 means no server bytes have been observed yet. Domain DNS-cache associations
+remain candidates, not evidence of application queries or successful downloads.

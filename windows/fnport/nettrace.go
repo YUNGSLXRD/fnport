@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -48,6 +49,9 @@ type networkTrace struct {
 }
 
 type networkTraceObservation struct {
+	tcp            *networkTCPStats
+	owner          *wnet.ProcessOwner
+	udp            *networkUDPStats
 	at             time.Time
 	proto          uint8
 	src, dst       netip.AddrPort
@@ -55,23 +59,25 @@ type networkTraceObservation struct {
 }
 
 type networkTraceEvent struct {
-	Count             uint64    `json:"count,omitempty"`
-	Timestamp         time.Time `json:"timestamp"`
-	Kind              string    `json:"kind"`
-	Protocol          uint8     `json:"protocol,omitempty"`
-	Local             string    `json:"local,omitempty"`
-	Remote            string    `json:"remote,omitempty"`
-	PID               uint32    `json:"pid,omitempty"`
-	Process           string    `json:"process,omitempty"`
-	TCPState          uint32    `json:"tcp_state,omitempty"`
-	Domain            string    `json:"domain,omitempty"`
-	DomainSource      string    `json:"domain_source,omitempty"`
-	DNSNames          []string  `json:"dns_names,omitempty"`
-	DNSCorrelation    string    `json:"dns_correlation,omitempty"`
-	DNSCacheTimestamp string    `json:"dns_cache_timestamp,omitempty"`
-	OwnerStatus       string    `json:"owner_status,omitempty"`
-	Dropped           uint64    `json:"dropped,omitempty"`
-	Note              string    `json:"note,omitempty"`
+	TCP               *networkTCPStats `json:"tcp,omitempty"`
+	UDP               *networkUDPStats `json:"udp,omitempty"`
+	Count             uint64           `json:"count,omitempty"`
+	Timestamp         time.Time        `json:"timestamp"`
+	Kind              string           `json:"kind"`
+	Protocol          uint8            `json:"protocol,omitempty"`
+	Local             string           `json:"local,omitempty"`
+	Remote            string           `json:"remote,omitempty"`
+	PID               uint32           `json:"pid,omitempty"`
+	Process           string           `json:"process,omitempty"`
+	TCPState          uint32           `json:"tcp_state,omitempty"`
+	Domain            string           `json:"domain,omitempty"`
+	DomainSource      string           `json:"domain_source,omitempty"`
+	DNSNames          []string         `json:"dns_names,omitempty"`
+	DNSCorrelation    string           `json:"dns_correlation,omitempty"`
+	DNSCacheTimestamp string           `json:"dns_cache_timestamp,omitempty"`
+	OwnerStatus       string           `json:"owner_status,omitempty"`
+	Dropped           uint64           `json:"dropped,omitempty"`
+	Note              string           `json:"note,omitempty"`
 }
 
 // startNetworkTrace returns nil,nil when disabled (no files, commands or workers).
@@ -215,6 +221,10 @@ func (t *networkTrace) run(ctx context.Context, log *networkTraceLog, selected m
 	}
 	observation := func(o networkTraceObservation) bool {
 		owner, err := wnet.ConnectionOwner(o.proto, o.src, o.dst)
+		if o.owner != nil && o.owner.PID != 0 {
+			owner = *o.owner
+			err = nil
+		}
 		// Unknown ownership cannot establish membership in the chosen process set;
 		// keep only an aggregate count, never unrelated endpoints or domain names.
 		if err != nil {
@@ -225,6 +235,14 @@ func (t *networkTrace) run(ctx context.Context, log *networkTraceLog, selected m
 			return true
 		}
 		e := networkTraceEvent{Timestamp: o.at, Kind: "observed", Protocol: o.proto, Local: o.src.String(), Remote: o.dst.String(), PID: owner.PID, Process: owner.Name, Domain: o.domain, OwnerStatus: "cached_table_lookup_after_observation"}
+		if o.tcp != nil {
+			e.Kind = "tcp_stats"
+			e.TCP = o.tcp
+		}
+		if o.udp != nil {
+			e.Kind = "udp_stats"
+			e.UDP = o.udp
+		}
 		if e.Domain != "" {
 			e.DomainSource = o.source
 		}
@@ -477,3 +495,92 @@ func parseNetworkTraceDNS(b []byte) (map[netip.Addr][]string, error) {
 }
 
 func traceAvailable() bool { return true }
+
+func (t *networkTrace) udpStats(src, dst netip.AddrPort, stats networkUDPStats) {
+	if t == nil {
+		return
+	}
+	o := networkTraceObservation{at: time.Now().UTC(), proto: 17, src: src, dst: dst, udp: &stats}
+	select {
+	case <-t.done:
+		return
+	default:
+	}
+	select {
+	case t.queue <- o:
+	default:
+		t.dropped.Add(1)
+	}
+}
+
+type traceTCPConn struct {
+	net.Conn
+	read, written atomic.Int64
+	first         atomic.Int64
+	started       time.Time
+}
+
+func (c *traceTCPConn) Read(b []byte) (int, error) {
+	n, e := c.Conn.Read(b)
+	if n > 0 {
+		c.read.Add(int64(n))
+		c.first.CompareAndSwap(0, time.Since(c.started).Nanoseconds())
+	}
+	return n, e
+}
+func (c *traceTCPConn) Write(b []byte) (int, error) {
+	n, e := c.Conn.Write(b)
+	c.written.Add(int64(n))
+	return n, e
+}
+func (c *traceTCPConn) CloseWrite() error {
+	if v, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return v.CloseWrite()
+	}
+	return c.Conn.Close()
+}
+func (t *networkTrace) tcpConn(c net.Conn, src, dst netip.AddrPort, domain, route string, started time.Time, prefix int) (net.Conn, func()) {
+	wrapped := &traceTCPConn{Conn: c, started: started}
+	if prefix > 0 {
+		wrapped.read.Store(int64(prefix))
+		wrapped.first.Store(time.Since(started).Nanoseconds())
+	}
+	owner, _ := wnet.ConnectionOwner(6, src, dst)
+	emit := func(finished bool) {
+		first := wrapped.first.Load()
+		ms := float64(-1)
+		if first > 0 {
+			ms = float64(first) / 1e6
+		}
+		stats := &networkTCPStats{Route: route, Received: wrapped.read.Load(), Sent: wrapped.written.Load(), FirstResponseMS: ms, ElapsedMS: float64(time.Since(started).Nanoseconds()) / 1e6, Finished: finished}
+		o := networkTraceObservation{at: time.Now().UTC(), proto: 6, src: src, dst: dst, domain: traceDomain(domain), source: "tls_sni", tcp: stats, owner: &owner}
+		select {
+		case <-t.done:
+			return
+		default:
+		}
+		select {
+		case t.queue <- o:
+		default:
+			t.dropped.Add(1)
+		}
+	}
+	done := make(chan struct{})
+	var once sync.Once
+	finish := func() { once.Do(func() { close(done); emit(true) }) }
+	go func() {
+		tick := time.NewTicker(10 * time.Second)
+		defer tick.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.done:
+				return
+			case <-tick.C:
+				emit(false)
+			}
+		}
+	}()
+	return wrapped, finish
+}

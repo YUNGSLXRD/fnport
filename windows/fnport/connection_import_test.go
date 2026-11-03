@@ -7,8 +7,10 @@ import (
 	"github.com/YUNGSLXRD/fnport/windows/internal/wnet"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -154,8 +156,11 @@ func TestImportedVLESSRoundTrip(t *testing.T) {
 	defer udpEcho.Close()
 	go func() {
 		b := make([]byte, 2048)
-		n, p, e := udpEcho.ReadFromUDP(b)
-		if e == nil {
+		for {
+			n, p, e := udpEcho.ReadFromUDP(b)
+			if e != nil {
+				return
+			}
 			udpEcho.WriteToUDP(b[:n], p)
 		}
 	}()
@@ -172,4 +177,53 @@ func TestImportedVLESSRoundTrip(t *testing.T) {
 	if err != nil || !bytes.Equal(back[:n], payload) {
 		t.Fatal("VLESS UDP roundtrip failed", err)
 	}
+	direct, err := net.DialUDP("udp4", nil, udpEcho.LocalAddr().(*net.UDPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer direct.Close()
+	direct.SetDeadline(time.Now().Add(5 * time.Second))
+	directTimes := make([]time.Duration, 0, 100)
+	for i := 0; i < 100; i++ {
+		start := time.Now()
+		direct.Write([]byte("ping"))
+		if _, e := direct.Read(back); e != nil {
+			t.Fatal(e)
+		}
+		directTimes = append(directTimes, time.Since(start))
+	}
+	dev := newChanDev()
+	cfg := testConfig()
+	cfg.captureAll = true
+	engine := newEngine(cfg, dev, clientIP, &tcpRelay{ctx: ctx})
+	defer engine.close()
+	router := &connectionRouter{settings: connectionSettings{Enabled: true, Protocol: "vless", Discord: true}, transport: client, trace: &networkTrace{}}
+	router.ownerLookup = func(uint8, netip.AddrPort, netip.AddrPort) (wnet.ProcessOwner, error) {
+		return wnet.ProcessOwner{Name: "Discord.exe", PID: 1}, nil
+	}
+	engine.connection = router
+	go engine.run()
+	dstUDP := udpEcho.LocalAddr().(*net.UDPAddr).AddrPort()
+	srcUDP := netip.AddrPortFrom(clientIP, 55000)
+	fullTimes := make([]time.Duration, 0, 100)
+	for i := 0; i < 110; i++ {
+		start := time.Now()
+		dev.in <- wnet.BuildUDP4(srcUDP, dstUDP, []byte("ping"), uint16(i))
+		select {
+		case <-dev.out:
+			if i >= 10 {
+				fullTimes = append(fullTimes, time.Since(start))
+			}
+		case <-time.After(time.Second):
+			t.Fatal("engine latency sample timed out")
+		}
+	}
+	sort.Slice(directTimes, func(i, j int) bool { return directTimes[i] < directTimes[j] })
+	sort.Slice(fullTimes, func(i, j int) bool { return fullTimes[i] < fullTimes[j] })
+	f := flowOf(engine, 55000, dstUDP)
+	if f == nil {
+		t.Fatal("voice flow missing")
+	}
+	t.Logf("Local echo, 100 samples: direct median=%s p95=%s; fnport+SOCKS+VLESS median=%s p95=%s; max fnport queue=%s max socket write=%s", directTimes[50], directTimes[95], fullTimes[50], fullTimes[95], time.Duration(f.queueMaxNS.Load()), time.Duration(f.writeMaxNS.Load()))
+
 }
