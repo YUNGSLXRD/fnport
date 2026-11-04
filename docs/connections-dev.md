@@ -28,12 +28,13 @@ but IPv6 traffic is not redirected or inspected. Restarting the game is useful
 for observing connections created before tracing began. Existing DNS cache is
 read; the program does not clear it or issue bulk hostname probes.
 
-## Select a connection (dev8)
+## Select a connection (dev9)
 
 Open Подключения, select WARP or one VPN protocol (Выключено disables the connection).
 For WARP use Получить ключ WARP. For VLESS paste a vless:// link (TLS/Reality,
 TCP, WebSocket, HTTPUpgrade and gRPC supported) or an outbound JSON object.
-AmneziaWG 1.5 accepts the contents of an exported .conf file or JSON. Other
+AmneziaWG 1.5 accepts an exported .conf file through Импорт .conf, its pasted
+contents, or JSON. Other
 protocols currently accept JSON. Imported links are never logged.
 Select Сервисы Epic for login/store/downloads, Discord for Discord, or both.
 Press the fixed Применить button below the page. With fnport enabled, restart
@@ -120,3 +121,33 @@ one MiB within the existing eight-second HTTP deadline; small bursts followed
 by a stall no longer qualify. Transfer rate and selected RTT are logged. This
 startup check is not a sustained speed guarantee. Cancellation stops selection
 and closes the currently probed tunnel. The game's direct route is unchanged.
+
+## Subscription import (dev9)
+
+Paste an HTTP(S) subscription URL into the connection field, choose Загрузить,
+then select a server from the menu and press Применить. Обновить reloads the
+server list. Loading and selection are drafts: the running connection changes
+only on apply. The source URL, cached servers and selection are saved in the
+existing private fnport.json; no subscription refresh runs automatically.
+Switching to WARP preserves the cached subscription for switching back.
+
+Supported bodies: plain/Base64/Base64URL lists of supported VLESS links, arrays
+of standalone sing-box outbounds, or sing-box objects with outbounds/endpoints.
+Virtual routing nodes, dependent detour graphs and unsupported URI protocols
+are skipped and counted. Clash YAML and Xray JSON are not currently converted.
+Responses are limited to four MiB / 512 servers. HTTPS certificate validation
+remains enabled; cross-origin redirects are rejected before identity headers
+can be forwarded. Raw URLs, response bodies and credentials never enter logs
+or displayed errors. Native IFileOpenDialog imports only user-selected .conf
+files; file paths are not logged, and contents are not executed.
+
+HWID follows the Remnawave documented request-header contract:
+https://github.com/remnawave/panel/blob/main/docs/features/hwid-device-limit.md
+The application generates one random 128-bit identifier and stores it in
+%LOCALAPPDATA%\fnport\subscription-device-id. All updates/build folders under
+the same Windows profile reuse it. User-Agent is fnport/<version>/<id>, with
+x-hwid, x-device-os, x-ver-os and x-device-model headers. A panel device-limit
+or unsupported-HWID response produces an explicit error; identity is never
+rotated to retry registration. Provider-specific User-Agent allowlists and
+formats still depend on that provider. Tests use a local simulated panel;
+no live user subscription or native Windows dialog was tested on this Mac.

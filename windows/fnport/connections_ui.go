@@ -25,6 +25,7 @@ import (
 // and buffered result channels, never editors or pointers to this state.
 // The parent owns connectionSettings, networkTraceSettings and the WARP card.
 type connectionView struct {
+	imports                                   connectionImportView
 	registering                               bool
 	loaded                                    bool
 	enabled, epic, discord, trace, showConfig widget.Bool
@@ -133,6 +134,10 @@ func (cv *connectionView) load(s settings) {
 	}
 	cv.config.SingleLine = cv.protocol != "amneziawg"
 	cv.config.SetText(string(s.Connection.Config))
+	cv.loadSubscriptionView(s.Connection.Subscription)
+	if sub := cv.imports.subscription; sub != nil && sub.node() != nil {
+		cv.config.SetText(sub.URL)
+	}
 	cv.config.Mask = '•'
 	cv.showConfig.Value = false
 	cv.processes.SetText(strings.Join(s.Connection.Processes, "\n"))
@@ -148,21 +153,46 @@ func (cv *connectionView) load(s settings) {
 }
 
 func (cv *connectionView) draft() (connectionSettings, networkTraceSettings, error) {
-	raw, detected, err := importConnection(cv.config.Text(), cv.enabled.Value && cv.protocol != "warp")
-	if err != nil {
-		return connectionSettings{}, networkTraceSettings{}, err
-	}
+	var raw json.RawMessage
+	var subscription *connectionSubscription
 	protocol := cv.protocol
-	if detected != "" {
-		protocol = detected
+	final := cv.final.Text()
+	text := strings.TrimSpace(cv.config.Text())
+	if cv.protocol == "warp" {
+		subscription = cloneSubscription(cv.imports.subscription)
+		if n := subscription.node(); n != nil {
+			raw = n.Config
+		} else {
+			raw, _, _ = importConnection(cv.config.Text(), false)
+		}
+	} else if subscriptionURL(text) && cv.protocol != "amneziawg" {
+		sub := cv.imports.subscription
+		if sub == nil || sub.URL != text || sub.node() == nil {
+			if cv.enabled.Value {
+				return connectionSettings{}, networkTraceSettings{}, fmt.Errorf("сначала загрузите подписку и выберите сервер")
+			}
+		} else {
+			n := sub.node()
+			raw, protocol = n.Config, n.Protocol
+			subscription = cloneSubscription(sub)
+			final = ""
+		}
+	} else {
+		var detected string
+		var err error
+		raw, detected, err = importConnection(cv.config.Text(), cv.enabled.Value && cv.protocol != "warp")
+		if err != nil {
+			return connectionSettings{}, networkTraceSettings{}, err
+		}
+		if detected != "" {
+			protocol = detected
+		}
 	}
 	return connectionSettings{
 		Enabled: cv.enabled.Value, Protocol: protocol, Config: raw, Epic: cv.epic.Value,
 		Processes: connectionProcessLines(cv.processes.Text()), Discord: cv.discord.Value,
-		Final: strings.TrimSpace(cv.final.Text()),
-	}, networkTraceSettings{
-		Enabled: cv.trace.Value, Processes: connectionProcessLines(cv.traceProcesses.Text()),
-	}, nil
+		Final: strings.TrimSpace(final), Subscription: subscription,
+	}, networkTraceSettings{Enabled: cv.trace.Value, Processes: connectionProcessLines(cv.traceProcesses.Text())}, nil
 }
 
 func (p *connectionProcessPicker) fetch() {
@@ -328,6 +358,7 @@ func (v *view) connectionProtocolDropdown(gtx C) D {
 	cv := &v.connections
 	if cv.protocolButton.Clicked(gtx) {
 		cv.protocolOpen = !cv.protocolOpen
+		cv.imports.serverOpen = false
 	}
 	for i := range cv.protocolChoices {
 		if cv.protocolChoices[i].Clicked(gtx) {
@@ -405,6 +436,7 @@ func (v *view) updateConnections(gtx C) {
 	if !cv.loaded {
 		cv.load(v.ctl.settings())
 	}
+	v.updateConnectionImports(gtx)
 	if cv.applyDone != nil {
 		select {
 		case err := <-cv.applyDone:
@@ -425,14 +457,14 @@ func (v *view) updateConnections(gtx C) {
 		default:
 		}
 	}
-	if cv.reset.Clicked(gtx) && cv.applyDone == nil {
+	if cv.reset.Clicked(gtx) && cv.applyDone == nil && !cv.importing() {
 		cv.load(v.ctl.settings())
 		cv.message, cv.failed = "", false
 	}
 	if cv.openTrace.Clicked(gtx) && v.open != nil {
 		v.open(filepath.Join(appDir(), "network-trace"))
 	}
-	if (cv.save.Clicked(gtx) || cv.saveTop.Clicked(gtx)) && cv.applyDone == nil {
+	if (cv.save.Clicked(gtx) || cv.saveTop.Clicked(gtx)) && cv.applyDone == nil && !cv.importing() {
 		connection, trace, err := cv.draft()
 		cv.failed = err != nil
 		if err != nil {
@@ -495,7 +527,7 @@ func (v *view) connectionsBody(gtx C) D {
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(func(gtx C) D {
 			return v.card(gtx, func(gtx C) D {
-				if cv.applyDone != nil {
+				if cv.applyDone != nil || cv.importing() {
 					gtx = gtx.Disabled()
 				}
 				kids := []layout.FlexChild{layout.Rigid(func(gtx C) D { return bold(v.label(15, colText, "Подключение")).Layout(gtx) }), vspace(12), layout.Rigid(v.connectionProtocolDropdown), vspace(12)}
@@ -516,29 +548,49 @@ func (v *view) connectionsBody(gtx C) D {
 					if cv.showConfig.Value {
 						cv.config.Mask = 0
 					}
-					hint := "vless://… или JSON"
+					hint := "vless://… или https://…"
 					if cv.protocol == "amneziawg" {
 						hint = "Содержимое файла .conf или JSON"
 					}
-					fieldLabel := "Ссылка подключения"
+					fieldLabel := "Ссылка подключения или подписка"
 					lines := 1
 					if cv.protocol == "amneziawg" {
 						fieldLabel = "Конфигурация"
 						lines = 4
 					}
-					kids = append(kids, layout.Rigid(v.label(12, colMuted, fieldLabel).Layout), vspace(6), layout.Rigid(func(gtx C) D {
+					kids = append(kids, layout.Rigid(func(gtx C) D {
+						return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+							layout.Flexed(1, v.label(12, colMuted, fieldLabel).Layout),
+							layout.Rigid(func(gtx C) D {
+								if cv.protocol == "amneziawg" {
+									return v.compactButton(gtx, &cv.imports.importFile, "Импорт .conf", false, v.pickAWGFile != nil)
+								}
+								if subscriptionURL(cv.config.Text()) {
+									label := "Загрузить"
+									if sub := cv.imports.subscription; sub != nil && sub.URL == strings.TrimSpace(cv.config.Text()) {
+										label = "Обновить"
+									}
+									return v.compactButton(gtx, &cv.imports.fetch, label, false, true)
+								}
+								return D{}
+							}),
+						)
+					}), vspace(6), layout.Rigid(func(gtx C) D {
 						if cv.protocol == "amneziawg" {
 							gtx.Constraints.Max.Y = gtx.Dp(100)
 						}
 						return v.field(gtx, &cv.config, hint, lines)
 					}), vspace(4), layout.Rigid(func(gtx C) D { return v.connectionCheck(gtx, &cv.showConfig, "Показать") }))
+					if sub := cv.imports.subscription; sub != nil && sub.URL == strings.TrimSpace(cv.config.Text()) && len(sub.Nodes) > 0 {
+						kids = append(kids, vspace(8), layout.Rigid(v.label(12, colMuted, fmt.Sprintf("Сервер · %d в подписке", len(sub.Nodes))).Layout), vspace(6), layout.Rigid(v.subscriptionServerDropdown))
+					}
 				}
 				return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
 			})
 		}), vspace(12),
 		layout.Rigid(func(gtx C) D {
 			return v.card(gtx, func(gtx C) D {
-				if cv.applyDone != nil {
+				if cv.applyDone != nil || cv.importing() {
 					gtx = gtx.Disabled()
 				}
 				kids := v.sectionTitle("Через подключение", "")
@@ -594,7 +646,7 @@ func (v *view) warpTab(gtx C) D {
 		return v.list(gtx, &v.warpPage, 1, func(gtx C, _ int) D { return layout.Inset{Right: 10, Bottom: 12}.Layout(gtx, v.connectionsBody) })
 	}), vspace(12), layout.Rigid(func(gtx C) D {
 		return layout.Flex{Alignment: layout.Middle}.Layout(gtx, layout.Rigid(func(gtx C) D {
-			return v.compactButton(gtx, &v.connections.saveTop, "Применить", true, v.connections.applyDone == nil)
+			return v.compactButton(gtx, &v.connections.saveTop, "Применить", true, v.connections.applyDone == nil && !v.connections.importing())
 		}), hspace(14), layout.Flexed(1, func(gtx C) D {
 			c := colMuted
 			if v.connections.failed {

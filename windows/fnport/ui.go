@@ -105,6 +105,7 @@ type view struct {
 	ping        *pinger
 	check       *checker
 	open        func(path string) // opens a file or folder in Windows
+	pickAWGFile func() (string, error)
 	onQuit      func()
 
 	onTheme func(dark bool) // the window repaints its title bar

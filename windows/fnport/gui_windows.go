@@ -88,11 +88,13 @@ func (win *window) run() {
 		case app.Win32ViewEvent:
 			if e.HWND != 0 {
 				hwnd := e.HWND
+				win.v.pickAWGFile = func() (string, error) { return pickNativeAWGFile(hwnd) }
 				smoothMove(hwnd)
 				win.v.onTheme = func(dark bool) { titleBar(hwnd, dark) }
 				titleBar(hwnd, win.v.dark)
 			}
 		case app.DestroyEvent:
+			win.v.connections.cancelImport()
 			cancel()
 			win.g.closed(win)
 			return

@@ -22,13 +22,14 @@ import (
 const connectionCoreVersion = "1.14.4"
 
 type connectionSettings struct {
-	Enabled   bool            `json:"enabled"`
-	Protocol  string          `json:"protocol"`
-	Config    json.RawMessage `json:"config"`
-	Processes []string        `json:"processes"`
-	Epic      bool            `json:"epic"`
-	Discord   bool            `json:"discord"`
-	Final     string          `json:"final"`
+	Enabled      bool                    `json:"enabled"`
+	Protocol     string                  `json:"protocol"`
+	Config       json.RawMessage         `json:"config"`
+	Processes    []string                `json:"processes"`
+	Epic         bool                    `json:"epic"`
+	Discord      bool                    `json:"discord"`
+	Final        string                  `json:"final"`
+	Subscription *connectionSubscription `json:"subscription,omitempty"`
 }
 
 type connectionProtocol struct {
