@@ -25,23 +25,35 @@ jobs:
   build:
     name: OpenWrt ${{ matrix.release }}
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
         # packages are arch-independent (ucode/shell/js), so one SDK per release is enough
-        release: [ '24.10', '25.12' ]
+        include:
+          - release: '24.10'
+            sdk: ghcr.io/openwrt/sdk:x86_64-24.10.4@sha256:40473ed9d60fb79c4049204c6eb631b6bc2b89c6c2793bcd19c7e51388c42647
+          - release: '25.12'
+            sdk: ghcr.io/openwrt/sdk:x86_64-25.12.5@sha256:e916b7cc555890bdc4725c926e139b888294f0c8f56561b88d8da3a6348616a2
     steps:
       # third-party actions are pinned to commits so a moved tag or branch cannot change the build
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
 
-      - name: Build
-        uses: openwrt/gh-action-sdk@f5813d30eeef3534b58ac7e79c5d8842b6035434  # main, 2026-08-04
+      - name: Pull prepared stable SDK
+        timeout-minutes: 10
         env:
-          ARCH: x86_64-openwrt-${{ matrix.release }}
+          SDK_IMAGE: ${{ matrix.sdk }}
+        run: docker pull "$SDK_IMAGE"
+
+      - name: Build packages in prepared SDK
+        timeout-minutes: 25
+        env:
+          SDK_IMAGE: ${{ matrix.sdk }}
           FEEDNAME: fnport
           PACKAGES: fnport luci-app-fnport
           NO_REFRESH_CHECK: true
           NO_SHFMT_CHECK: true
+        run: sh tests/build-openwrt.sh
 
       - name: Collect packages
         run: |
