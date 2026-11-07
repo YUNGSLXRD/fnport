@@ -7,8 +7,12 @@
 			"path": "admin/services/fnport/settings"
 		},
 		"depends": {
-			"acl": [ "luci-app-fnport" ],
-			"uci": { "fnport": true }
+			"acl": [
+				"luci-app-fnport"
+			],
+			"uci": {
+				"fnport": true
+			}
 		}
 	},
 	"admin/services/fnport/settings": {
@@ -33,6 +37,14 @@
 		"action": {
 			"type": "view",
 			"path": "fnport/check"
+		}
+	},
+	"admin/services/fnport/connections": {
+		"title": "Connections",
+		"order": 25,
+		"action": {
+			"type": "view",
+			"path": "fnport/connections"
 		}
 	}
 }

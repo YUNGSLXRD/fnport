@@ -505,15 +505,33 @@ const warpHold = 25 * time.Second
 // waitWarp: the tunnel, other than old, waiting up to d while one is being brought up; nil when
 // there is none (WARP gave up for now, fnport went off, or the time ran out)
 func (t *tcpRelay) waitWarp(old *warpTunnel, d time.Duration) *warpTunnel {
-	end := time.Now().Add(d)
+	return t.waitWarpContext(t.ctx, old, d)
+}
+
+func (t *tcpRelay) waitWarpContext(ctx context.Context, old *warpTunnel, d time.Duration) *warpTunnel {
+	deadline := time.NewTimer(d)
+	defer deadline.Stop()
+	tick := time.NewTicker(200 * time.Millisecond)
+	defer tick.Stop()
 	for {
+		if ctx.Err() != nil || t.ctx.Err() != nil {
+			return nil
+		}
 		if w := t.warp.Load(); w != nil && w != old {
 			return w
 		}
-		if !t.warpWait.Load() || t.ctx.Err() != nil || time.Now().After(end) {
+		if !t.warpWait.Load() {
 			return nil
 		}
-		time.Sleep(200 * time.Millisecond)
+		select {
+		case <-tick.C:
+		case <-deadline.C:
+			return nil
+		case <-ctx.Done():
+			return nil
+		case <-t.ctx.Done():
+			return nil
+		}
 	}
 }
 

@@ -49,9 +49,33 @@ const (
 	modeBlind             // untested ports: the fake does the work, remap catches the rest
 )
 
+// How this local port became a candidate. Keep this on the individual port:
+// a target can switch from game probes to echo probes or untested ports.
+type portChoice struct {
+	port   int
+	source mode
+}
+
+func (p portChoice) description(bound int) string {
+	if p.port == 0 {
+		return "без проверки"
+	}
+	if bound != p.port {
+		return fmt.Sprintf("вместо выбранного %d, фактический порт без проверки", p.port)
+	}
+	switch p.source {
+	case modeGame:
+		return "прошел пробу игрового порта"
+	case modeQoS:
+		return "прошел пробу эхо, игровой порт без проверки"
+	default:
+		return "без проверки (сервер не отвечал)"
+	}
+}
+
 type target struct {
 	ts           time.Time
-	good         []int
+	good         []portChoice
 	tried        map[int]bool
 	silentRounds int
 	badRounds    int  // rounds in a row without a good port, with the fake
@@ -136,8 +160,12 @@ func (p *prober) searchTTL(dst netip.AddrPort, t *target, busy func(int) bool, c
 			break
 		}
 		t.tried[c[0]] = true
-		got := p.probe(dst, c, false, p.fake(), ttl)[c[0]]
+		got, bound := p.probe(dst, c, false, p.fake(), ttl)[c[0]]
+		if bound {
+			p.stat.add(&p.stat.tested, 1)
+		}
 		if got >= probePass {
+			p.stat.add(&p.stat.good, 1)
 			p.setTTL(ttl, fmt.Sprintf("с ним порт к %s прошёл, с TTL %d годных не было", dst, cur))
 			return c[0], true
 		}
@@ -365,7 +393,7 @@ func (p *prober) refresh(dst netip.AddrPort, want int, busy func(int) bool) *tar
 		cand := freshPorts(t, want-len(t.good), busy)
 		for _, c := range cand {
 			t.tried[c] = true
-			t.good = append(t.good, c)
+			t.good = append(t.good, portChoice{c, modeBlind})
 		}
 		logf("сервер %s не отвечает на проверки, порты без проверки: %s", dst, joinInts(cand))
 		return t
@@ -408,14 +436,16 @@ func (p *prober) refresh(dst netip.AddrPort, want int, busy func(int) bool) *tar
 			frozen++
 		}
 	}
-	t.good = append(t.good, fresh...)
+	for _, c := range fresh {
+		t.good = append(t.good, portChoice{c, t.mode})
+	}
 	// no port passed with the fake two rounds running, frozen or silent (a server that answered
 	// before and went quiet is its pause, not the TTL): the DPI's reach moved, look around
 	if !qos && withFake && len(results) > 0 && len(fresh) == 0 && (frozen > 0 || !t.answered) {
 		if t.badRounds++; t.badRounds >= 2 {
 			t.badRounds = 0
 			if port, ok := p.searchTTL(dst, t, busy, frozen == 0); ok {
-				t.good = append(t.good, port)
+				t.good = append(t.good, portChoice{port, modeGame})
 				t.silentRounds = 0
 			}
 		}
@@ -455,7 +485,10 @@ func (p *prober) refresh(dst netip.AddrPort, want int, busy func(int) bool) *tar
 		c := freshPorts(t, 1, busy)
 		if len(c) == 1 {
 			t.tried[c[0]] = true
-			got := p.probe(dst, c, false, nil, 0)[c[0]]
+			got, bound := p.probe(dst, c, false, nil, 0)[c[0]]
+			if bound {
+				p.stat.add(&p.stat.tested, 1)
+			}
 			// only a port passing without the fake proves the fake is the problem; a freeze without
 			// it says the fake is needed, and the silence with it was the server's pause
 			if got >= probePass {
@@ -465,7 +498,8 @@ func (p *prober) refresh(dst netip.AddrPort, want int, busy func(int) bool) *tar
 				logf("фейк ломает соединения в этой сети (%s: с ним нет ответов, без него %d), выключаю на %d мин",
 					dst, got, int(fakeHoldoff.Minutes()))
 				p.stat.add(&p.stat.fakeOff, 1)
-				t.good = append(t.good, c[0])
+				p.stat.add(&p.stat.good, 1)
+				t.good = append(t.good, portChoice{c[0], modeGame})
 				return t
 			}
 		}
@@ -499,25 +533,25 @@ func (p *prober) refresh(dst netip.AddrPort, want int, busy func(int) bool) *tar
 
 // pick finds a good source port for a new flow to dst, probing up to maxRounds rounds;
 // 0 when none was found
-func (p *prober) pick(dst netip.AddrPort, busy func(int) bool) int {
+func (p *prober) pick(dst netip.AddrPort, busy func(int) bool) portChoice {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for round := 0; round < p.cfg.maxRounds; round++ {
 		used := 0
 		t := p.target(dst)
 		for _, g := range t.good {
-			if busy(g) {
+			if busy(g.port) {
 				used++
 			}
 		}
 		t = p.refresh(dst, used+1+round, busy)
 		for _, g := range t.good {
-			if !busy(g) {
+			if !busy(g.port) {
 				return g
 			}
 		}
 	}
-	return 0
+	return portChoice{}
 }
 
 // drop: a port that froze is no good for dst any more
@@ -525,9 +559,9 @@ func (p *prober) drop(dst netip.AddrPort, port int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if t := p.targets[dst]; t != nil {
-		var keep []int
+		var keep []portChoice
 		for _, g := range t.good {
-			if g != port {
+			if g.port != port {
 				keep = append(keep, g)
 			}
 		}

@@ -77,7 +77,28 @@ func loadSettings() settings {
 		logf("fnport.json не прочитан (%v), настройки по умолчанию", err)
 		return defaultSettings()
 	}
+	s.Routes = upgradeDefaultGameRoutes(s.Routes)
 	return s
+}
+
+// Only the former complete default list follows this addition automatically.
+// An edited list (including an intentionally empty one) remains under user control.
+func upgradeDefaultGameRoutes(routes []string) []string {
+	legacy := map[string]bool{
+		"3.0.0.0/8": true, "13.32.0.0/11": true, "15.0.0.0/8": true,
+		"18.0.0.0/8": true, "35.156.0.0/14": true, "35.176.0.0/13": true,
+	}
+	if len(routes) != len(legacy) {
+		return routes
+	}
+	for _, route := range routes {
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(route))
+		if err != nil || !legacy[prefix.Masked().String()] {
+			return routes
+		}
+		delete(legacy, prefix.Masked().String())
+	}
+	return append(append([]string(nil), routes...), "51.44.0.0/16")
 }
 
 func (s settings) save() error {

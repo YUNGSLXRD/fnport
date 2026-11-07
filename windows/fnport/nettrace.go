@@ -49,6 +49,7 @@ type networkTrace struct {
 }
 
 type networkTraceObservation struct {
+	game           *networkGamePacket
 	tcp            *networkTCPStats
 	owner          *wnet.ProcessOwner
 	udp            *networkUDPStats
@@ -59,25 +60,26 @@ type networkTraceObservation struct {
 }
 
 type networkTraceEvent struct {
-	TCP               *networkTCPStats `json:"tcp,omitempty"`
-	UDP               *networkUDPStats `json:"udp,omitempty"`
-	Count             uint64           `json:"count,omitempty"`
-	Timestamp         time.Time        `json:"timestamp"`
-	Kind              string           `json:"kind"`
-	Protocol          uint8            `json:"protocol,omitempty"`
-	Local             string           `json:"local,omitempty"`
-	Remote            string           `json:"remote,omitempty"`
-	PID               uint32           `json:"pid,omitempty"`
-	Process           string           `json:"process,omitempty"`
-	TCPState          uint32           `json:"tcp_state,omitempty"`
-	Domain            string           `json:"domain,omitempty"`
-	DomainSource      string           `json:"domain_source,omitempty"`
-	DNSNames          []string         `json:"dns_names,omitempty"`
-	DNSCorrelation    string           `json:"dns_correlation,omitempty"`
-	DNSCacheTimestamp string           `json:"dns_cache_timestamp,omitempty"`
-	OwnerStatus       string           `json:"owner_status,omitempty"`
-	Dropped           uint64           `json:"dropped,omitempty"`
-	Note              string           `json:"note,omitempty"`
+	Game              *networkGamePacket `json:"game,omitempty"`
+	TCP               *networkTCPStats   `json:"tcp,omitempty"`
+	UDP               *networkUDPStats   `json:"udp,omitempty"`
+	Count             uint64             `json:"count,omitempty"`
+	Timestamp         time.Time          `json:"timestamp"`
+	Kind              string             `json:"kind"`
+	Protocol          uint8              `json:"protocol,omitempty"`
+	Local             string             `json:"local,omitempty"`
+	Remote            string             `json:"remote,omitempty"`
+	PID               uint32             `json:"pid,omitempty"`
+	Process           string             `json:"process,omitempty"`
+	TCPState          uint32             `json:"tcp_state,omitempty"`
+	Domain            string             `json:"domain,omitempty"`
+	DomainSource      string             `json:"domain_source,omitempty"`
+	DNSNames          []string           `json:"dns_names,omitempty"`
+	DNSCorrelation    string             `json:"dns_correlation,omitempty"`
+	DNSCacheTimestamp string             `json:"dns_cache_timestamp,omitempty"`
+	OwnerStatus       string             `json:"owner_status,omitempty"`
+	Dropped           uint64             `json:"dropped,omitempty"`
+	Note              string             `json:"note,omitempty"`
 }
 
 // startNetworkTrace returns nil,nil when disabled (no files, commands or workers).
@@ -235,6 +237,9 @@ func (t *networkTrace) run(ctx context.Context, log *networkTraceLog, selected m
 			return true
 		}
 		e := networkTraceEvent{Timestamp: o.at, Kind: "observed", Protocol: o.proto, Local: o.src.String(), Remote: o.dst.String(), PID: owner.PID, Process: owner.Name, Domain: o.domain, OwnerStatus: "cached_table_lookup_after_observation"}
+		if o.game != nil {
+			e.Kind, e.Game = "game_packet", o.game
+		}
 		if o.tcp != nil {
 			e.Kind = "tcp_stats"
 			e.TCP = o.tcp
@@ -583,4 +588,28 @@ func (t *networkTrace) tcpConn(c net.Conn, src, dst netip.AddrPort, domain, rout
 		}
 	}()
 	return wrapped, finish
+}
+
+// Nonblocking and bounded to the first eight datagrams in each direction plus
+// the first three send errors. Ownership is resolved by the existing collector.
+func (e *engine) traceGamePacket(f *uflow, direction string, seq int64, size, port int, initial, ok bool) {
+	if !f.game || e.connection == nil || e.connection.trace == nil ||
+		(seq > 8 && (ok || f.writeFailures.Load() > 3)) {
+		return
+	}
+	t := e.connection.trace
+	o := networkTraceObservation{at: time.Now().UTC(), proto: 17,
+		src: netip.AddrPortFrom(f.key.srcIP, f.key.cport), dst: f.key.dst,
+		game: &networkGamePacket{Direction: direction, Sequence: seq, Bytes: size, LocalPort: port,
+			Initial: initial, WriteOK: ok, SinceStartMS: time.Since(f.started).Milliseconds()}}
+	select {
+	case <-t.done:
+		return
+	default:
+	}
+	select {
+	case t.queue <- o:
+	default:
+		t.dropped.Add(1)
+	}
 }

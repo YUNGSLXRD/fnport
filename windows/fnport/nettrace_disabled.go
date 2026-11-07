@@ -22,3 +22,5 @@ func (*networkTrace) udpStats(netip.AddrPort, netip.AddrPort, networkUDPStats) {
 func (*networkTrace) tcpConn(c net.Conn, _ netip.AddrPort, _ netip.AddrPort, _ string, _ string, _ time.Time, _ int) (net.Conn, func()) {
 	return c, func() {}
 }
+
+func (*engine) traceGamePacket(*uflow, string, int64, int, int, bool, bool) {}

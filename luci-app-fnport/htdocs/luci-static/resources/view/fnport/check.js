@@ -73,9 +73,9 @@ function logSummary(text) {
 		if (!lm)
 			return;
 		var msg = lm[2];
-		if ((m = msg.match(/^probe \S+ via \S+(?: port)?: (\d+) good, (\d+) frozen, (\d+) silent/))) {
+		if ((m = msg.match(/^probe \S+ via \S+(?: port)?: (\d+) good, (\d+) frozen, (\d+) silent(?:, (\d+) limited)?/))) {
 			st.good += +m[1];
-			st.tested += +m[1] + +m[2] + +m[3];
+			st.tested += +m[1] + +m[2] + +m[3] + +(m[4] || 0);
 		}
 		else if (/ remapped /.test(msg))
 			st.remaps++;
@@ -99,7 +99,7 @@ function stepText(st) {
 	case 'ttl': return (st.fake_now && st.fake_now != st.fake)
 		? _('Trying the spare fake %s with TTL %d…').format(st.fake_now, st.ttl_now)
 		: _('Trying the fake with TTL %d…').format(st.ttl_now);
-	case 'fake': return _('Checking that the fake does no harm…');
+	case 'fake': return _('Comparing the fake on the same beacon…');
 	default: return _('Looking up Epic\'s beacons…');
 	}
 }
@@ -107,21 +107,23 @@ function stepText(st) {
 function verdictText(st) {
 	var loss = lossOf(st), v = verdictMain(st);
 	// seen at SkyNet over Wi-Fi: 23 of 30 everywhere, with and without the fake
-	return loss ? _('The link loses up to %d%% of packets on the way to Epic\'s servers: that is not a freeze, and fnport does not remove losses.').format(loss) + ' ' + v : v;
+	return loss ? _('Some probes received packets past number 25 with up to %d%% missing replies. This proves those probes were not frozen; it does not establish where packets were lost.').format(loss) + ' ' + v : v;
 }
 
 function verdictMain(st) {
 	switch (st.verdict) {
 	case 'no_freeze':
-		return _('No freeze on the Epic beacons right now: every beacon answered all packets without help. Game servers may freeze all the same, so better leave fnport on: without a freeze it does no harm.');
+		return _('No packet-count freeze was detected on the tested Epic beacons. This result alone does not establish how the game server or the fake will behave.');
 	case 'fake_works':
 		return st.recommended_fake
 			? _('The ISP freezes game UDP. The first fake did not help, but the spare %s does. Recommended fake TTL: %d.').format(st.recommended_fake, st.recommended_ttl)
 			: _('The ISP freezes game UDP, and the whitelist fake lifts the freeze. Recommended fake TTL: %d.').format(st.recommended_ttl);
-	case 'fake_kills':
+	case 'fake_partial':
+  return _('Some ports passed with the fake, but the replies are mixed. Keep the current fake and TTL; game connections still need port selection.');
+ case 'fake_kills':
 		return _('The ISP freezes game UDP, and the fake kills the whole flow once it gets far enough (from TTL %d). fnport can only look for passing ports without the fake here. Please send a report.').format(st.fake_kills_from);
 	case 'fake_fails':
-		return _('The ISP freezes game UDP, but the fake did not help with any TTL from 1 to 8. fnport will look for passing ports without it, if there are any. Please send a report: another whitelisted name may work.');
+		return _('A packet-count freeze was detected, but the tried fakes and TTLs did not give a confirmed improvement. Limited or mixed replies remain inconclusive. Please send the report.');
 	case 'freeze_no_fake':
 		return _('The ISP freezes game UDP, but the fake file is missing, so it could not be tried.');
 	case 'unclear':
@@ -156,14 +158,17 @@ function report(st, log, stats) {
 		out.push('**%s %s**: %s'.format(_('Spare fake'), sp.fake,
 			(sp.ttl || []).map(function(e) { return 'TTL %d: %s'.format(e.ttl, repliesText(e.replies)); }).join('; ')));
 	});
-	if (st.fake_check)
-		out.push('**%s**: TTL %d: %s'.format(_('Fake at the current TTL'), st.fake_check.ttl, repliesText(st.fake_check.replies)));
+	if (st.fake_check) {
+  out.push('**%s** (%s): %s'.format(_('Same-beacon control'),cityName(st.fake_check.city),repliesText(st.fake_check.control)));
+  out.push('**%s**: TTL %d: %s (%s)'.format(_('Fake at the current TTL'),st.fake_check.ttl,repliesText(st.fake_check.replies),st.fake_check.verdict || 'unclear'));
+ }
+ if (st.kill_control) out.push('**%s**: %s'.format(_('Control after silent fake probes'),repliesText(st.kill_control)));
 	var short = {
 		no_freeze: _('no freeze'), fake_works: _('the fake works'), fake_kills: _('the fake kills flows'),
-		fake_fails: _('the fake does not help'), unclear: _('unclear'), no_reply: _('no reply'), freeze_no_fake: _('no fake file')
+		fake_partial: _('mixed replies with the fake'), fake_fails: _('the fake does not help'), unclear: _('unclear'), no_reply: _('no reply'), freeze_no_fake: _('no fake file')
 	}[st.verdict] || st.verdict;
 	out.push('**%s**: %s'.format(_('Result'), short + ' (' + st.verdict + ')' +
-		(st.recommended_ttl ? ', TTL %d (%s %d)'.format(st.recommended_ttl, _('works from'), st.works_from || st.recommended_ttl) : '')));
+		(st.recommended_ttl ? ', TTL %d (%s %d)'.format(st.recommended_ttl, _('tested TTL'), st.recommended_ttl) : '')));
 	out.push('**%s**: TTL %d, %s'.format(_('Settings'), st.now_ttl,
 		st.now_fake ? _('fake %s').format(st.fake) : _('fake off')));
 	if (stats && stats.hours) {
@@ -262,14 +267,15 @@ return view.extend({
 		nodes.push(E('h3', {}, _('Result')));
 		nodes.push(E('p', {}, [ E('strong', {}, [ verdictText(st) ]) ]));
 
-		if (st.verdict == 'no_freeze' && st.fake_check && count(st.fake_check.replies, 'silent') == st.fake_check.replies.length)
-			nodes.push(E('p', { 'style': 'color:#c60' }, [ _('The fake at TTL %d killed the test flows here. fnport turns the fake off by itself when it sees this; you can also clear the fake on the Advanced tab of Settings.').format(st.fake_check.ttl) ]));
+		if (st.verdict == 'no_freeze' && st.fake_check && st.fake_check.verdict == 'kills')
+			nodes.push(E('p', { 'style': 'color:#c60' }, [ _('At TTL %d the fake probes stopped replying, while both control probes on the same beacon passed. This check does not change your settings.').format(st.fake_check.ttl) ]));
 
-		if (st.recommended_ttl) {
-			// a pass at some TTL means every larger one gets past the DPI too: no need to chase
-			// the exact number, which differs between checks by chance
-			if (st.now_fake && !st.recommended_fake && st.now_ttl >= (st.works_from || st.recommended_ttl) && st.now_ttl <= 8)
-				nodes.push(E('p', {}, [ _('Your current TTL %d works as well, nothing to change.').format(st.now_ttl) ]));
+		if (st.policy == 3 && st.recommended_ttl) {
+			var selected = st.recommended_fake || st.fake;
+   var steps = selected == st.fake ? st.ttl || [] : ((st.spares || []).filter(function(sp){return sp.fake == selected;})[0] || {}).ttl || [];
+   var measuredCurrent = steps.some(function(e){return e.ttl == st.now_ttl && count(e.replies,'pass') >= 2;});
+   if (st.now_fake && st.now_fake_name == selected && measuredCurrent)
+				nodes.push(E('p', {}, [ _('Your current TTL %d passed the recorded probes with this fake.').format(st.now_ttl) ]));
 			else
 				nodes.push(E('p', {}, [
 					E('button', {
@@ -279,7 +285,7 @@ return view.extend({
 						? _('Apply TTL %d and fake %s').format(st.recommended_ttl, st.recommended_fake)
 						: _('Apply TTL %d').format(st.recommended_ttl) ]),
 					' ',
-					_('Now: TTL %d%s. fnport restarts; a match in progress is not affected.').format(st.now_ttl, st.now_fake ? '' : _(', fake off'))
+					_('Now: TTL %d%s. Applying restarts fnport. Apply outside a match.').format(st.now_ttl, st.now_fake ? '' : _(', fake off'))
 				]));
 		}
 
@@ -302,11 +308,14 @@ return view.extend({
 		(st.spares || []).forEach(function(sp) {
 			(sp.ttl || []).forEach(function(e) { row(_('%s, spare %s, TTL %d').format(cityName(st.beacon), sp.fake, e.ttl), e.replies); });
 		});
-		if (st.fake_check)
-			row(_('fake TTL %d').format(st.fake_check.ttl), st.fake_check.replies);
+		if (st.fake_check) {
+   row(_('%s, no fake').format(cityName(st.fake_check.city)), st.fake_check.control);
+   row(_('%s, fake TTL %d').format(cityName(st.fake_check.city),st.fake_check.ttl),st.fake_check.replies);
+   nodes.push(E('p',{},st.fake_check.verdict == 'harmless' ? _('Both probes passed with and without the fake on the same beacon. This is not a guarantee for game servers.') : st.fake_check.verdict == 'kills' ? _('The control probes passed; the fake probes did not reply.') : _('The fake comparison is inconclusive. No setting change is recommended from it.')));
+  }
 		nodes.push(E('table', { 'class': 'table' }, rows));
 		nodes.push(E('p', { 'class': 'cbi-section-descr' }, [
-			_('More than 25 replies: the port passes. 20-25: the DPI froze the flow. Fewer than 20: the beacon limits replies or packets get lost. Even where the fake works, about half of the ports pass, which is enough for fnport.')
+			_('More than 25 replies, or a tagged reply past packet 25: the probe was not frozen. 20-25 replies without a later packet suggest a freeze. Fewer replies can be rate limiting, filtering or loss. A beacon result is not a game-server guarantee.')
 		]));
 
 		var ta = E('textarea', { 'class': 'cbi-input-textarea', 'readonly': '', 'rows': 14, 'style': 'width:100%;font-family:monospace' }, [ report(st, log, stats) ]);
@@ -335,7 +344,7 @@ return view.extend({
 		return E('div', {}, [
 			E('h2', {}, _('ISP check')),
 			E('p', { 'class': 'cbi-map-descr' }, [
-				_('Checks whether your ISP freezes game UDP and finds the TTL for the whitelist fake. It sends a few short bursts to Epic\'s public beacons in Frankfurt, London and Paris and takes 20-60 seconds. Do not run it during a match, and not often: probing a lot gets the address punished by the DPI.')
+				_('Checks packet-count freezes on Epic\'s public beacons and compares whitelist fakes and measured TTLs. Slow retries can take several minutes. Run outside a match and avoid repeated checks.')
 			]),
 			this.container
 		]);

@@ -7,7 +7,7 @@ import (
 
 func TestCity(t *testing.T) {
 	for ip, c := range map[string]string{"3.66.90.173": "frankfurt", "18.157.38.117": "frankfurt", "18.133.162.202": "london",
-		"13.37.148.3": "paris", "15.237.20.100": "paris", "52.1.1.1": "eu"} {
+		"13.37.148.3": "paris", "15.237.20.100": "paris", "51.44.0.1": "paris", "51.44.255.254": "paris", "51.43.0.1": "eu", "51.45.0.1": "eu", "52.1.1.1": "eu"} {
 		if got := City(netip.MustParseAddr(ip)); got != c {
 			t.Errorf("%s: %s", ip, got)
 		}

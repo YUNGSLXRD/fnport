@@ -15,7 +15,7 @@ func TestWarpAllowedCountriesAndFallback(t *testing.T) {
 		rtt  time.Duration
 	}{
 		{"HKG", 10 * time.Millisecond}, {"DME", 5 * time.Millisecond}, {"FRA", 20 * time.Millisecond},
-		{"HEL", 90 * time.Millisecond}, {"RIX", 65 * time.Millisecond}, {"WAW", 80 * time.Millisecond}, {"TLL", 70 * time.Millisecond},
+		{"HEL", 90 * time.Millisecond}, {"RIX", 65 * time.Millisecond}, {"WAW", 80 * time.Millisecond}, {"TLL", 70 * time.Millisecond}, {"ARN", 55 * time.Millisecond},
 	}
 	best := ""
 	var rtt time.Duration
@@ -24,7 +24,7 @@ func TestWarpAllowedCountriesAndFallback(t *testing.T) {
 			best, rtt = c.colo, c.rtt
 		}
 	}
-	if best != "RIX" {
+	if best != "ARN" {
 		t.Fatalf("chose %s instead of lowest RTT in preferred countries", best)
 	}
 	if betterWarpExit("FRA", time.Millisecond, best, rtt) {

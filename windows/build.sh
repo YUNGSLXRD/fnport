@@ -5,9 +5,16 @@
 set -eu
 cd "$(dirname "$0")"
 VER=${1:-$(git describe --tags --always 2>/dev/null || echo dev)}
+mkdir -p dist
+# Keep cached upstream modules out of the application-wide ./... pattern.
+printf 'module fnport.invalid/build-artifacts\n' > dist/go.mod
 export GOTOOLCHAIN=local CGO_ENABLED=0
 BUILD_TAGS=
-if [ "${FNPORT_DEV_TRACE:-off}" = on ]; then BUILD_TAGS=devtrace; fi
+DEV_LDFLAGS=
+if [ "${FNPORT_DEV_TRACE:-off}" = on ]; then
+ BUILD_TAGS=devtrace
+ DEV_LDFLAGS="-X main.devControlProbes=${FNPORT_DEV_CONTROL_PROBES:-on}"
+fi
 
 # the fakes are the package's own files, embedded into the program
 cp ../fnport/files/quic_initial_*.bin internal/fakes/
@@ -63,13 +70,18 @@ go run ./tools/mkicon fnport/winres
 pack() {
 	out="$tmp/$1"
 	mkdir -p "$out" dist
-	GOOS=windows GOARCH=amd64 go build -tags "$BUILD_TAGS" -trimpath -ldflags "-s -w -X main.version=$VER -X main.devTrace=${FNPORT_DEV_TRACE:-off} ${4:-}" -o "$out/$1.exe" "./$2"
+	GOOS=windows GOARCH=amd64 go build -tags "$BUILD_TAGS" -trimpath -ldflags "-s -w -X main.version=$VER -X main.devTrace=${FNPORT_DEV_TRACE:-off} $DEV_LDFLAGS ${4:-}" -o "$out/$1.exe" "./$2"
 	cp "$dll" "$out/wintun.dll"
  if [ "$1" = fnport ] && [ -n "${FNPORT_SING_BOX_DIR:-}" ]; then
   cp "$FNPORT_SING_BOX_DIR/sing-box.exe" "$out/sing-box.exe"
   cp "$FNPORT_SING_BOX_DIR/LICENSE" "$out/sing-box-LICENSE.txt"
   if [ -f "$FNPORT_SING_BOX_DIR/libcronet.dll" ]; then cp "$FNPORT_SING_BOX_DIR/libcronet.dll" "$out/libcronet.dll"; fi
-  cp ../docs/connections-dev.md "$out/README-dev.md"
+  cat "$FNPORT_SING_BOX_DIR/LICENSE" third_party/sing-box-GPL-3.0.txt third_party/sing-box-SOURCES.txt > "$out/sing-box-LICENSE.txt"
+  if [ "${FNPORT_DEV_TRACE:-off}" = on ]; then
+   cp ../docs/connections-dev.md "$out/README-dev.md"
+  else
+   cp ../docs/connections.md "$out/README.md"
+  fi
  fi
 	if [ "$1" != fnport ]; then
 		cp third_party/wintun-LICENSE.txt "$out/wintun-LICENSE.txt"

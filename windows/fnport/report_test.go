@@ -14,9 +14,9 @@ func TestReportHidesAddresses(t *testing.T) {
 	c := newController(defaultSettings())
 	r := finish(&checkResult{PortKept: "yes", Freeze: "yes", Fake: "works", TTL: 4, WorksFrom: 3, FakeFile: "quic_initial_vk_com.bin",
 		FakeCity: "Франкфурт", Control: []cityReplies{{"Франкфурт", []int{25, 25}}},
-		Scans: []fakeScan{{"quic_initial_vk_com.bin", []ttlReplies{{3, []int{30, 25, 25, 30}}}}}, Settings: defaultSettings()}, defaultSettings())
+		Scans: []fakeScan{{Fake: "quic_initial_vk_com.bin", Steps: []ttlReplies{{3, []int{30, 25, 25, 30}}}}}, Settings: defaultSettings()}, defaultSettings())
 	rep := c.report(r)
-	for _, want := range []string{"**Роутер сохраняет порт**: да", "Франкфурт 25, 25", "TTL 3: 30, 25, 25, 30", "TTL 4 (срабатывает с 3)",
+	for _, want := range []string{"**Роутер сохраняет порт**: да", "Франкфурт 25, 25", "TTL 3: 30, 25, 25, 30", "TTL 4 (две полные серии)",
 		"aws-london:9082", "ПК x.x.x.x"} {
 		if !strings.Contains(rep, want) {
 			t.Errorf("no %q in\n%s", want, rep)

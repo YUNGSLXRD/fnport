@@ -21,6 +21,7 @@ import * as socket from 'socket';
 import { rand } from 'math';
 import { popen, readfile, writefile, rename, mkdir } from 'fs';
 import { cursor } from 'uci';
+import { summarize_probes } from './fnport-udp-policy.uc';
 
 // interface names only: it ends up in a shell command
 const WAN_DEV = match(ARGV[0] ?? '', /^[A-Za-z0-9._@-]{1,15}$/) ? ARGV[0] : null;
@@ -339,7 +340,7 @@ function probe(host, dport, ports, qos, nofake) {
 		let s = socket.create(socket.AF_INET, socket.SOCK_DGRAM | socket.SOCK_NONBLOCK);
 		if (!s) continue;
 		if (!s.bind({ address: '0.0.0.0', port: p })) { s.close(); continue; }
-		push(socks, { s, p, tag: chr(rand() % 256, rand() % 256), got: 0 });
+		push(socks, { s, p, tag: chr(rand() % 256, rand() % 256), got: 0, late: false });
 	}
 	let pollset = map(socks, o => [o.s, socket.POLLIN]);
 	let faked = false;
@@ -351,8 +352,10 @@ function probe(host, dport, ports, qos, nofake) {
 		for (let o in socks) {
 			let d, from = {};
 			while ((d = o.s.recv(2048, 0, from)) != null && length(d) > 0)
-				if (from.address == host && from.port == dport && (!qos || substr(d, 0, 2) == o.tag))
-					o.got++;
+				if (from.address == host && from.port == dport && (!qos || substr(d, 0, 2) == o.tag)) {
+     o.got++;
+     if(qos && length(d)>=4 && (ord(d,2)<<8 | ord(d,3))>=25)o.late=true;
+    }
 		}
 	};
 	for (let i = 0; i < PROBE_PKTS; i++) {
@@ -371,7 +374,7 @@ function probe(host, dport, ports, qos, nofake) {
 	let end = now_ms() + PROBE_WAIT_MS;
 	while (now_ms() < end) { socket.poll(50, ...pollset); drain(); }
 	let res = {};
-	for (let o in socks) { res[o.p] = o.got; o.s.close(); }
+	for (let o in socks) { res[o.p] = o.late && o.got >= FROZEN_MIN && o.got < PROBE_PASS ? o.got + 1000 : o.got; o.s.close(); }
 	return res;
 }
 
@@ -423,7 +426,7 @@ function refresh_target(ip, dport, want) {
 	let key = `${ip}|${dport}`;
 	let t = targets[key];
 	if (!t || time() - t.ts > GOOD_TTL)
-		t = targets[key] = { ts: time(), good: [], tried: {}, silent_rounds: 0,
+		t = targets[key] = { ts: time(), good: [], source: {}, tried: {}, silent_rounds: 0,
 			mode: time() < game_probe_off_until ? (fake_on() ? 'blind' : 'qos') : 'game' };
 	if (length(t.good) >= want) return t;
 
@@ -433,7 +436,7 @@ function refresh_target(ip, dport, want) {
 		t.mode = 'qos';  // untested ports only make sense with the fake
 	if (t.mode == 'blind') {
 		let cand = fresh_ports(t, want - length(t.good));
-		for (let p in cand) { t.tried[p] = true; push(t.good, p); }
+		for (let p in cand) { t.tried[p] = true; t.source[p] = 'untested'; push(t.good, p); }
 		log(sprintf('server %s:%d does not answer probes, untested ports %s', ip, dport, join(' ', cand)));
 		return t;
 	}
@@ -450,21 +453,14 @@ function refresh_target(ip, dport, want) {
 	let t0 = now_ms();
 	let with_fake = fake_on();
 	let res = probe(ip, qos ? QOS_PORT : dport, cand, qos);
-	let fresh = [], frozen = 0, silent = 0, counts = {};
-	for (let p in cand) {
-		t.tried[p] = true;
-		let got = res[p] ?? 0;
-		counts[got] = true;
-		if (got >= PROBE_PASS) push(fresh, p);
-		else if (got == 0) silent++;
-		else frozen++;
-	}
-	for (let p in fresh) push(t.good, p);
-	log(sprintf('probe %s:%d via %s: %d good, %d frozen, %d silent (%dms)',
-		ip, dport, qos ? 'qos' : 'game port', length(fresh), frozen, silent, now_ms() - t0));
-	stat('tested', length(cand));
-	stat('good', length(fresh));
-	if (!qos) learn(map(cand, p => res[p] ?? 0), with_fake);
+	let summary = summarize_probes(cand, res);
+ let fresh=summary.passing, frozen=summary.frozen, silent=summary.silent, counts=summary.counts;
+ for(let p in cand)t.tried[p]=true;
+ for(let p in fresh){push(t.good,p);t.source[p]=qos?'qos':'game';}
+ log(sprintf('probe %s:%d via %s: %d good, %d frozen, %d silent, %d limited, %d socket errors (%dms)',ip,dport,qos?'qos':'game port',length(fresh),frozen,silent,summary.limited,summary.socket_errors,now_ms()-t0));
+ stat('tested',length(summary.attempted));stat('good',length(fresh));
+ if(!length(summary.attempted))return t;
+ if(!qos)learn(map(summary.attempted,p=>res[p]),with_fake);
 
 	// everything passes with the fake: maybe nothing freezes here at all. Two ports without
 	// it now and then tell; passing ports are good ports either way
@@ -477,7 +473,7 @@ function refresh_target(ip, dport, want) {
 		let vals = map(cc, p => r[p] ?? 0);
 		for (let p in cc) {
 			t.tried[p] = true;
-			if ((r[p] ?? 0) >= PROBE_PASS) push(t.good, p);
+			if ((r[p] ?? 0) >= PROBE_PASS) {push(t.good,p);t.source[p]='game';}
 		}
 		log(sprintf('control without the fake %s:%d: %s replies', ip, dport, join(', ', vals)));
 		learn(vals, false);
@@ -486,29 +482,30 @@ function refresh_target(ip, dport, want) {
 	}
 
 	// no reply at all with the fake: maybe it is the fake that gets the flow killed (some ISPs drop
-	// flows once their DPI sees QUIC). One port without it tells this apart from a silent server.
-	if (!qos && silent == length(cand) && fake_on() && budget_used < PROBE_BUDGET) {
-		budget_used++;
-		let p = fresh_ports(t, 1)[0];
-		t.tried[p] = true;
-		let got = probe(ip, dport, [ p ], false, true)[p] ?? 0;
-		learn([ got ], false);
+	// flows once their DPI sees QUIC). Two passing control ports without it are required before disabling the fake.
+	if (!qos && silent == length(summary.attempted) && fake_on() && budget_used + 2 <= PROBE_BUDGET) {
+  budget_used += 2;
+  let control = fresh_ports(t,2);
+  for(let p in control)t.tried[p]=true;
+  let control_replies=probe(ip,dport,control,false,true);
+  let passed=filter(control,p=>control_replies[p]>=PROBE_PASS);
+  learn(map(control,p=>control_replies[p]??0),false);
 		// only a port passing without the fake proves the fake is the problem. A freeze without it
 		// (20-25 replies) says the fake is needed, and the silence with it was the server's pause
-		if (got >= PROBE_PASS) {
+		if (length(passed)==2) {
 			fake_off_until = time() + FAKE_HOLDOFF;
-			log(sprintf('whitelist fake breaks flows on this network (%s:%d: no replies with it, %d without), fake off for %d min',
-				ip, dport, got, FAKE_HOLDOFF / 60));
+			log(sprintf('whitelist fake breaks flows on this network (%s:%d: no replies with it, %s without), fake off for %d min',
+				ip, dport, join(',',map(passed,p=>control_replies[p])), FAKE_HOLDOFF / 60));
 			stat('fakeoff');
 			remember();
-			push(t.good, p);
+			for(let p in passed){push(t.good,p);t.source[p]='game';}
 			return t;
 		}
 	}
 
 	// server ignores handshakes: fall back to its QoS echo. With the fake a QoS verdict says
 	// nothing about the game flow, so retry the game port once, then go blind.
-	if (!qos && silent == length(cand)) {
+	if (!qos && silent == length(summary.attempted)) {
 		if (!fake_on()) t.mode = 'qos';
 		else if (++t.silent_rounds >= 2) t.mode = 'blind';
 	}
@@ -517,7 +514,7 @@ function refresh_target(ip, dport, want) {
 
 	// every port stopped at the same count: that is the server capping handshake replies
 	// for our address, not the DPI (whose verdict differs per port). Stop handshake probes.
-	if (!qos && !length(fresh) && length(cand) >= 6 && frozen == length(cand) && length(keys(counts)) == 1) {
+	if (!qos && !length(fresh) && length(summary.attempted) >= 6 && frozen + summary.limited == length(summary.attempted) && length(keys(counts)) == 1) {
 		game_probe_off_until = time() + LIMIT_HOLDOFF;
 		t.mode = fake_on() ? 'blind' : 'qos';
 		log(sprintf('server limits handshake replies (all ports got %s), %s for %d min',
@@ -557,8 +554,8 @@ function remap(pc, cport, ip, sport) {
 	nft(cmds);
 	// the PC's next packet creates a new conntrack entry, which takes the new mapping
 	system(`conntrack -D -p udp --orig-src ${pc} --orig-port-src ${cport} --orig-dst ${ip} --orig-port-dst ${sport} >/dev/null 2>&1`);
-	log(sprintf('flow %s:%d (pc:%d) remapped -> wan port %d (attempt %d)',
-		ip, sport, cport, pick, remaps[`${pc}|${cport}|${ip}|${sport}`]));
+	log(sprintf('flow %s:%d (pc:%d) remapped -> wan port %d (attempt %d, source %s)',
+		ip, sport, cport, pick, remaps[`${pc}|${cport}|${ip}|${sport}`],t?.source?.[pick]??'untested'));
 	stat('remaps');
 }
 
@@ -687,7 +684,7 @@ while (true) {
 				// the probe left a router-originated conntrack entry with the very same tuple
 				system(`conntrack -D -p udp --orig-port-src ${pick} --orig-dst ${ip} --orig-port-dst ${sport} >/dev/null 2>&1`);
 				push(cmds, `add element ip fnport assign { ${tuple} : ${wan} . ${pick} }`);
-				log(sprintf('flow %s:%d (pc:%d) -> wan port %d', ip, sport, cport, pick));
+				log(sprintf('flow %s:%d (pc:%d) -> wan port %d (source %s)',ip,sport,cport,pick,targets[key]?.source?.[pick]??'untested'));
 				stat('flows');
 			}
 			else if (standby) {

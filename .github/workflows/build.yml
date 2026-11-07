@@ -11,6 +11,11 @@ on:
       - 'windows/**'
       - '.github/workflows/build.yml'
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Optional Windows version for a manual build'
+        required: false
+        type: string
 
 # read-only by default; only the release job may write
 permissions:
@@ -66,7 +71,9 @@ jobs:
 
       - name: Build
         # tests, the Windows build, wintun.dll checked against its hash, the zip
-        run: windows/build.sh ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+        env:
+          FNPORT_RELEASE_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.version }}
+        run: sh windows/build-release.sh "$FNPORT_RELEASE_VERSION"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
@@ -74,16 +81,55 @@ jobs:
           # the probe was a tool for building the app; releases carry the app only
           path: windows/dist/fnport-windows-v*.zip
 
+  connections:
+    name: Router connections
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version: '1.24.7'
+          cache: false
+      - name: Build portable helpers and static cores
+        env:
+          FNPORT_RELEASE_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'dev' }}
+        run: |
+          sh windows/build-router.sh "$FNPORT_RELEASE_VERSION"
+          sh windows/build-router-core.sh
+      - name: Native kernel and core integration
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq nftables iproute2 conntrack
+          mkdir -p windows/dist/router-tests/core
+          tar -xzf windows/dist/fnport-sing-box-linux-amd64.tar.gz -C windows/dist/router-tests/core
+          export TMPDIR="$PWD/windows/dist/router-build/tmp" GOCACHE="$PWD/windows/dist/router-build/gocache"
+          go -C windows test -race ./router
+          CGO_ENABLED=0 go -C windows test -c ./router -o "$PWD/windows/dist/router-tests/router-tests"
+          sudo unshare --net env FNPORT_ROUTER_NET_TEST=1 FNPORT_ROUTER_DATA="$PWD/fnport/files" FNPORT_TEST_SING_BOX="$PWD/windows/dist/router-tests/core/sing-box" "$PWD/windows/dist/router-tests/router-tests" -test.v -test.timeout=120s
+      - name: OpenWrt userspace and frontend syntax
+        run: |
+          python3 tests/prepare-openwrt.py
+          sudo unshare --net env FNPORT_TEST_ROOTFS=1 sh tests/validate-openwrt.sh "$PWD/windows/dist/router-tests/rootfs"
+          for file in luci-app-fnport/htdocs/luci-static/resources/view/fnport/*.js; do node --check "$file"; done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: router-connections
+          path: |
+            windows/dist/fnport-connections-linux-*.tar.gz
+            windows/dist/fnport-sing-box-linux-*.tar.gz
+            windows/dist/fnport-router-core-source-*.tar.gz
+
   release:
     name: Attach to release
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [ build, windows ]
+    if: ${{ always() && startsWith(github.ref, 'refs/tags/v') && needs.windows.result == 'success' && needs.connections.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    needs: [ build, windows, connections ]
     runs-on: ubuntu-latest
     permissions:
       contents: write
       id-token: write       # signs the build attestation
       attestations: write   # stores it on GitHub
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
           path: dist
@@ -108,3 +154,6 @@ jobs:
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2
         with:
           files: dist/*
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          make_latest: ${{ !contains(github.ref_name, '-') }}
+          body_path: docs/release-0.7.0.md

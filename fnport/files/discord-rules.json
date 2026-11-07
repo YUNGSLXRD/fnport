@@ -1,0 +1,36 @@
+{
+  "source": "https://github.com/itdoginfo/allow-domains/releases/download/2026-11-02_18-42/discord.srs",
+  "sha256": "516b6812514646a8e740ed37c474407583a95d469881ec600a4f421a58d01a06",
+  "domains": [
+    "dis.gd",
+    "discord-activities.com",
+    "discord-attachments-uploads-prd.storage.googleapis.com",
+    "discord.co",
+    "discord.com",
+    "discord.design",
+    "discord.dev",
+    "discord.gg",
+    "discord.gift",
+    "discord.gifts",
+    "discord.media",
+    "discord.new",
+    "discord.store",
+    "discord.tools",
+    "discordactivities.com",
+    "discordapp.com",
+    "discordapp.net",
+    "discordmerch.com",
+    "discordpartygames.com",
+    "discordsays.com"
+  ],
+  "voice_networks": [
+    "104.16.0.0/12",
+    "138.128.136.0/21",
+    "162.158.0.0/15",
+    "172.64.0.0/13",
+    "34.0.0.0/14",
+    "35.192.0.0/11",
+    "5.200.14.128/25",
+    "66.22.192.0/18"
+  ]
+}

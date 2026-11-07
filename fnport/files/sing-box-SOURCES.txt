@@ -1,0 +1,25 @@
+Bundled unmodified third-party programs
+
+sing-box 1.14.4, Copyright (C) 2022 nekohasekai
+License: GNU GPL version 3 or later, with the upstream naming notice above.
+Official binary and checksums:
+https://github.com/SagerNet/sing-box/releases/tag/v1.14.4
+Source revision: c005f35300ce76427dc285481ec5695f5b179cd2
+https://github.com/SagerNet/sing-box/tree/c005f35300ce76427dc285481ec5695f5b179cd2
+Source archive:
+https://github.com/SagerNet/sing-box/archive/c005f35300ce76427dc285481ec5695f5b179cd2.tar.gz
+Build configuration and dependency versions are in that revision's Makefile,
+release directory, .github/workflows, go.mod and go.sum.
+
+libcronet.dll is the unmodified companion from the same official Windows ZIP.
+The pinned library module is github.com/sagernet/cronet-go/lib/windows_amd64
+v0.0.0-20260912104006-c10c03c318db; source and library revision:
+https://github.com/SagerNet/cronet-go/tree/c10c03c318db
+Build source (cronet-go v0.0.0-20260912104727-0d28acc44093):
+https://github.com/SagerNet/cronet-go/tree/0d28acc44093
+The naiveproxy submodule and its Chromium dependencies are recorded there.
+https://github.com/SagerNet/cronet-go/blob/0d28acc44093/LICENSE
+
+These programs are separate executables/libraries shipped unchanged from upstream.
+fnport uses the core's local SOCKS interface. fnport source:
+https://github.com/YUNGSLXRD/fnport

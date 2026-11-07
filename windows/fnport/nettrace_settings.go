@@ -22,3 +22,14 @@ type networkTCPStats struct {
 	ElapsedMS       float64 `json:"elapsed_ms"`
 	Finished        bool    `json:"finished"`
 }
+
+// First datagrams only: lengths and local delivery results, never payloads.
+type networkGamePacket struct {
+	Direction    string `json:"direction"`
+	Sequence     int64  `json:"sequence"`
+	Bytes        int    `json:"bytes"`
+	LocalPort    int    `json:"local_port"`
+	Initial      bool   `json:"initial_queue"`
+	WriteOK      bool   `json:"write_ok"`
+	SinceStartMS int64  `json:"since_start_ms"`
+}

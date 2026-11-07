@@ -74,7 +74,7 @@ All artifacts and temporary build directories stay inside fnport-openwrt.
 The regular Go test suite, host/Windows vet, Windows cross-build, native AWG UDP
 loopback, real sing-box TCP/UDP echo, and targeted race tests for the new transport,
 process routing, settings updates, trace, and UI controls passed locally.
-A live Windows Discord/Fortnite session has not been tested. A broader earlier
+A live Windows Discord/Fortnite session with dev13 has not been tested. A broader earlier
 race run reported an amneziawg-go race in TestWarpTunnelCloseBusy and failures in
 TestWarpTunnelMany/TestWarpWholePath; the complete application is not claimed to
 pass the entire race-enabled stress suite. Keep this build experimental.
@@ -107,16 +107,39 @@ claim to fix its root cause or the Discord Internet RTT.
 Removed the extra bottom inset below the Discord switch row. The following
 Fortnite note now uses the same text spacing as the Epic description.
 
-## WARP exit selection (dev8)
+## Game port assignment (dev13)
 
-Only LV, PL, EE and FI are preferred. The lowest measured TCP connect RTT among
+Game flow assignment and remapping serialize port selection, binding and socket
+installation, including the pause after sending the fake. Another flow cannot
+select the same cached candidate before the installed socket becomes visible to
+the busy-port check. External bind conflicts still use the existing untested
+fallback and are identified explicitly in the log. Probing and TTL search keep
+their existing limits; this change does not establish the cause of earlier
+match-loading stalls or reduce long probe rounds.
+
+## Reading a dev12 game log
+
+For a match that hangs or returns to the lobby, note the local time and keep
+the log from that run. Each assignment records the game and local source
+ports, the type of probe (game or echo), any bind fallback, elapsed time,
+and the number of queued and dropped initial packets. A dev build also
+records the final port counters and the total across remaps at flow close.
+The local source port can be translated by NAT. A successful probe alone
+does not establish that Fortnite received a reply or joined a match.
+
+## WARP exit selection
+
+LV, PL, EE, FI and SE are preferred (Sweden added in dev11). The lowest measured TCP connect RTT among
 qualified preferred candidates wins; DE is a fallback only. Other and unknown
 locations are rejected. If no usable allowed exit is found, connection fails
 instead of silently selecting another country. This filters observed Cloudflare
 colo values; it cannot force Cloudflare anycast to offer a particular country.
 
-Up to sixteen addresses are tried, covering the initial ranges and comparing
-three preferred successes when available. Each accepted candidate must deliver
+Up to sixteen addresses are tried. The configured address (if any) and the
+saved address for the current network are revalidated before random addresses.
+In dev12 the first usable preferred exit starts a four-second comparison window.
+An in-flight probe is canceled when time runs out. A German candidate alone
+keeps the full search open. Each accepted candidate must deliver
 one MiB within the existing eight-second HTTP deadline; small bursts followed
 by a stall no longer qualify. Transfer rate and selected RTT are logged. This
 startup check is not a sustained speed guarantee. Cancellation stops selection
@@ -151,3 +174,19 @@ or unsupported-HWID response produces an explicit error; identity is never
 rotated to retry registration. Provider-specific User-Agent allowlists and
 formats still depend on that provider. Tests use a local simulated panel;
 no live user subscription or native Windows dialog was tested on this Mac.
+
+## Controlled STW comparison (dev14)
+
+Both dev14 variants include the initial-queue ordering fix. Variant A keeps game
+port probes. Variant B disables synthetic probes only for the configured control
+port range (normally 15000-15999), retaining the fake and normal match-port probes.
+This bypass is compiled only with devtrace and cannot be selected in a release.
+A different source port can hit a different ISP filtering node, so one successful
+attempt is not proof. Compare repeated homebase transitions using the same saved
+settings, and correlate fnport.log with FortniteGame.log timestamps.
+
+The trace records at most the first eight datagrams in each direction per game
+flow, plus the first three socket-send failures. Records include direction,
+sequence, length, local port, queue origin, elapsed time and local write result.
+Payloads and handshake cookies are never stored. A successful local write does
+not prove that Unreal accepted the datagram.

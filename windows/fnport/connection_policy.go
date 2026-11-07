@@ -66,14 +66,23 @@ func (r *connectionRouter) dial(ctx context.Context, dst netip.AddrPort, udp boo
 		return r.native.net.DialTCP(ctx, dst)
 	}
 	if r.settings.Protocol == "warp" {
-		w := r.tcp.waitWarp(nil, warpHold)
+		w := r.tcp.waitWarpContext(ctx, nil, warpHold)
 		if w == nil {
-			return nil, fmt.Errorf("WARP ещё не подключён")
+			return nil, connectionFailure("warp_wait", ctx.Err())
 		}
+		var conn net.Conn
+		var err error
 		if udp {
-			return w.net.DialUDP(dst)
+			conn, err = w.net.DialUDP(dst)
+		} else {
+			conn, err = w.net.DialTCP(ctx, dst)
 		}
-		return w.net.DialTCP(ctx, dst)
+		if err != nil {
+			w.fails.Add(1)
+			return nil, err
+		}
+		w.conns.Add(1)
+		return conn, nil
 	}
 	if r.transport == nil {
 		return nil, fmt.Errorf("подключение недоступно")

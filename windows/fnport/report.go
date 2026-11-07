@@ -37,6 +37,9 @@ func maskAddresses(line string) string {
 }
 
 func joinReplies(rs []int) string {
+	if len(rs) == 0 {
+		return "нет измерения"
+	}
 	var p []string
 	for _, r := range rs {
 		s := fmt.Sprint(qos.Got(r))
@@ -102,18 +105,21 @@ func (c *controller) report(r *checkResult) string {
 			k = "Запасной фейк " + fakes.Label(sc.Fake)
 		}
 		line(k+" ("+r.FakeCity+")", strings.Join(st, "; "))
+		if len(sc.KillControl) > 0 {
+			line("Контроль после тишины с фейком", joinReplies(sc.KillControl))
+		}
 	}
 	if r.FakeCheck != nil {
-		line("Фейк при текущем TTL", fmt.Sprintf("TTL %d: %s", r.FakeCheck.TTL, joinReplies(r.FakeCheck.Replies)))
+		line("Сравнение на одном маяке", fmt.Sprintf("%s: без фейка %s; с %s при TTL %d: %s (ответов из 30)", r.FakeCity, joinReplies(r.FakeControl), fakes.Label(r.FakeFile), r.FakeCheck.TTL, joinReplies(r.FakeCheck.Replies)))
 	}
 	res := map[string]string{"yes": "заморозка есть", "no": "на маяках заморозки нет", "no_reply": "маяки не ответили", "unclear": "неясно"}[r.Freeze]
-	if f := map[string]string{"works": "фейк работает", "kills": "фейк убивает соединения", "fails": "фейк не помогает",
-		"harmless": "фейк не мешает", "lower": "фейк убивает соединения выше TTL"}[r.Fake]; f != "" {
+	if f := map[string]string{"works": "две полные серии с фейком прошли", "kills": "фейк убивает соединения", "fails": "фейк не помогает",
+		"partial": "смешанные ответы с фейком, без рекомендации менять TTL", "unclear": "влияние фейка на маяк неясно", "harmless": "маяк отвечает с фейком", "lower": "при текущем TTL ответы пропали, меньший прошел две серии"}[r.Fake]; f != "" {
 		res += ", " + f
 	}
 	switch {
 	case r.Fake == "works":
-		res += fmt.Sprintf(", TTL %d (срабатывает с %d)", r.TTL, r.WorksFrom)
+		res += fmt.Sprintf(", TTL %d (две полные серии)", r.TTL)
 	case r.Fake == "lower":
 		res += fmt.Sprintf(" %d", r.TTL)
 	}
@@ -127,7 +133,13 @@ func (c *controller) report(r *checkResult) string {
 	if s.Passthrough {
 		set += ", только пропуск"
 	}
-	line("Настройки", set)
+	line("Настройки при проверке", set)
+	phase := "в настройках"
+	if st, _ := c.state(); st == stateOn {
+		phase = "в работе"
+	}
+	line("Фейк и TTL сейчас ("+phase+")", c.fakeLabel())
+	line("Применение проверки", "сама проверка не меняет фейк и TTL; рекомендация применяется только по кнопке")
 	t := c.totals()
 	line("За этот запуск", fmt.Sprintf("%d соединений игры, %d без годного порта, %d замёрзло, %d переведено на новый порт, "+
 		"%d из %d проверенных портов прошли", t.GameFlows, t.NoGood, t.Frozen, t.Remaps, t.Good, t.Tested))

@@ -1,0 +1,28 @@
+{
+  "version": "1.14.4",
+  "source_revision": "c005f35300ce76427dc285481ec5695f5b179cd2",
+  "source_archive_sha256": "1c4d2b3bf261a8d98e1b026be0bbcddbcb3f53bbca77eb15e8f25f7d4e602e59",
+  "targets": {
+    "linux-amd64": {
+      "archive": "fnport-sing-box-linux-amd64.tar.gz"
+    },
+    "linux-arm64": {
+      "archive": "fnport-sing-box-linux-arm64.tar.gz"
+    },
+    "linux-armv5": {
+      "archive": "fnport-sing-box-linux-armv5.tar.gz"
+    },
+    "linux-armv6": {
+      "archive": "fnport-sing-box-linux-armv6.tar.gz"
+    },
+    "linux-armv7": {
+      "archive": "fnport-sing-box-linux-armv7.tar.gz"
+    },
+    "linux-mips-softfloat": {
+      "archive": "fnport-sing-box-linux-mips-softfloat.tar.gz"
+    },
+    "linux-mipsle-softfloat": {
+      "archive": "fnport-sing-box-linux-mipsle-softfloat.tar.gz"
+    }
+  }
+}

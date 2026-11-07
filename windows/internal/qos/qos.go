@@ -110,7 +110,9 @@ func probe(host netip.Addr, n int, fake []byte, ttl int, gap time.Duration) ([]i
 	var mu sync.Mutex
 	if fake != nil && ttl > 0 {
 		for _, c := range cs {
-			wnet.SendWithTTL(c, fake, dst, ttl)
+			if err := wnet.SendWithTTL(c, fake, dst, ttl); err != nil {
+				return nil, err
+			}
 		}
 		time.Sleep(fakeGap)
 	}

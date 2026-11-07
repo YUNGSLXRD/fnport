@@ -150,7 +150,7 @@ func TestPreview(t *testing.T) {
 		}
 		v.ringAnim, v.glyphAnim, v.fillAnim, v.titleAnim = colorAnim{}, colorAnim{}, colorAnim{}, colorAnim{}
 		if tc.name == "settings2" {
-			v.page.Position.First, v.page.Position.Offset = 1, 0
+			v.page.Position.First, v.page.Position.Offset = 0, int(720*scale)
 		}
 		var ops op.Ops
 		// two frames: lists settle their scroll position in the first

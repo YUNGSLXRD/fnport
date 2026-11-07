@@ -23,7 +23,7 @@ import (
 var version = "dev"
 
 // AWS in Europe where Epic's game servers and beacons live (the same list as fnport-routes.cmd)
-var awsEU = []string{"3.0.0.0/8", "13.32.0.0/11", "15.0.0.0/8", "18.0.0.0/8", "35.156.0.0/14", "35.176.0.0/13"}
+var awsEU = []string{"3.0.0.0/8", "13.32.0.0/11", "15.0.0.0/8", "18.0.0.0/8", "35.156.0.0/14", "35.176.0.0/13", "51.44.0.0/16"}
 
 func errorf(format string, a ...any) error { return fmt.Errorf(format, a...) }
 
@@ -349,9 +349,7 @@ func (c *controller) start() {
 	if cfg.captureAll {
 		logf("Подключения: перехват IPv4 включён, остальные процессы идут напрямую. IPv6 не перенаправляется.")
 	}
-	if n := int(checkTTL.Load()); n > 0 && n < cfg.fakeTTL && len(cfg.fakes) > 0 {
-		e.prober.setTTL(n, fmt.Sprintf("по проверке провайдера (в настройках %d, а с ним фейк убивает соединения)", cfg.fakeTTL))
-	}
+
 	if !set.Connection.Enabled && !set.Warp.Enabled {
 		logf("Дополнительное подключение выключено: сервисы Epic и Discord идут напрямую")
 	}
@@ -364,6 +362,7 @@ func (c *controller) start() {
 		ws := set.Warp.withFake(set)
 		ws.servicesOff = !set.Warp.Enabled
 		ws.ttlNow = e.prober.fakeTTL // the tunnel's fake follows the game's
+		tcp.warpWait.Store(true)
 		go runWarp(ws, dev, routed, tcp)
 	}
 

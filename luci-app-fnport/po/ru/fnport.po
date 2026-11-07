@@ -472,3 +472,231 @@ msgstr "%d (потери)"
 
 msgid "The link loses up to %d%% of packets on the way to Epic's servers: that is not a freeze, and fnport does not remove losses."
 msgstr "Связь теряет до %d%% пакетов на пути к серверам Epic: это не заморозка, и fnport потери не убирает."
+
+msgid "Connections"
+msgstr "Подключения"
+
+msgid "Connection"
+msgstr "Подключение"
+
+msgid "Connected"
+msgstr "Подключено"
+
+msgid "Starting"
+msgstr "Запуск"
+
+msgid "Choosing a WARP exit"
+msgstr "Поиск выхода WARP"
+
+msgid "Connection failed"
+msgstr "Ошибка подключения"
+
+msgid "Stopped"
+msgstr "Остановлено"
+
+msgid "Exit: %s"
+msgstr "Выход: %s"
+
+msgid "unknown"
+msgstr "неизвестно"
+
+msgid "At least 140 MB of free storage is required. Use external storage or extroot."
+msgstr "Нужно не менее 140 МБ свободного места. Можно использовать внешний накопитель или extroot."
+
+msgid "This router architecture is not supported."
+msgstr "Архитектура этого роутера не поддерживается."
+
+msgid "Could not download release files from GitHub."
+msgstr "Не удалось скачать файлы релиза с GitHub."
+
+msgid "Could not download sing-box."
+msgstr "Не удалось скачать sing-box."
+
+msgid "Could not download connection components."
+msgstr "Не удалось скачать компоненты подключения."
+
+msgid "The downloaded helper failed checksum verification."
+msgstr "Контрольная сумма помощника не совпала."
+
+msgid "The downloaded core failed checksum verification."
+msgstr "Контрольная сумма ядра не совпала."
+
+msgid "WARP registration failed. You can import a ready .conf file."
+msgstr "Не удалось зарегистрировать WARP. Можно импортировать готовый файл .conf."
+
+msgid "Get a WARP key or import a .conf file first."
+msgstr "Сначала получите ключ WARP или импортируйте файл .conf."
+
+msgid "The saved WARP key could not be read."
+msgstr "Не удалось прочитать сохраненный ключ WARP."
+
+msgid "No WARP endpoint passed the exit and download check."
+msgstr "Ни один адрес WARP не прошел проверку выхода и загрузки."
+
+msgid "The selected connection does not respond."
+msgstr "Выбранное подключение не отвечает."
+
+msgid "The connection core stopped."
+msgstr "Ядро подключения остановилось."
+
+msgid "Check the AmneziaWG configuration."
+msgstr "Проверьте конфигурацию AmneziaWG."
+
+msgid "The core rejected this connection profile."
+msgstr "Ядро не приняло конфигурацию подключения."
+
+msgid "Select at least one device."
+msgstr "Выберите хотя бы одно устройство."
+
+msgid "Select at least one service."
+msgstr "Выберите хотя бы один сервис."
+
+msgid "Another service uses the required routing priority."
+msgstr "Нужный приоритет маршрутизации занят другим сервисом."
+
+msgid "Another service uses the required routing table."
+msgstr "Нужная таблица маршрутизации занята другим сервисом."
+
+msgid "A connection instance is already using the firewall table."
+msgstr "Таблица firewall уже занята экземпляром службы подключений."
+
+msgid "Connection error: %s"
+msgstr "Ошибка подключения: %s"
+
+msgid "Installing components…"
+msgstr "Установка компонентов…"
+
+msgid "Registering a WARP key…"
+msgstr "Регистрация ключа WARP…"
+
+msgid "Components installed. You can enable the connection."
+msgstr "Компоненты установлены. Можно включать подключение."
+
+msgid "The WARP key is saved."
+msgstr "Ключ WARP сохранен."
+
+msgid "Route Epic services and Discord through WARP or your VPN on selected devices. Fortnite game UDP stays direct through fnport."
+msgstr "Сервисы Epic и Discord идут через WARP или ваш VPN на выбранных устройствах. Игровой UDP Fortnite идет напрямую через fnport."
+
+msgid "Connection profile"
+msgstr "Конфигурация подключения"
+
+msgid "Paste a VLESS link, a WireGuard/AmneziaWG .conf, or one sing-box outbound object."
+msgstr "Вставьте ссылку VLESS, конфигурацию WireGuard/AmneziaWG .conf или один объект подключения sing-box."
+
+msgid "Import file"
+msgstr "Импорт файла"
+
+msgid "Choose .conf or .json"
+msgstr "Выбрать .conf или .json"
+
+msgid "The configuration file is too large."
+msgstr "Файл конфигурации слишком большой."
+
+msgid "File imported. Save and apply the settings."
+msgstr "Файл импортирован. Сохраните и примените настройки."
+
+msgid "Could not read the file."
+msgstr "Не удалось прочитать файл."
+
+msgid "WARP key"
+msgstr "Ключ WARP"
+
+msgid "The key is stored on this router and reused when settings change."
+msgstr "Ключ хранится на этом роутере и используется повторно при изменении настроек."
+
+msgid "Use saved key"
+msgstr "Использовать сохраненный ключ"
+
+msgid "Get a key"
+msgstr "Получить ключ"
+
+msgid "Epic services"
+msgstr "Сервисы Epic"
+
+msgid "Login, store and downloads."
+msgstr "Вход, магазин и загрузки."
+
+msgid "Messaging and voice. Your VPN must support UDP for voice."
+msgstr "Сообщения и голос. Для голоса ваш VPN должен поддерживать UDP."
+
+msgid "Select a MAC address to cover both IPv4 and IPv6 DNS, or enter a local IPv4 address."
+msgstr "Выберите MAC-адрес для обработки DNS по IPv4 и IPv6 или укажите локальный IPv4-адрес."
+
+msgid "Components"
+msgstr "Компоненты"
+
+msgid "Downloads a separate sing-box core and the fnport helper. At least 140 MB of free storage is required."
+msgstr "Скачивает отдельное ядро sing-box и помощник fnport. Нужно не менее 140 МБ свободного места."
+
+msgid "Update components"
+msgstr "Обновить компоненты"
+
+msgid "Install components"
+msgstr "Установить компоненты"
+
+msgid "Client networks"
+msgstr "Сети устройств"
+
+msgid "DNS transport"
+msgstr "Протокол DNS"
+
+msgid "Plain DNS"
+msgstr "Незащищенный DNS"
+
+msgid "DNS provider"
+msgstr "Сервер DNS"
+
+msgid "Additional domains"
+msgstr "Дополнительные домены"
+
+msgid "Comparing the fake on the same beacon…"
+msgstr "Сравнение фейка на том же маяке…"
+
+msgid "Some probes received packets past number 25 with up to %d%% missing replies. This proves those probes were not frozen; it does not establish where packets were lost."
+msgstr "В части проб пришли пакеты после 25-го, при этом не хватило до %d%% ответов. Эти пробы не замерзли, но место потери пакетов не установлено."
+
+msgid "No packet-count freeze was detected on the tested Epic beacons. This result alone does not establish how the game server or the fake will behave."
+msgstr "На проверенных маяках Epic пакетная заморозка не обнаружена. По этому результату нельзя судить о поведении игрового сервера или фейка."
+
+msgid "A packet-count freeze was detected, but the tried fakes and TTLs did not give a confirmed improvement. Limited or mixed replies remain inconclusive. Please send the report."
+msgstr "Пакетная заморозка обнаружена, но проверенные фейки и TTL не дали подтвержденного улучшения. Малое число и смешанные ответы остаются неоднозначными. Пришлите отчет."
+
+msgid "At TTL %d the fake probes stopped replying, while both control probes on the same beacon passed. This check does not change your settings."
+msgstr "При TTL %d пробы с фейком перестали отвечать, а обе контрольные пробы на том же маяке прошли. Проверка не меняет ваши настройки."
+
+msgid "Your current TTL %d passed the recorded probes with this fake."
+msgstr "Ваш текущий TTL %d прошел записанные пробы с этим фейком."
+
+msgid "Now: TTL %d%s. Applying restarts fnport. Apply outside a match."
+msgstr "Сейчас: TTL %d%s. Применение перезапустит fnport. Выполняйте вне матча."
+
+msgid "Both probes passed with and without the fake on the same beacon. This is not a guarantee for game servers."
+msgstr "Обе пробы прошли с фейком и без него на одном маяке. Это не гарантирует такой же результат на игровых серверах."
+
+msgid "The control probes passed; the fake probes did not reply."
+msgstr "Контрольные пробы прошли, пробы с фейком не ответили."
+
+msgid "The fake comparison is inconclusive. No setting change is recommended from it."
+msgstr "Сравнение фейка неоднозначно. Менять настройки по этому результату не рекомендуется."
+
+msgid "Same-beacon control"
+msgstr "Контроль на том же маяке"
+
+msgid "Control after silent fake probes"
+msgstr "Контроль после проб с фейком без ответа"
+
+msgid "More than 25 replies, or a tagged reply past packet 25: the probe was not frozen. 20-25 replies without a later packet suggest a freeze. Fewer replies can be rate limiting, filtering or loss. A beacon result is not a game-server guarantee."
+msgstr "Более 25 ответов или помеченный ответ после 25-го пакета означает, что проба не замерзла. 20-25 ответов без более позднего пакета похожи на заморозку. Меньшее число ответов возможно при ограничении частоты, фильтрации или потерях. Результат маяка не гарантирует результат на игровом сервере."
+
+msgid "Checks packet-count freezes on Epic's public beacons and compares whitelist fakes and measured TTLs. Slow retries can take several minutes. Run outside a match and avoid repeated checks."
+msgstr "Проверяет пакетную заморозку на публичных маяках Epic, сравнивает фейки и измеренные TTL. Медленные повторные пробы могут занять несколько минут. Запускайте вне матча и не повторяйте проверку часто."
+
+msgid "Some ports passed with the fake, but the replies are mixed. Keep the current fake and TTL; game connections still need port selection."
+msgstr "Часть портов с фейком прошла, но ответы смешанные. Сохраните текущие фейк и TTL, игровым соединениям по-прежнему нужен подбор портов."
+
+msgid "mixed replies with the fake"
+msgstr "смешанные ответы с фейком"
+
+msgid "tested TTL"
+msgstr "проверенный TTL"

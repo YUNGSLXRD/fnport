@@ -7,7 +7,6 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/YUNGSLXRD/fnport/windows/internal/fakes"
@@ -38,25 +37,27 @@ type ttlReplies struct {
 }
 
 type fakeScan struct {
-	Fake  string
-	Steps []ttlReplies
+	Fake        string
+	Steps       []ttlReplies
+	KillControl []int
 }
 
 type checkResult struct {
 	// raw results, for the report
-	Control   []cityReplies
-	Scans     []fakeScan
-	FakeCheck *ttlReplies // no freeze: the fake at the current TTL
-	FakeCity  string      // where the TTL was scanned
-	WorksFrom int
-	Settings  settings     // what the check ran with
-	Epic      []epicResult // Epic's HTTPS services, straight from this PC
-	EpicWarp  []epicResult // the same through WARP; nil when there was no tunnel
-	Loss      int          // % of packets the line lost to the beacons without a freeze; 0 = none seen
+	Control     []cityReplies
+	Scans       []fakeScan
+	FakeControl []int       // replies from the exact same beacon without the fake
+	FakeCheck   *ttlReplies // no freeze: the fake at the current TTL
+	FakeCity    string      // where the TTL was scanned
+	WorksFrom   int
+	Settings    settings     // what the check ran with
+	Epic        []epicResult // Epic's HTTPS services, straight from this PC
+	EpicWarp    []epicResult // the same through WARP; nil when there was no tunnel
+	Loss        int          // % of packets the line lost to the beacons without a freeze; 0 = none seen
 
 	PortKept  string // "yes", "no", "unknown"
 	Freeze    string // "yes", "no", "no_reply", "unclear"
-	Fake      string // "works", "kills", "fails", "harmless", ""
+	Fake      string // "works", "partial", "kills", "fails", "harmless", "unclear", "lower", ""
 	TTL       int    // recommended
 	FakeFile  string // recommended fake
 	Summary   []string
@@ -103,27 +104,12 @@ func (k *checker) start(cur settings) bool {
 	changes.Add(1)
 	go func() {
 		r := k.run(cur)
-		noteCheckTTL(r)
 		k.mu.Lock()
 		k.running, k.result, k.finished = false, r, time.Now()
 		k.mu.Unlock()
 		changes.Add(1)
 	}()
 	return true
-}
-
-// checkTTL: a TTL the last check found safe where the one in the settings kills flows; fnport
-// starts with it even when «Apply» was not pressed (people skip it: Telplus kept TTL 5 and got
-// nothing but silence). 0 = none
-var checkTTL atomic.Int64
-
-func noteCheckTTL(r *checkResult) {
-	if r.Recommend != nil && r.Recommend.Fake != "" && r.Recommend.FakeTTL < r.Settings.FakeTTL &&
-		(r.Fake == "lower" || r.Fake == "works") {
-		checkTTL.Store(int64(r.Recommend.FakeTTL))
-	} else if r.Freeze != "" && r.Freeze != "no_reply" && r.Freeze != "unclear" {
-		checkTTL.Store(0) // the check had its say and found nothing lower to use
-	}
 }
 
 func fmtReplies(rs []int) string {
@@ -136,6 +122,25 @@ func fmtReplies(rs []int) string {
 		p = append(p, fmt.Sprintf("%d/%d %s", qos.Got(r), qos.Pkts, s))
 	}
 	return strings.Join(p, ", ")
+}
+
+func bothBeaconProbesPassed(rs []int) bool {
+	return len(rs) == 2 && qos.Got(rs[0]) >= qos.PassMin && qos.Got(rs[1]) >= qos.PassMin
+}
+
+// Compare two sockets in each condition on the same beacon. Few or mixed
+// replies can also be a rate limit. They cannot justify changing the fake.
+func beaconFakeVerdict(control, withFake []int) string {
+	if !bothBeaconProbesPassed(control) || len(withFake) != 2 {
+		return "unclear"
+	}
+	if qos.Count(withFake, "silent") == len(withFake) {
+		return "kills"
+	}
+	if bothBeaconProbesPassed(withFake) {
+		return "harmless"
+	}
+	return "unclear"
 }
 
 func (k *checker) probe(host netip.Addr, fake []byte, ttl int) []int {
@@ -206,8 +211,8 @@ func (k *checker) run(cur settings) *checkResult {
 	k.say("Заморозка у провайдера: по 2 пробы без фейка на маяк Epic")
 	var host netip.Addr
 	worst, limited := 0, false
-	var answered []netip.Addr
-	for _, b := range bs {
+	beacon := -1
+	for i, b := range bs {
 		rs := k.probe(b, nil, 0)
 		k.say("  %s: %s", geo.CityRU(b), fmtReplies(rs))
 		r.Control = append(r.Control, cityReplies{geo.CityRU(b), rs})
@@ -216,8 +221,9 @@ func (k *checker) run(cur settings) *checkResult {
 				r.Loss = max(r.Loss, (qos.Pkts-qos.Got(x))*100/qos.Pkts)
 			}
 		}
-		if qos.Count(rs, "silent") < len(rs) {
-			answered = append(answered, b)
+		if qos.Count(rs, "silent") < len(rs) && (beacon < 0 ||
+			(!bothBeaconProbesPassed(r.Control[beacon].Replies) && bothBeaconProbesPassed(rs))) {
+			beacon = i
 		}
 		if qos.Count(rs, "limited") > 0 {
 			limited = true
@@ -236,7 +242,7 @@ func (k *checker) run(cur settings) *checkResult {
 		return nil
 	}
 	switch {
-	case len(answered) == 0:
+	case beacon < 0:
 		r.Freeze = "no_reply"
 		return finish(r, cur)
 	case worst == 0 && limited:
@@ -254,24 +260,37 @@ func (k *checker) run(cur settings) *checkResult {
 		if d := fakeData(name); d != nil {
 			r.FakeFile = name
 			k.say("Заморозки нет. Не ломает ли фейк %s соединения (TTL %d):", fakes.Label(name), cur.FakeTTL)
-			rs := k.probe(answered[0], d, cur.FakeTTL)
-			k.say("  %s: %s", geo.CityRU(answered[0]), fmtReplies(rs))
+			r.FakeControl = r.Control[beacon].Replies
+			r.FakeCity = r.Control[beacon].City
+			rs := k.probe(bs[beacon], d, cur.FakeTTL)
+			k.say("  %s: %s", r.FakeCity, fmtReplies(rs))
 			r.FakeCheck = &ttlReplies{cur.FakeTTL, rs}
-			r.Fake = "harmless"
-			if qos.Count(rs, "silent") == len(rs) {
-				r.Fake = "kills"
+			r.Fake = beaconFakeVerdict(r.FakeControl, rs)
+			if r.Fake == "kills" {
 				// the fake reaches the DPI and kills the flow there: lower, it may still pass the
 				// point that lifts the freeze of game servers (seen at Dom.ru: TTL 4 by day, then
 				// 4 killing at night while 3 had worked)
-				r.FakeCity = geo.CityRU(answered[0])
 				scan := fakeScan{Fake: name}
 				for t := cur.FakeTTL - 1; t >= 1; t-- {
 					k.say("  ниже, TTL %d:", t)
-					rs := k.probe(answered[0], d, t)
-					k.say("  %s: %s", geo.CityRU(answered[0]), fmtReplies(rs))
+					rs := k.probe(bs[beacon], d, t)
+					k.say("  %s: %s", r.FakeCity, fmtReplies(rs))
 					scan.Steps = append(scan.Steps, ttlReplies{t, rs})
-					if qos.Count(rs, "silent") < len(rs) {
-						r.Fake, r.TTL = "lower", t
+					switch beaconFakeVerdict(r.FakeControl, rs) {
+					case "harmless":
+						more := k.probe(bs[beacon], d, t)
+						k.say("  подтверждение TTL %d: %s", t, fmtReplies(more))
+						all := append(append([]int(nil), rs...), more...)
+						scan.Steps[len(scan.Steps)-1].Replies = all
+						if fullCheckTTL(all) {
+							r.Fake, r.TTL = "lower", t
+						} else {
+							r.Fake = "unclear"
+						}
+					case "unclear":
+						r.Fake = "unclear"
+					}
+					if r.Fake == "lower" {
 						break
 					}
 				}
@@ -306,59 +325,39 @@ func (k *checker) run(cur settings) *checkResult {
 		}
 		k.say("Фейк %s: подбор TTL %d–%d на маяке %s", fakes.Label(name), lo, hi, geo.CityRU(host))
 		scan := fakeScan{Fake: name}
-		verdict, works, rec := k.scanTTL(host, d, lo, hi, &scan)
+		verdict, works, rec := k.scanTTL(host, d, lo, hi, cur.FakeTTL, name == cur.Fake, &scan)
 		r.Scans = append(r.Scans, scan)
 		if verdict == "works" {
 			r.Fake, r.FakeFile, r.WorksFrom, r.TTL = verdict, name, works, rec
-			k.say("  срабатывает с TTL %d, рекомендую %d", works, rec)
+			k.say("  две полные серии прошли при TTL %d; рекомендуемый TTL %d. Настройки изменятся только после применения", works, rec)
 			break
 		}
-		k.say("  %s", map[string]string{"kills": "убивает соединения", "fails": "не помогает"}[verdict])
+		k.say("  %s", map[string]string{"kills": "ответы с фейком пропали, контрольные пробы отвечают", "fails": "проходящих проб не найдено", "partial": "часть проб прошла; менять TTL по смешанным ответам не предлагаю", "unclear": "недостаточно данных для вывода"}[verdict])
 		// none works: what the fake in use does decides (one that kills flows is to be switched off)
 		if first == "" {
 			first = verdict
 			r.Fake, r.FakeFile = verdict, name
 		}
+		if verdict == "partial" && name == cur.Fake {
+			break
+		}
 	}
 	return finish(r, cur)
 }
 
-// scanTTL: TTLs from lo up, 2 sockets each; a TTL with a pass gets 2 more and is taken with
-// at least 2 passes of 4; then one hop of margin unless the fake starts killing flows there
-func (k *checker) scanTTL(host netip.Addr, fake []byte, lo, hi int, scan *fakeScan) (verdict string, works, rec int) {
-	silentRun := 0
-	for t := lo; t <= hi; t++ {
-		rs := k.probe(host, fake, t)
-		k.say("  TTL %d: %s", t, fmtReplies(rs))
-		scan.Steps = append(scan.Steps, ttlReplies{t, rs})
-		if qos.Count(rs, "pass") >= 1 {
-			more := k.probe(host, fake, t)
-			k.say("  TTL %d ещё раз: %s", t, fmtReplies(more))
-			scan.Steps[len(scan.Steps)-1].Replies = append(append([]int(nil), rs...), more...)
-			if qos.Count(append(rs, more...), "pass") >= 2 {
-				rec = t
-				if t < hi {
-					m := k.probe(host, fake, t+1)
-					k.say("  TTL %d (запас): %s", t+1, fmtReplies(m))
-					scan.Steps = append(scan.Steps, ttlReplies{t + 1, m})
-					if qos.Count(m, "silent") < len(m) {
-						rec = t + 1
-					}
-				}
-				return "works", t, rec
-			}
-			continue
+// Each change is based on two complete rounds. The current active TTL is
+// tested first and retained on mixed passing/frozen replies.
+func (k *checker) scanTTL(host netip.Addr, fake []byte, lo, hi, current int, preserve bool, scan *fakeScan) (string, int, int) {
+	return selectCheckTTL(lo, hi, current, preserve, scan, func(ttl int) []int {
+		if ttl == 0 {
+			rs := k.probe(host, nil, 0)
+			k.say("  контроль без фейка после тишины: %s", fmtReplies(rs))
+			return rs
 		}
-		if qos.Count(rs, "silent") == len(rs) {
-			silentRun++
-		} else {
-			silentRun = 0
-		}
-		if silentRun >= 2 {
-			return "kills", 0, 0
-		}
-	}
-	return "fails", 0, 0
+		rs := k.probe(host, fake, ttl)
+		k.say("  TTL %d: %s", ttl, fmtReplies(rs))
+		return rs
+	})
 }
 
 // checkPortKept: two random ports ask STUN servers which port the outside sees. A server whose
@@ -434,7 +433,7 @@ func finish(r *checkResult, cur settings) *checkResult {
 		}
 		if rec.Fake != cur.Fake || rec.FakeTTL != cur.FakeTTL {
 			r.Recommend = &rec
-		} else if helpless := r.PortKept == "no" && r.Freeze == "yes" && r.Fake != "works"; !helpless &&
+		} else if helpless := r.PortKept == "no" && r.Freeze == "yes" && (r.Fake == "fails" || r.Fake == "kills"); !helpless &&
 			(r.Freeze == "yes" || r.Freeze == "no") {
 			// users looked for "Apply" when there was nothing to apply
 			add("Проверка не предложила менять фейк и TTL. Следующий шаг: включите fnport и попробуйте найти матч.")
@@ -442,7 +441,7 @@ func finish(r *checkResult, cur settings) *checkResult {
 	}()
 	if r.Loss > 0 {
 		// seen at SkyNet over Wi-Fi: 23 of 30 everywhere, with and without the fake, at any TTL
-		add(fmt.Sprintf("Связь теряет до %d%% пакетов на пути к серверам Epic — это не заморозка, и fnport потери не убирает. "+
+		add(fmt.Sprintf("В пробах маяка пропущено до %d%% ответов, в том числе были ответы после 25-го пакета. "+
 			"Если ПК на Wi-Fi, попробуйте кабель.", r.Loss))
 	}
 	port := func() {
@@ -453,8 +452,9 @@ func finish(r *checkResult, cur settings) *checkResult {
 		case r.Freeze == "no":
 			add("Роутер или провайдер меняет порт, но заморозки на маяках нет — пока это не мешает.")
 		case r.Freeze == "yes" && r.Fake == "works":
-			add("Роутер или провайдер меняет порт, но фейк с ПК снимает заморозку: fnport на ПК работает, " +
-				"только без подбора портов.")
+			add("Роутер или провайдер меняет порт. В проверенных пробах с фейком ответы проходят, но вход в матч нужно проверить отдельно.")
+		case r.Freeze == "yes" && r.Fake == "partial":
+			add("Роутер или провайдер меняет порт. Смешанных ответов маяка недостаточно, чтобы подтвердить обход с ПК без подбора портов.")
 		case r.Freeze == "yes":
 			add("Роутер или провайдер меняет порт, а фейк не помогает: с ПК fnport мало что сделает. Если порт меняет " +
 				"ваш роутер — fnport на роутере с OpenWrt; если провайдер («серый» IP) — белый IP, но это обычно платная услуга.")
@@ -469,13 +469,18 @@ func finish(r *checkResult, cur settings) *checkResult {
 		add("Ответов мало (эхо Epic ограничивает или связь теряет пакеты): попробуйте позже.")
 	case "no":
 		// seen in a club: beacons 30/30, a game server in the same city froze two ports of four
-		add("На маяках Epic заморозки сейчас нет. На игровых серверах она бывает и тогда: если матчи не находятся " +
-			"или вылетают, оставьте fnport включённым — без заморозки он не мешает.")
+		add("На маяках Epic заморозки сейчас нет. Подключение к игровому серверу проверяется при входе в матч.")
+		if r.FakeCheck != nil {
+			add(fmt.Sprintf("%s, ответы из 30: без фейка %s; с %s при TTL %d: %s.", r.FakeCity,
+				joinReplies(r.FakeControl), fakes.Label(r.FakeFile), r.FakeCheck.TTL, joinReplies(r.FakeCheck.Replies)))
+		}
 		switch {
 		case r.Fake == "lower":
 			add(fmt.Sprintf("Фейк %s с TTL %d убивает соединения, с TTL %d — нет: «Применить» поставит TTL %d.",
 				fakes.Label(r.FakeFile), cur.FakeTTL, r.TTL, r.TTL))
 			rec.Fake, rec.FakeTTL = r.FakeFile, r.TTL
+		case r.Fake == "unclear":
+			add("Сравнение фейка на этом маяке не дало уверенного результата.")
 		case r.Fake == "kills" && cur.Fake != "":
 			add("Фейк здесь убивает соединения при любом TTL — лучше его выключить.")
 			rec.Fake = ""
@@ -487,13 +492,17 @@ func finish(r *checkResult, cur settings) *checkResult {
 		add("Заморозка у провайдера есть.")
 		switch r.Fake {
 		case "works":
-			add(fmt.Sprintf("Фейк %s её снимает: TTL %d.", fakes.Label(r.FakeFile), r.TTL))
+			add(fmt.Sprintf("При TTL %d с фейком %s прошли две полные серии проб. Это рекомендация для маяка, не гарантия входа в матч.", r.TTL, fakes.Label(r.FakeFile)))
 			rec.Fake, rec.FakeTTL = r.FakeFile, r.TTL
+		case "partial":
+			add("С фейком часть проб прошла, но ответы смешанные. Это не подтверждает надежное снятие заморозки. Фейк и текущий TTL сохраняются, во время игры fnport продолжит подбирать порты.")
+		case "unclear":
+			add("Данных недостаточно для рекомендации другого фейка или TTL. Текущие настройки сохраняются.")
 		case "kills":
-			add("Фейки убивают соединения у этого провайдера: остаётся только проверка портов, без фейка.")
+			add("С проверенным фейком ответы пропали, а контрольные пробы отвечают. Можно применить отключение фейка и оставить подбор портов.")
 			rec.Fake = ""
 		default:
-			add("Фейки заморозку не сняли: fnport будет искать порты без них.")
+			add("Подтвержденной рекомендации другого фейка или TTL нет. Текущие настройки сохраняются, подбор портов продолжит работать.")
 		}
 	}
 	port()

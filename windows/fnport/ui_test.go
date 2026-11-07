@@ -105,3 +105,53 @@ func TestNestedListOwnsWheelAndClicks(t *testing.T) {
 		t.Fatalf("scrolled row did not receive click: %d", picked)
 	}
 }
+
+// Settings cards have very different heights, especially after an ISP check.
+// Their scrollbar must use the page height, not an estimate from visible cards.
+func TestSettingsScrollKeepsGeometry(t *testing.T) {
+	for _, checked := range []bool{false, true} {
+		name := "before-check"
+		if checked {
+			name = "after-check"
+		}
+		t.Run(name, func(t *testing.T) {
+			check := &checker{}
+			if checked {
+				check.lines = make([]string, 14)
+				for i := range check.lines {
+					check.lines[i] = "TTL 3: 30/30 проходит, 25/30 заморозка"
+				}
+				check.result = &checkResult{Freeze: "unclear", Summary: []string{"Ответов недостаточно для рекомендации.", "Текущие настройки сохранены."}}
+			}
+			v := newView(newController(defaultSettings()), &pinger{}, check, nil, func() {})
+			r := new(input.Router)
+			now := time.Now()
+			frame := func() {
+				now = now.Add(time.Second / 60)
+				ops := new(op.Ops)
+				gtx := layout.Context{Ops: ops, Source: r.Source(), Now: now,
+					Metric: unit.Metric{PxPerDp: 1, PxPerSp: 1}, Constraints: layout.Exact(image.Pt(800, 600))}
+				v.settingsTab(gtx)
+				r.Frame(ops)
+			}
+			frame()
+			frame()
+			height := v.page.Position.Length
+			if height <= 600 {
+				t.Fatalf("settings did not overflow: %d", height)
+			}
+			for notch := 0; notch < 8; notch++ {
+				r.Queue(pointer.Event{Kind: pointer.Scroll, Source: pointer.Mouse, Position: f32.Pt(650, 100), Scroll: f32.Pt(0, 120)})
+				for i := 0; i < 40; i++ {
+					frame()
+				}
+				if got := v.page.Position.Length; got != height {
+					t.Fatalf("scrollbar page height changed during scrolling: %d -> %d (notch %d)", height, got, notch+1)
+				}
+			}
+			if v.page.Position.First == 0 && v.page.Position.Offset == 0 {
+				t.Fatal("settings did not scroll")
+			}
+		})
+	}
+}

@@ -140,46 +140,47 @@ type view struct {
 	openLog  widget.Clickable
 
 	// settings: a draft edited here, applied with "Save"
-	page       widget.List
-	draftFor   uint64 // changes counter when the draft was taken; 0 = take it again
-	adapter    widget.Enum
-	fake       widget.Enum
-	ttl        int
-	ttlMinus   widget.Clickable
-	ttlPlus    widget.Clickable
-	routes     widget.Editor
-	ports      widget.Editor
-	batch      widget.Editor
-	rounds     widget.Editor
-	budget     widget.Editor
-	passthru   widget.Bool
-	warpMode   widget.Enum // "off", "auto", "always"
-	warpPage   widget.List
-	warpList   widget.Editor // the names that go through WARP, one per line
-	warpSave   widget.Clickable
-	warpReset  widget.Clickable
-	warpDraft  bool // the list editor holds the saved list
-	warpSpeed  widget.Clickable
-	warpConf   widget.Editor // a config pasted by the user
-	warpUseCfg widget.Clickable
-	speedBusy  bool
-	warpReg    widget.Clickable
-	warpBusy   bool
-	warpMsg    string
-	warpErr    bool
-	save       widget.Clickable
-	reset      widget.Clickable
-	openFakes  widget.Clickable
-	licenses   widget.Clickable
-	runCheck   widget.Clickable
-	applyCheck widget.Clickable
-	checkDone  chan error // completion delivered back to the UI thread
-	checkMsg   string
-	checkErr   bool
-	adapters   []wnet.IfaceInfo
-	fakeFiles  []fakes.File
-	saveMsg    string
-	saveErr    bool
+	page        widget.List
+	draftFor    uint64 // changes counter when the draft was taken; 0 = take it again
+	adapter     widget.Enum
+	fake        widget.Enum
+	ttl         int
+	ttlMinus    widget.Clickable
+	ttlPlus     widget.Clickable
+	routes      widget.Editor
+	ports       widget.Editor
+	batch       widget.Editor
+	rounds      widget.Editor
+	budget      widget.Editor
+	passthru    widget.Bool
+	warpMode    widget.Enum // "off", "auto", "always"
+	warpPage    widget.List
+	warpList    widget.Editor // the names that go through WARP, one per line
+	warpSave    widget.Clickable
+	warpReset   widget.Clickable
+	warpDraft   bool // the list editor holds the saved list
+	warpSpeed   widget.Clickable
+	warpConf    widget.Editor // a config pasted by the user
+	warpUseCfg  widget.Clickable
+	speedBusy   bool
+	warpReg     widget.Clickable
+	warpBusy    bool
+	warpMsg     string
+	warpErr     bool
+	save        widget.Clickable
+	reset       widget.Clickable
+	openFakes   widget.Clickable
+	licenses    widget.Clickable
+	runCheck    widget.Clickable
+	applyCheck  widget.Clickable
+	checkDone   chan error // completion delivered back to the UI thread
+	checkMsg    string
+	checkErr    bool
+	adapters    []wnet.IfaceInfo
+	autoAdapter string // resolved when the settings draft is loaded, not while drawing
+	fakeFiles   []fakes.File
+	saveMsg     string
+	saveErr     bool
 }
 
 func newView(ctl *controller, ping *pinger, check *checker, open func(string), onQuit func()) *view {
@@ -651,11 +652,11 @@ func (v *view) warpMainCard(gtx C) D {
 	w := v.ctl.warpTunnel()
 	dotC, state := colYellow, v.ctl.warpStatus(false)
 	if state == "" {
-		state = "подключается…"
+		state = "ищет выход…"
 	}
 	var colo string
 	if w != nil {
-		dotC, state = colGreen, fmt.Sprintf("подключён, через него %d соединений", w.conns.Load())
+		dotC, state = colGreen, fmt.Sprintf("подключен, открыто соединений: %d", w.conns.Load())
 		colo, _, _ = w.exitParts()
 	} else if strings.HasPrefix(state, "не подключился") {
 		dotC = colRed
@@ -665,7 +666,7 @@ func (v *view) warpMainCard(gtx C) D {
 			layout.Rigid(func(gtx C) D {
 				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 					layout.Rigid(func(gtx C) D { return dot(gtx, dotC, 10) }), hspace(10),
-					layout.Rigid(bold(v.label(14, colText, "WARP для сервисов Epic")).Layout), hspace(10),
+					layout.Rigid(bold(v.label(14, colText, "WARP")).Layout), hspace(10),
 					layout.Flexed(1, v.label(13, colMuted, state).Layout))
 			}),
 		}
@@ -1048,6 +1049,10 @@ func warnLine(l string) bool {
 func (v *view) takeDraft() {
 	s := v.ctl.settings()
 	v.adapters = wnet.Interfaces()
+	v.autoAdapter = "Автоматически"
+	if info, err := physical(""); err == nil {
+		v.autoAdapter = fmt.Sprintf("Автоматически (сейчас «%s»)", info.Alias)
+	}
 	v.fakeFiles = fakes.List(fakesDir())
 	v.adapter.Value = s.Adapter
 	v.fake.Value = s.Fake
@@ -1179,8 +1184,17 @@ func (v *view) settingsTab(gtx C) D {
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		v.title("Настройки"),
 		layout.Flexed(1, func(gtx C) D {
-			return v.list(gtx, &v.page, len(sections), func(gtx C, i int) D {
-				return layout.Inset{Bottom: 12, Right: 10}.Layout(gtx, sections[i])
+			// A handful of unequal cards form one page. Virtualizing them separately
+			// makes Gio estimate its height from the cards currently in view, so
+			// the scrollbar jumps as the large check result leaves the viewport.
+			return v.list(gtx, &v.page, 1, func(gtx C, _ int) D {
+				kids := make([]layout.FlexChild, 0, len(sections))
+				for _, section := range sections {
+					kids = append(kids, layout.Rigid(func(gtx C) D {
+						return layout.Inset{Bottom: 12, Right: 10}.Layout(gtx, section)
+					}))
+				}
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
 			})
 		}),
 		vspace(10),
@@ -1316,9 +1330,9 @@ func (v *view) radio(key, text string, group *widget.Enum) layout.FlexChild {
 }
 
 func (v *view) adapterCard(gtx C) D {
-	auto := "Автоматически"
-	if info, err := physical(""); err == nil {
-		auto = fmt.Sprintf("Автоматически (сейчас «%s»)", info.Alias)
+	auto := v.autoAdapter
+	if auto == "" {
+		auto = "Автоматически"
 	}
 	return v.card(gtx, func(gtx C) D {
 		kids := v.sectionTitle("Сетевой адаптер", "Через какой адаптер fnport выходит в интернет.")

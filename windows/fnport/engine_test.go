@@ -392,7 +392,7 @@ func TestSilenceAfterAnswersIsAPause(t *testing.T) {
 	}()
 	none := func(int) bool { return false }
 	port := p.pick(srv, none)
-	if port == 0 {
+	if port.port == 0 {
 		t.Fatal("no port")
 	}
 	if tg := p.targets[srv]; tg.mode == modeBlind {

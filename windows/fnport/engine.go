@@ -85,24 +85,27 @@ type uflow struct {
 	match  bool // the match itself (9xxx), not the control connection
 	noGood bool // no probed port was found: it went from an untested one
 
-	mu         sync.Mutex
-	retryAfter time.Time
-	traceAt    time.Time
-	queueMaxNS atomic.Int64
-	writeMaxNS atomic.Int64
-	queueDrops atomic.Uint64
-	reported   bool
-	send       chan queuedUDP
-	failed     bool         // a selected transport failed: do not retry/log every game packet
-	tunnel     net.Conn     // selected process datagrams through WARP or sing-box
-	conn       *net.UDPConn // nil while the port is being chosen
-	port       int
-	pending    [][]byte
-	remaps     int
-	frozen     bool // reported, waiting for a remap
-	last       time.Time
-	started    time.Time
+	mu             sync.Mutex
+	retryAfter     time.Time
+	traceAt        time.Time
+	queueMaxNS     atomic.Int64
+	writeMaxNS     atomic.Int64
+	queueDrops     atomic.Uint64
+	reported       bool
+	send           chan queuedUDP
+	failed         bool         // a selected transport failed: do not retry/log every game packet
+	tunnel         net.Conn     // selected process datagrams through WARP or sing-box
+	conn           *net.UDPConn // nil while the port is being chosen
+	port           int
+	pendingDropped int
+	pending        [][]byte
+	endLogged      bool
+	remaps         int
+	frozen         bool // reported, waiting for a remap
+	last           time.Time
+	started        time.Time
 
+	writeFailures     atomic.Int64
 	out, in           atomic.Int64 // since the current port
 	totalOut, totalIn atomic.Int64
 }
@@ -137,10 +140,14 @@ type engine struct {
 	tcp        *tcpRelay
 	stat       *counters
 
-	mu    sync.Mutex
-	flows map[flowKey]*uflow
-	ipID  atomic.Uint32
-	done  chan struct{}
+	// Hold through game port selection, bind and socket installation, including
+	// the fake pause. prober.mu alone ends before busy() can see the new port.
+	// Never acquire while holding e.mu or a flow mutex.
+	portMu sync.Mutex
+	mu     sync.Mutex
+	flows  map[flowKey]*uflow
+	ipID   atomic.Uint32
+	done   chan struct{}
 
 	gone func(flowInfo) // a game flow ended (idle), for the summary
 }
@@ -243,6 +250,8 @@ func (e *engine) udp(p wnet.UDPPacket) {
 	if c == nil && tunnel == nil {
 		if len(f.pending) < maxPending {
 			f.pending = append(f.pending, append([]byte(nil), p.Payload...))
+		} else {
+			f.pendingDropped++
 		}
 		f.mu.Unlock()
 		if isNew {
@@ -260,9 +269,7 @@ func (e *engine) udp(p wnet.UDPPacket) {
 			}
 		}
 	} else {
-		f.out.Add(1)
-		f.totalOut.Add(1)
-		c.WriteToUDPAddrPort(p.Payload, p.Dst)
+		e.sendDirect(f, c, p.Payload, false)
 	}
 }
 
@@ -292,20 +299,18 @@ func (e *engine) assign(f *uflow) {
 		e.assignConnection(f)
 		return
 	}
-	port, how := 0, ""
-	t0 := time.Now()
+	var choice portChoice
 	if f.game {
-		port = e.prober.pick(dst, e.busy)
-		if port == 0 {
-			how = "годного порта нет, любой"
-			e.stat.add(&e.stat.nogood, 1)
-			f.mu.Lock()
-			f.noGood = true
-			f.mu.Unlock()
+		e.portMu.Lock()
+		defer e.portMu.Unlock()
+		if !devSkipControlProbes(e.cfg, dst) {
+			choice = e.prober.pick(dst, e.busy)
+		} else {
+			logf("дев-сравнение: контрольный порт %d без искусственных проб, фейк по текущим настройкам", dst.Port())
 		}
 		e.stat.add(&e.stat.gameFlows, 1)
 	}
-	c, port, err := openPort(port)
+	c, port, err := openPort(choice.port)
 	if err != nil {
 		logf("соединение %s: нет сокета: %v", dst, err)
 		e.mu.Lock()
@@ -319,20 +324,27 @@ func (e *engine) assign(f *uflow) {
 			sendFake(c, fake, dst, e.prober.fakeTTL())
 			time.Sleep(fakeGap)
 		}
-		if how == "" {
-			how = "порт проверен"
+		if choice.port != port || choice.source == modeBlind {
+			e.stat.add(&e.stat.nogood, 1)
+			f.mu.Lock()
+			f.noGood = true
+			f.mu.Unlock()
 		}
-		logf("игра %s (у игры порт %d) -> порт %d, %s за %d мс", dst, f.key.cport, port, how, time.Since(t0).Milliseconds())
 	}
 	f.mu.Lock()
 	f.conn, f.port = c, port
-	held := f.pending
+	held, dropped := f.pending, f.pendingDropped
 	f.pending = nil
-	f.mu.Unlock()
+	// Keep the flow locked until its initial datagrams have left the socket.
+	// Otherwise udp() can send a fresh packet ahead of held packets, especially
+	// while the assignment log is waiting for a file/UI reader.
 	for _, b := range held {
-		f.out.Add(1)
-		f.totalOut.Add(1)
-		c.WriteToUDPAddrPort(b, dst)
+		e.sendDirect(f, c, b, true)
+	}
+	f.mu.Unlock()
+	if f.game {
+		logf("игра %s (у игры порт %d) -> локальный порт %d, %s; ожидание %d мс, в очереди %d, не поместилось %d",
+			dst, f.key.cport, port, choice.description(port), time.Since(f.started).Milliseconds(), len(held), dropped)
 	}
 	go e.back(f, c)
 
@@ -362,11 +374,13 @@ func (e *engine) back(f *uflow, c *net.UDPConn) {
 			continue
 		}
 		f.in.Add(1)
-		f.totalIn.Add(1)
+		seq := f.totalIn.Add(1)
 		f.mu.Lock()
 		f.last = time.Now()
 		f.mu.Unlock()
-		if e.dev.WritePacket(wnet.BuildUDP4(from, client, buf[:n], uint16(e.ipID.Add(1)))) != nil {
+		writeErr := e.dev.WritePacket(wnet.BuildUDP4(from, client, buf[:n], uint16(e.ipID.Add(1))))
+		e.traceGamePacket(f, "rx", seq, n, c.LocalAddr().(*net.UDPAddr).Port, false, writeErr == nil)
+		if writeErr != nil {
 			return
 		}
 	}
@@ -409,6 +423,9 @@ func (e *engine) watch() {
 				continue
 			}
 			if idle {
+				f.mu.Lock()
+				f.logGameEnd()
+				f.mu.Unlock()
 				if c != nil {
 					c.Close()
 				}
@@ -443,19 +460,21 @@ func (e *engine) watch() {
 // remap moves a frozen flow to another port, the fake first. The game keeps its socket; only
 // the port the server sees changes. A frozen flow is lost anyway.
 func (e *engine) remap(f *uflow) {
+	e.portMu.Lock()
+	defer e.portMu.Unlock()
 	dst := f.key.dst
-	port := 0
+	var choice portChoice
 	e.prober.mu.Lock()
 	if t := e.prober.targets[dst]; t != nil {
 		for _, g := range t.good {
-			if !e.busy(g) {
-				port = g
+			if !e.busy(g.port) {
+				choice = g
 				break
 			}
 		}
 	}
 	e.prober.mu.Unlock()
-	c, port, err := openPort(port)
+	c, port, err := openPort(choice.port)
 	if err != nil {
 		logf("перевод %s: нет сокета: %v", dst, err)
 		return
@@ -476,7 +495,7 @@ func (e *engine) remap(f *uflow) {
 	old.Close()
 	go e.back(f, c)
 	e.stat.add(&e.stat.remaps, 1)
-	logf("соединение %s переведено на порт %d (попытка %d)", dst, port, n)
+	logf("соединение %s переведено на локальный порт %d (%s, попытка %d)", dst, port, choice.description(port), n)
 }
 
 // gameFlows: the game flows now
@@ -515,6 +534,7 @@ func (e *engine) close() {
 	e.mu.Lock()
 	for _, f := range e.flows {
 		f.mu.Lock()
+		f.logGameEnd()
 		if f.conn != nil {
 			f.conn.Close()
 		}
@@ -524,6 +544,17 @@ func (e *engine) close() {
 		f.mu.Unlock()
 	}
 	e.mu.Unlock()
+}
+
+// Called with f.mu held when a game flow leaves the engine. Keep the final
+// port separate from totals so a successful remap is visible in a dev log.
+func (f *uflow) logGameEnd() {
+	if devTrace != "on" || !f.game || f.endLogged {
+		return
+	}
+	f.endLogged = true
+	logf("закрыто игровое соединение %s (у игры порт %d): локальный порт %d, отправлено %d, получено %d; за все порты %d/%d, переводов %d",
+		f.key.dst, f.key.cport, f.port, f.out.Load(), f.in.Load(), f.totalOut.Load(), f.totalIn.Load(), f.remaps)
 }
 
 func (e *engine) summary() string {
@@ -539,4 +570,15 @@ func (e *engine) summary() string {
 	}
 	return fmt.Sprintf("UDP: сейчас %d, всего %d (игра %d, без годного порта %d, замёрзло %d, переводов %d); проверено портов %d, годных %d; TCP: сейчас %d, всего %d",
 		active, s.flows, s.gameFlows, s.nogood, s.frozen, s.remaps, s.tested, s.good, tcpActive, tcpTotal)
+}
+
+func (e *engine) sendDirect(f *uflow, c *net.UDPConn, payload []byte, initial bool) {
+	f.out.Add(1)
+	seq := f.totalOut.Add(1)
+	n, err := c.WriteToUDPAddrPort(payload, f.key.dst)
+	ok := err == nil && n == len(payload)
+	if !ok {
+		f.writeFailures.Add(1)
+	}
+	e.traceGamePacket(f, "tx", seq, len(payload), c.LocalAddr().(*net.UDPAddr).Port, initial, ok)
 }

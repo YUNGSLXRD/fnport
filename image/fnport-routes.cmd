@@ -4,7 +4,7 @@ rem Double-click for a menu, or: fnport-routes.cmd on ^| persist ^| off
 chcp 65001 >nul
 setlocal
 set GW=192.168.56.2
-set NETS=3.0.0.0/255.0.0.0 13.32.0.0/255.224.0.0 15.0.0.0/255.0.0.0 18.0.0.0/255.0.0.0 35.156.0.0/255.252.0.0 35.176.0.0/255.248.0.0
+set NETS=3.0.0.0/255.0.0.0 13.32.0.0/255.224.0.0 15.0.0.0/255.0.0.0 18.0.0.0/255.0.0.0 35.156.0.0/255.252.0.0 35.176.0.0/255.248.0.0 51.44.0.0/255.255.0.0
 
 rem routes need administrator rights: ask for them and start again
 net session >nul 2>&1
