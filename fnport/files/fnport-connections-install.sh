@@ -27,7 +27,7 @@ work=$(mktemp -d "$DEST/.install.XXXXXX")
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
 trap 'exit 1' INT TERM
-base="https://github.com/YUNGSLXRD/fnport/releases/download/v$version"
+base="https://github.com/YUNGSLXRD/fnport/releases/download/components-v$version"
 helper="fnport-connections-$target.tar.gz"
 fetch() { uclient-fetch -q --timeout=90 -O "$2" "$1"; }
 fetch "$base/SHA256SUMS.txt" "$work/SHA256SUMS.txt" || fail release_unreachable

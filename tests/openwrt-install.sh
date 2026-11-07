@@ -28,6 +28,7 @@ url= dest=
 while [ "$#" -gt 0 ]; do
  case "$1" in -O) dest=$2; shift 2;; -*) shift;; *) url=$1; shift;; esac
 done
+case "$url" in https://github.com/YUNGSLXRD/fnport/releases/download/components-v0.7.0/*) ;; *) exit 3;; esac
 name=${url##*/}
 case "$name" in SHA256SUMS.txt|fnport-connections-linux-*.tar.gz|fnport-sing-box-linux-*.tar.gz) ;; *) exit 2;; esac
 if [ "${FNPORT_BAD_HASH:-0}" = 1 ] && [ "$name" = SHA256SUMS.txt ]; then

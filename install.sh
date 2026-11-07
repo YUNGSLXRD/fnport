@@ -41,7 +41,18 @@ rm -rf "$TMP"; mkdir -p "$TMP"
 echo "Looking up the latest release of $REPO..."
 fetch "$API" "$TMP/release.json"
 
-URLS="$(jsonfilter -i "$TMP/release.json" -e '@.assets[*].browser_download_url' | grep "\.$EXT\$" | grep -E '/(fnport|luci-app-fnport|luci-i18n-fnport-ru)[-_]')"
+package_urls() {
+ jsonfilter -i "$1" -e '@.assets[*].browser_download_url' | grep "\.$EXT\$" | grep -E '/(fnport|luci-app-fnport|luci-i18n-fnport-ru)[-_]' || true
+}
+URLS="$(package_urls "$TMP/release.json")"
+# Public releases carry just the Windows ZIP. Router packages live in the matching
+# non-latest components release. Older releases with direct packages still work.
+if [ -z "$URLS" ]; then
+ TAG="$(jsonfilter -i "$TMP/release.json" -e '@.tag_name')"
+ case "$TAG" in ''|*[!A-Za-z0-9._-]*) echo 'Invalid release tag' >&2; exit 1;; esac
+ fetch "https://api.github.com/repos/$REPO/releases/tags/components-$TAG" "$TMP/components.json"
+ URLS="$(package_urls "$TMP/components.json")"
+fi
 [ -n "$URLS" ] || { echo "No .$EXT packages in the latest release" >&2; exit 1; }
 
 # version of the release, from the fnport package name: fnport-0.3.3-r1.apk / fnport_0.3.3-r1_all.ipk

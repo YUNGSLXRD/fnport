@@ -42,6 +42,10 @@ licenses() {
 	printf '%s\n\n%s\n\n' "== wgcf (the WARP registration request and TLS fingerprint), ViRb3" "$(cat third_party/wgcf-LICENSE.txt)"
 	printf '%s\n\n%s\n\n' "== Inter font" "$(cat internal/fonts/OFL.txt)"
 	printf '%s\n\n%s\n' "== Fake QUIC Initials (fakes/*.bin), from zapret" "$(cat ../fnport/files/quic_initial_vk_com.bin.LICENSE)"
+ if [ -n "${FNPORT_SING_BOX_DIR:-}" ]; then
+  printf '\n\n%s\n\n' '== sing-box and libcronet (bundled upstream programs)'
+  cat "$FNPORT_SING_BOX_DIR/LICENSE" third_party/sing-box-GPL-3.0.txt third_party/sing-box-SOURCES.txt
+ fi
 } > fnport/licenses.txt
 
 go vet -tags "$BUILD_TAGS" ./...
@@ -74,9 +78,7 @@ pack() {
 	cp "$dll" "$out/wintun.dll"
  if [ "$1" = fnport ] && [ -n "${FNPORT_SING_BOX_DIR:-}" ]; then
   cp "$FNPORT_SING_BOX_DIR/sing-box.exe" "$out/sing-box.exe"
-  cp "$FNPORT_SING_BOX_DIR/LICENSE" "$out/sing-box-LICENSE.txt"
   if [ -f "$FNPORT_SING_BOX_DIR/libcronet.dll" ]; then cp "$FNPORT_SING_BOX_DIR/libcronet.dll" "$out/libcronet.dll"; fi
-  cat "$FNPORT_SING_BOX_DIR/LICENSE" third_party/sing-box-GPL-3.0.txt third_party/sing-box-SOURCES.txt > "$out/sing-box-LICENSE.txt"
   if [ "${FNPORT_DEV_TRACE:-off}" = on ]; then
    cp ../docs/connections-dev.md "$out/README-dev.md"
   else

@@ -7,7 +7,7 @@ import (
 )
 
 // licenses.txt: the license texts of everything built into the program and shipped with it (Go
-// and its modules, Wintun, the Inter font, the fakes), written by build.sh before the build. The
+// and its modules, Wintun, the Inter font, the fakes, sing-box and libcronet), written by build.sh before the build. The
 // zip carries no loose license files; Settings → «Лицензии» shows this text.
 //
 //go:embed licenses.txt
