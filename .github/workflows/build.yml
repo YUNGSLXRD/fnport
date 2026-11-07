@@ -105,7 +105,7 @@ jobs:
           export TMPDIR="$PWD/windows/dist/router-build/tmp" GOCACHE="$PWD/windows/dist/router-build/gocache"
           go -C windows test -race ./router
           CGO_ENABLED=0 go -C windows test -c ./router -o "$PWD/windows/dist/router-tests/router-tests"
-          sudo unshare --net env FNPORT_ROUTER_NET_TEST=1 FNPORT_ROUTER_DATA="$PWD/fnport/files" FNPORT_TEST_SING_BOX="$PWD/windows/dist/router-tests/core/sing-box" "$PWD/windows/dist/router-tests/router-tests" -test.v -test.timeout=120s
+          sudo unshare --net sh -ec 'sysctl -qw net.ipv4.conf.all.rp_filter=2 net.ipv4.conf.default.rp_filter=2; exec env FNPORT_ROUTER_NET_TEST=1 "$@"' sh FNPORT_ROUTER_DATA="$PWD/fnport/files" FNPORT_TEST_SING_BOX="$PWD/windows/dist/router-tests/core/sing-box" "$PWD/windows/dist/router-tests/router-tests" -test.v -test.timeout=120s
       - name: OpenWrt userspace and frontend syntax
         run: |
           python3 tests/prepare-openwrt.py

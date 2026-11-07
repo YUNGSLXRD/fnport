@@ -24,6 +24,11 @@ import (
 func TestLinuxKernelTunnelRoundTrip(t *testing.T) {
 	requireNetworkNamespace(t)
 	runNetTest(t, "", "ip", "link", "set", "lo", "up")
+	// The isolated fixture uses loopback as WAN. A router has a default route;
+	// without one Linux's loose reverse-path filter rejects decoded replies.
+	// Data sockets still use the helper's separate oif/mark routing table.
+	runNetTest(t, "", "ip", "route", "add", "default", "dev", "lo")
+	defer runNetTest(t, "", "ip", "route", "del", "default", "dev", "lo")
 	serverKey, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)

@@ -236,11 +236,14 @@ func TestLinuxSelectedClientRouting(t *testing.T) {
 	goRead.Close()
 	finished := make(chan error, 1)
 	go func() { finished <- child.Wait() }()
+	waited := false
 	defer func() {
-		child.Process.Kill()
-		select {
-		case <-finished:
-		case <-time.After(time.Second):
+		if !waited {
+			child.Process.Kill()
+			select {
+			case <-finished:
+			case <-time.After(time.Second):
+			}
 		}
 	}()
 	reader := bufio.NewReader(readyRead)
@@ -253,7 +256,12 @@ func TestLinuxSelectedClientRouting(t *testing.T) {
 	}
 	phase("ready")
 	runNetTest(t, "", "ip", "link", "add", "fnp-test-r", "type", "veth", "peer", "name", "fnp-test-c")
-	defer runNetTest(t, "", "ip", "link", "del", "fnp-test-r")
+	defer func() {
+		// Exiting the child's network namespace can already remove both peers.
+		if _, err := net.InterfaceByName("fnp-test-r"); err == nil {
+			runNetTest(t, "", "ip", "link", "del", "fnp-test-r")
+		}
+	}()
 	runNetTest(t, "", "ip", "link", "set", "fnp-test-c", "netns", strconv.Itoa(child.Process.Pid))
 	runNetTest(t, "", "ip", "addr", "add", "10.88.0.1/24", "dev", "fnp-test-r")
 	runNetTest(t, "", "ip", "link", "set", "fnp-test-r", "up")
@@ -326,6 +334,7 @@ func TestLinuxSelectedClientRouting(t *testing.T) {
 	fmt.Fprintln(goWrite, "stopped")
 	select {
 	case err := <-finished:
+		waited = true
 		if err != nil {
 			t.Fatalf("client: %v: %s", err, output.String())
 		}
