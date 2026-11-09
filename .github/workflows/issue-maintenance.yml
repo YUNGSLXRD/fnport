@@ -11,6 +11,11 @@ on:
         description: 'Prepared reply batch ID, for example 2026-11-10; empty runs inactivity check'
         required: false
         type: string
+      dry_run:
+        description: 'Preview inactivity handling without posting or closing'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -29,6 +34,10 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+      - name: Check bot identity and migration safety
+        run: |
+          mkdir -p windows/dist
+          python3 tests/issue-maintenance.py
       - name: Post reviewed answers or welcome as GitHub Actions bot
         env:
           GH_TOKEN: ${{ github.token }}
@@ -43,6 +52,7 @@ jobs:
       - uses: actions/stale@1e223db275d687790206a7acac4d1a11bd6fe629 # v10
         with:
           repo-token: ${{ github.token }}
+          debug-only: ${{ inputs.dry_run || false }}
           days-before-issue-stale: 10
           days-before-issue-close: 4
           days-before-pr-stale: -1
