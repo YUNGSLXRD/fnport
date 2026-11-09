@@ -49,7 +49,7 @@ def welcome(event):
     if issue.get('pull_request'):
         return
     marker = '<!-- fnport-welcome:v1 -->'
-    if any(marker in comment['body'] for comment in comments(issue['number'])):
+    if any(comment['user']['login'] == BOT and marker in comment['body'] for comment in comments(issue['number'])):
         return
     body = (ROOT / '.github/ISSUE_REPLY.md').read_text().strip() + '\n\n' + marker
     result = post_as_bot(issue['number'], body)

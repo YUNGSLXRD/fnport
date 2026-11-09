@@ -76,6 +76,18 @@ class BotReplies(unittest.TestCase):
             self.run_batch([{'id': 12, 'user': {'login': 'reporter'}, 'body': 'New details'}])
         self.assertEqual(self.events, [])
 
+    def test_opened_issue_gets_basic_checks_once_from_bot(self):
+        event = {'issue': {'number': 41}}
+        with patch.object(maintenance, 'comments', return_value=[]), patch.object(maintenance, 'post_as_bot', return_value={'html_url': 'welcome'}) as post:
+            maintenance.welcome(event)
+        body = post.call_args.args[1]
+        for item in ('wintun.dll', 'fnport.log', 'fnport.json', 'Проверки провайдера', '14 дней', '10-й день', 'последняя версия'):
+            self.assertIn(item, body)
+        self.assertNotIn('ё', body)
+        with patch.object(maintenance, 'comments', return_value=[{'user': {'login': maintenance.BOT}, 'body': body}]), patch.object(maintenance, 'post_as_bot') as post:
+            maintenance.welcome(event)
+        post.assert_not_called()
+
     def test_personal_cli_environment_cannot_send(self):
         with patch.dict(os.environ, {'GITHUB_ACTIONS': 'false'}), patch.object(maintenance, 'api') as api, self.assertRaises(RuntimeError):
             maintenance.main()
