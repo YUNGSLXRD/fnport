@@ -19,7 +19,17 @@ def gh(*args):
 
 
 def release(tag):
-    return json.loads(gh('api', f'repos/{REPO}/releases/tags/{tag}'))
+    try:
+        return json.loads(gh('api', f'repos/{REPO}/releases/tags/{tag}'))
+    except subprocess.CalledProcessError:
+        # GitHub's by-tag endpoint cannot find a draft whose tag has not been
+        # created yet. The authenticated list endpoint includes those drafts.
+        pages = json.loads(gh('api', '--paginate', '--slurp', f'repos/{REPO}/releases?per_page=100'))
+        for page in pages:
+            for item in page:
+                if item['tag_name'] == tag:
+                    return item
+        raise
 
 
 def sha256(path):
