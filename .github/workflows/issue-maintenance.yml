@@ -1,0 +1,63 @@
+name: Issue replies and inactivity
+
+on:
+  issues:
+    types: [opened]
+  schedule:
+    - cron: '23 5 * * *'
+  workflow_dispatch:
+    inputs:
+      batch:
+        description: 'Prepared reply batch ID, for example 2026-11-10; empty runs inactivity check'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: issue-maintenance-${{ github.event_name }}-${{ github.event.issue.number || inputs.batch || 'scheduled' }}
+  cancel-in-progress: false
+
+jobs:
+  reply:
+    if: ${{ github.event_name == 'issues' || (github.event_name == 'workflow_dispatch' && inputs.batch != '') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Post reviewed answers or welcome as GitHub Actions bot
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPLY_BATCH: ${{ inputs.batch }}
+        run: python3 tools/issue-maintenance.py
+
+  inactivity:
+    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.batch == '') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/stale@1e223db275d687790206a7acac4d1a11bd6fe629 # v10
+        with:
+          repo-token: ${{ github.token }}
+          days-before-issue-stale: 10
+          days-before-issue-close: 4
+          days-before-pr-stale: -1
+          days-before-pr-close: -1
+          stale-issue-label: inactive
+          close-issue-label: closed-inactive
+          exempt-issue-labels: bug,keep-open,security
+          remove-issue-stale-when-updated: true
+          close-issue-reason: not_planned
+          operations-per-run: 200
+          stale-issue-message: |
+            В этой ветке давно нет новых сообщений. Если вопрос еще актуален, добавьте свежий журнал или напишите, что проблема сохраняется.
+
+            Если в следующие 4 дня активности не будет, бот закроет issue. Закрытие по неактивности не означает, что ошибка исправлена. Подтвержденные ошибки с меткой bug, а также keep-open и security автоматически не закрываются.
+          close-issue-message: |
+            Issue закрыт автоматически из-за отсутствия активности после напоминания. Это не отметка об исправлении ошибки.
+
+            Если проблема сохраняется, добавьте свежие данные и попросите переоткрыть обращение.

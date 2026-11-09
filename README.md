@@ -491,3 +491,13 @@ rm -rf /etc/fnport /etc/config/fnport                   # статистика, 
 [MIT](LICENSE). Файл фейка `quic_initial_vk_com.bin` взят из zapret, запасные фейки сделаны из него;
 все они распространяются по лицензии zapret (MIT), подробности в [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 Там же — о `wintun.dll`, шрифте Inter и библиотеках в программе для Windows.
+
+## Участие в проекте
+
+Как сообщить об ошибке и предложить исправление: [CONTRIBUTING.md](CONTRIBUTING.md).
+Правила общения: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+О возможных уязвимостях сообщайте по [Security policy](SECURITY.md).
+
+Автоответы и напоминания в issues публикует `github-actions[bot]`. После 14 дней
+без активности обращение закрывается с предварительным напоминанием. Подтвержденные
+баги с меткой `bug`, а также `keep-open` и `security` остаются открытыми.
