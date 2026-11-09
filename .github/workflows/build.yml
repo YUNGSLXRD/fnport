@@ -169,6 +169,11 @@ jobs:
       # on its own (wintun.dll is WireGuard's, signed by them, not built here)
       - name: Checksums
         run: |
+          # GitHub replaces tildes in uploaded asset names. Normalize before
+          # hashing and attesting, so published names match the checksum list.
+          for file in dist/*; do
+            case "$file" in *'~'*) clean=$(printf '%s' "$file" | tr '~' '.'); test ! -e "$clean"; mv "$file" "$clean";; esac
+          done
           unzip -j -o dist/fnport-windows-*.zip 'fnport/fnport.exe' -d attest
           (cd dist && sha256sum -- * > SHA256SUMS.txt)
           cat dist/SHA256SUMS.txt
