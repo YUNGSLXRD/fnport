@@ -20,12 +20,13 @@ import (
 // came straight from the server.
 
 const (
-	mtu        = 1420
-	freezeOut  = 60 // a flow counts as frozen: >= this many packets out ...
-	freezeIn   = 26 // ... while replies stay at or below this
-	maxRemaps  = 4  // attempts to move one frozen flow to a fresh port
-	idleAfter  = 3 * time.Minute
-	maxPending = 128 // packets held per flow while its port is being probed
+	mtu               = 1420
+	freezeOut         = 60 // a flow counts as frozen: >= this many packets out ...
+	freezeIn          = 26 // ... while replies stay at or below this
+	maxRemaps         = 4  // attempts to move one frozen flow to a fresh port
+	idleAfter         = 3 * time.Minute
+	maxProbeQueueWait = 5 * time.Second // waiting for other flows, not a partial-probe timeout
+	maxPending        = 128             // packets held per flow while its port is being probed
 )
 
 type config struct {
@@ -292,6 +293,31 @@ func openPort(port int) (*net.UDPConn, int, error) {
 	return nil, 0, last
 }
 
+// lockBefore bounds time spent queued behind another flow while preserving
+// the lock through selection, binding, the fake and socket installation.
+func lockBefore(mu *sync.Mutex, deadline time.Time, done <-chan struct{}) bool {
+	for {
+		select {
+		case <-done:
+			return false
+		default:
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		if mu.TryLock() {
+			return true
+		}
+		wait := time.NewTimer(min(10*time.Millisecond, time.Until(deadline)))
+		select {
+		case <-done:
+			wait.Stop()
+			return false
+		case <-wait.C:
+		}
+	}
+}
+
 // assign picks the flow's source port (probing for game flows), sends what was held meanwhile
 func (e *engine) assign(f *uflow) {
 	dst := f.key.dst
@@ -301,12 +327,19 @@ func (e *engine) assign(f *uflow) {
 	}
 	var choice portChoice
 	if f.game {
-		e.portMu.Lock()
-		defer e.portMu.Unlock()
-		if !devSkipControlProbes(e.cfg, dst) {
-			choice = e.prober.pick(dst, e.busy)
-		} else {
-			logf("дев-сравнение: контрольный порт %d без искусственных проб, фейк по текущим настройкам", dst.Port())
+		deadline := f.started.Add(maxProbeQueueWait)
+		if lockBefore(&e.portMu, deadline, e.done) {
+			defer e.portMu.Unlock()
+			if !devSkipControlProbes(e.cfg, dst) {
+				choice = e.prober.pickBefore(dst, e.busy, deadline, e.done)
+			} else {
+				logf("дев-сравнение: контрольный порт %d без искусственных проб, фейк по текущим настройкам", dst.Port())
+			}
+		}
+		select {
+		case <-e.done:
+			return
+		default:
 		}
 		e.stat.add(&e.stat.gameFlows, 1)
 	}

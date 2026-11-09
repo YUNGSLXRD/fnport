@@ -51,8 +51,19 @@ func TestConnectionPolicyKeepsFortniteUDPDirect(t *testing.T) {
 	if attempts != 2 {
 		t.Fatal("new socket not retried")
 	}
-	if !r.selectedUDP(src, dst, false) {
-		t.Fatal("selected non-game connection lost")
+	// An address outside the configured AWS list is not a probed game flow,
+	// but selecting the Fortnite process must not put that match into a VPN.
+	for _, port := range []uint16{9000, 9999, 15000, 15999} {
+		foreign := netip.AddrPortFrom(netip.MustParseAddr("192.0.2.1"), port)
+		if r.selectedUDP(src, foreign, false) {
+			t.Fatalf("Fortnite game UDP outside the route list entered the tunnel: %s", foreign)
+		}
+	}
+	for _, port := range []uint16{443, 8999, 10000, 14999, 16000} {
+		service := netip.AddrPortFrom(dst.Addr(), port)
+		if !r.selectedUDP(src, service, false) {
+			t.Fatalf("selected non-game connection lost: %s", service)
+		}
 	}
 	r.ownerLookup = func(uint8, netip.AddrPort, netip.AddrPort) (wnet.ProcessOwner, error) {
 		return wnet.ProcessOwner{}, wnet.ErrOwnerAmbiguous

@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"net"
 	"net/netip"
+	"sync/atomic"
 	"testing"
 )
 
@@ -15,7 +16,7 @@ func TestLossyOrFrozen(t *testing.T) {
 		t.Skip("port 22222 busy:", err)
 	}
 	defer pc.Close()
-	mode := "frozen"
+	var lossy atomic.Bool
 	go func() {
 		buf := make([]byte, 2048)
 		for {
@@ -25,9 +26,9 @@ func TestLossyOrFrozen(t *testing.T) {
 			}
 			seq := binary.BigEndian.Uint16(buf[2:4])
 			switch {
-			case mode == "frozen" && seq >= 25:
+			case !lossy.Load() && seq >= 25:
 				continue
-			case mode == "lossy" && seq%6 == 3: // 5 of 30 lost, spread
+			case lossy.Load() && seq%6 == 3: // 5 of 30 lost, spread
 				continue
 			}
 			pc.WriteTo(buf[:n], from)
@@ -38,7 +39,7 @@ func TestLossyOrFrozen(t *testing.T) {
 	if err != nil || Verdict(rs[0]) != "frozen" || IsLossy(rs[0]) {
 		t.Fatalf("frozen echo: %v %v", rs, err)
 	}
-	mode = "lossy"
+	lossy.Store(true)
 	rs, err = Probe(host, 1, nil, 0)
 	if err != nil || !IsLossy(rs[0]) || Got(rs[0]) != 25 || Verdict(rs[0]) != "pass" {
 		t.Fatalf("lossy echo: %v %v", rs, err)

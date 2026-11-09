@@ -122,7 +122,8 @@ func (r *connectionRouter) selectedUDP(src, dst netip.AddrPort, game bool) bool 
 		return false
 	}
 	o := r.owner(17, src, dst)
-	if game && strings.HasPrefix(strings.ToLower(o.Name), "fortnite") {
+	matchPort := dst.Port() >= 9000 && dst.Port() <= 9999 || dst.Port() >= 15000 && dst.Port() <= 15999
+	if (game || matchPort) && strings.HasPrefix(strings.ToLower(o.Name), "fortnite") {
 		return false
 	}
 	return r.settings.selects(o, "")

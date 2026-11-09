@@ -15,7 +15,7 @@ import (
 // settings and the counters, and the recent log with every address replaced by its AWS city
 // or x.x.x.x. Nothing in it points at the user's network.
 
-const issueURL = "https://github.com/YUNGSLXRD/fnport/issues/new?template=provider-report.yml"
+const issueURL = "https://github.com/YUNGSLXRD/fnport/issues/new?template=provider-report.yml&setup=%D0%9F%D1%80%D0%BE%D0%B3%D1%80%D0%B0%D0%BC%D0%BC%D0%B0%20fnport%20%D0%B4%D0%BB%D1%8F%20Windows"
 
 // winVersion: "Windows 10.0.22631" (set by main_windows.go)
 var winVersion = func() string { return "" }

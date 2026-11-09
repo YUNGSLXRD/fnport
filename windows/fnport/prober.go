@@ -91,6 +91,7 @@ type prober struct {
 	gameOffUntil time.Time
 	budgetWindow time.Time
 	budgetUsed   int
+	budgetWarned bool
 
 	fmu          sync.Mutex // fake state: read by new flows while a probe holds mu
 	fakes        []fakes.File
@@ -169,7 +170,7 @@ func (p *prober) searchTTL(dst netip.AddrPort, t *target, busy func(int) bool, c
 			p.setTTL(ttl, fmt.Sprintf("с ним порт к %s прошёл, с TTL %d годных не было", dst, cur))
 			return c[0], true
 		}
-		if got > 0 && answered == 0 {
+		if got >= frozenMin && answered == 0 {
 			answered = ttl
 		}
 	}
@@ -351,7 +352,7 @@ func (p *prober) learn(results []int) {
 
 func (p *prober) budgetTake(n int) bool {
 	if time.Since(p.budgetWindow) >= time.Minute {
-		p.budgetWindow, p.budgetUsed = time.Now(), 0
+		p.budgetWindow, p.budgetUsed, p.budgetWarned = time.Now(), 0, false
 	}
 	if p.budgetUsed+n > p.cfg.budget {
 		return false
@@ -405,7 +406,10 @@ func (p *prober) refresh(dst netip.AddrPort, want int, busy func(int) bool) *tar
 		n = p.qosBatch()
 	}
 	if !p.budgetTake(n) {
-		logf("лимит проверок исчерпан (%d в минуту), %s не проверяю", p.cfg.budget, dst)
+		if !p.budgetWarned {
+			logf("лимит проверок исчерпан (%d в минуту), новые пробы до следующего окна не отправляю", p.cfg.budget)
+			p.budgetWarned = true
+		}
 		return t
 	}
 	cand := freshPorts(t, n, busy)
@@ -417,7 +421,7 @@ func (p *prober) refresh(dst netip.AddrPort, want int, busy func(int) bool) *tar
 	t0 := time.Now()
 	res := p.probe(pdst, cand, qos, p.fake(), p.fakeTTL())
 	var fresh, results []int
-	frozen, silent := 0, 0
+	frozen, limited, silent := 0, 0, 0
 	counts := map[int]bool{}
 	for _, c := range cand {
 		t.tried[c] = true
@@ -432,8 +436,10 @@ func (p *prober) refresh(dst netip.AddrPort, want int, busy func(int) bool) *tar
 			fresh = append(fresh, c)
 		case got == 0:
 			silent++
-		default:
+		case got >= frozenMin:
 			frozen++
+		default:
+			limited++
 		}
 	}
 	for _, c := range fresh {
@@ -441,7 +447,7 @@ func (p *prober) refresh(dst netip.AddrPort, want int, busy func(int) bool) *tar
 	}
 	// no port passed with the fake two rounds running, frozen or silent (a server that answered
 	// before and went quiet is its pause, not the TTL): the DPI's reach moved, look around
-	if !qos && withFake && len(results) > 0 && len(fresh) == 0 && (frozen > 0 || !t.answered) {
+	if !qos && withFake && len(results) > 0 && len(fresh) == 0 && (frozen > 0 || (!t.answered && silent == len(results))) {
 		if t.badRounds++; t.badRounds >= 2 {
 			t.badRounds = 0
 			if port, ok := p.searchTTL(dst, t, busy, frozen == 0); ok {
@@ -456,8 +462,8 @@ func (p *prober) refresh(dst netip.AddrPort, want int, busy func(int) bool) *tar
 	if qos {
 		via = "эхо"
 	}
-	logf("проверка %s через %s: годных %d, замёрзло %d, без ответа %d (%d мс)",
-		dst, via, len(fresh), frozen, silent, time.Since(t0).Milliseconds())
+	logf("проверка %s через %s: годных %d, замерзло %d, мало ответов %d, без ответа %d (%d мс)",
+		dst, via, len(fresh), frozen, limited, silent, time.Since(t0).Milliseconds())
 	p.stat.add(&p.stat.tested, len(results))
 	p.stat.add(&p.stat.good, len(fresh))
 	if !qos && withFake {
@@ -536,6 +542,21 @@ func (p *prober) refresh(dst netip.AddrPort, want int, busy func(int) bool) *tar
 func (p *prober) pick(dst netip.AddrPort, busy func(int) bool) portChoice {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	return p.pickLocked(dst, busy)
+}
+
+// A queued game flow must not wait behind every other server's probes. Once
+// probing starts it still completes normally, so a timeout cannot create a
+// partial probe verdict or change the fake's TTL from incomplete measurements.
+func (p *prober) pickBefore(dst netip.AddrPort, busy func(int) bool, deadline time.Time, done <-chan struct{}) portChoice {
+	if !lockBefore(&p.mu, deadline, done) {
+		return portChoice{}
+	}
+	defer p.mu.Unlock()
+	return p.pickLocked(dst, busy)
+}
+
+func (p *prober) pickLocked(dst netip.AddrPort, busy func(int) bool) portChoice {
 	for round := 0; round < p.cfg.maxRounds; round++ {
 		used := 0
 		t := p.target(dst)
@@ -544,11 +565,16 @@ func (p *prober) pick(dst netip.AddrPort, busy func(int) bool) portChoice {
 				used++
 			}
 		}
+		previous := t
+		before := len(t.tried)
 		t = p.refresh(dst, used+1+round, busy)
 		for _, g := range t.good {
 			if !busy(g.port) {
 				return g
 			}
+		}
+		if t == previous && len(t.tried) == before {
+			break // no probe could start: another round cannot make progress
 		}
 	}
 	return portChoice{}

@@ -153,7 +153,7 @@ HANDSHAKE += chr(0x00, 0x90, 0xd6, 0xa2, 0xee, 0x35, 0x36, 0x85, 0x46, 0x10);
 
 let targets = {};             // "ip|port" -> { ts, good: [ports], tried: { port: true }, mode }
 let game_probe_off_until = 0; // Epic caps handshake replies per source IP when probed too often
-let budget_window = 0, budget_used = 0;  // probing too much gets our address punished by the DPI
+let budget_window = 0, budget_used = 0, budget_warned = false;  // probing too much gets our address punished by the DPI
 let last_alive = 0;
 let last_check = 0;
 let reported = {};            // "ip|wanport" -> true, frozen flows already handled
@@ -443,9 +443,10 @@ function refresh_target(ip, dport, want) {
 
 	let qos = (t.mode == 'qos');
 	let n = qos ? qos_batch() : GAME_BATCH;
-	if (time() - budget_window >= 60) { budget_window = time(); budget_used = 0; }
+	if (time() - budget_window >= 60) { budget_window = time(); budget_used = 0; budget_warned = false; }
 	if (budget_used + n > PROBE_BUDGET) {
-		log(sprintf('probe budget exhausted (%d/min), not probing %s:%d', PROBE_BUDGET, ip, dport));
+		if (!budget_warned) log(sprintf('probe budget exhausted (%d/min), no new probes until the next window', PROBE_BUDGET));
+		budget_warned = true;
 		return t;
 	}
 	budget_used += n;
@@ -670,10 +671,13 @@ while (true) {
 			let pick = null;
 			// asking for one more good port than already used triggers a new probe batch when all are busy
 			for (let round = 0; round < MAX_ROUNDS && pick == null && wan && !standby; round++) {
+				let previous_ts = targets[key]?.ts;
+				let before = length(keys(targets[key]?.tried ?? {}));
 				let t = refresh_target(ip, sport, length(keys(used[key])) + 1 + round);
 				for (let p in t.good)
 					if (!used[key][p]) { pick = p; break; }
 				keep_alive();
+				if (pick == null && (previous_ts == null || t.ts == previous_ts) && length(keys(t.tried)) == before) break;
 			}
 			let tuple = `${ip} . ${cport} . ${sport}`;
 			let cmds = [];
