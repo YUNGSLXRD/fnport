@@ -14,9 +14,48 @@ FORCE=0
 [ "$1" = "-f" ] && FORCE=1
 
 fetch() {
-	if command -v uclient-fetch >/dev/null 2>&1; then uclient-fetch -q -O "$2" "$1"
-	elif command -v wget >/dev/null 2>&1; then wget -q -O "$2" "$1"
-	else curl -fsSL -o "$2" "$1"; fi
+ media=${3:-application/vnd.github+json}
+ if command -v uclient-fetch >/dev/null 2>&1; then
+  uclient-fetch -q --timeout=30 --header="Accept: $media" -O "$2" "$1"
+ elif command -v wget >/dev/null 2>&1; then
+  wget -q -T 30 --header="Accept: $media" -O "$2" "$1"
+ else
+  curl -fsSL --connect-timeout 10 --max-time 60 -H "Accept: $media" -o "$2" "$1"
+ fi
+}
+
+asset_valid() {
+ case "$2" in
+  ''|null) return 0;; # old GitHub releases did not supply per-asset digests
+  sha256:*)
+   digest=${2#sha256:}
+   [ "${#digest}" -eq 64 ] || return 1
+   case "$digest" in *[!0-9a-fA-F]*) return 1;; esac
+   printf '%s  %s\n' "$digest" "$1" | sha256sum -c - >/dev/null 2>&1;;
+  *) return 1;;
+ esac
+}
+
+fetch_asset() {
+ browser=$1; asset_api=$2; destination=$3; expected=$4
+ part="$destination.partial"
+ # Router-originated github.com downloads can fail behind fakeip routing even
+ # when the API and the release CDN work. The public API needs no user token.
+ case "$asset_api" in
+  https://api.github.com/repos/YUNGSLXRD/fnport/releases/assets/*)
+   if fetch "$asset_api" "$part" application/octet-stream && asset_valid "$part" "$expected"; then
+    mv "$part" "$destination"
+    return 0
+   fi
+   echo "Asset API download failed; trying the release URL..." >&2;;
+ esac
+ if fetch "$browser" "$part" application/octet-stream && asset_valid "$part" "$expected"; then
+  mv "$part" "$destination"
+  return 0
+ fi
+ rm -f "$part"
+ echo "Could not download or verify ${destination##*/}; no packages were installed." >&2
+ return 1
 }
 
 if command -v apk >/dev/null 2>&1; then
@@ -44,14 +83,16 @@ fetch "$API" "$TMP/release.json"
 package_urls() {
  jsonfilter -i "$1" -e '@.assets[*].browser_download_url' | grep "\.$EXT\$" | grep -E '/(openwrt-)?(fnport|luci-app-fnport|luci-i18n-fnport-ru)[-_]' || true
 }
-URLS="$(package_urls "$TMP/release.json")"
+PACKAGE_JSON="$TMP/release.json"
+URLS="$(package_urls "$PACKAGE_JSON")"
 # Public releases carry the Windows ZIP and small OpenWrt packages. Fall back
 # to the components release for versions that published router packages there.
 if [ -z "$URLS" ]; then
  TAG="$(jsonfilter -i "$TMP/release.json" -e '@.tag_name')"
  case "$TAG" in ''|*[!A-Za-z0-9._-]*) echo 'Invalid release tag' >&2; exit 1;; esac
  fetch "https://api.github.com/repos/$REPO/releases/tags/components-$TAG" "$TMP/components.json"
- URLS="$(package_urls "$TMP/components.json")"
+ PACKAGE_JSON="$TMP/components.json"
+ URLS="$(package_urls "$PACKAGE_JSON")"
 fi
 [ -n "$URLS" ] || { echo "No .$EXT packages in the latest release" >&2; exit 1; }
 
@@ -76,7 +117,9 @@ for u in $URLS; do
 	# Public names group router files after the Windows ZIP. The package manager
 	# still receives the canonical filenames used by older releases.
 	file=${file#openwrt-}
-	fetch "$u" "$TMP/$file"
+	asset_api=$(jsonfilter -i "$PACKAGE_JSON" -e "@.assets[@.browser_download_url=\"$u\"].url" 2>/dev/null || true)
+	digest=$(jsonfilter -i "$PACKAGE_JSON" -e "@.assets[@.browser_download_url=\"$u\"].digest" 2>/dev/null || true)
+	fetch_asset "$u" "$asset_api" "$TMP/$file" "$digest"
 done
 
 # keep the settings: the package manager normally does, but not over files it did not install

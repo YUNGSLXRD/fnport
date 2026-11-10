@@ -134,6 +134,7 @@ jobs:
         run: |
           python3 tests/prepare-openwrt.py
           sudo unshare --net env FNPORT_TEST_ROOTFS=1 sh tests/validate-openwrt.sh "$PWD/windows/dist/router-tests/rootfs"
+          node tests/luci-update.js
           for file in luci-app-fnport/htdocs/luci-static/resources/view/fnport/*.js; do node --check "$file"; done
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

@@ -217,24 +217,36 @@ return view.extend({
 			var log = E('pre', { 'style': 'display:none;max-height:12em;overflow:auto' });
 			var btn = E('button', { 'class': 'cbi-button cbi-button-apply' }, [ _('Update') ]);
 			btn.addEventListener('click', function() {
+				if (btn.disabled) return;
 				btn.disabled = true;
+				var finished = false;
+				var finish = function(ok) {
+					if (finished) return;
+					finished = true;
+					btn.disabled = false;
+					ui.addNotification(null, E('p', ok ? _('fnport updated. Reload the page to see the new version.') : _('The update failed, see the log below.')), ok ? 'info' : 'danger');
+				};
+				var status = function() {
+					if (finished) return;
+					fs.exec('/usr/libexec/fnport-update', [ 'status' ]).then(function(res) {
+						if (finished) return;
+						var st = JSON.parse(res.stdout || '{}');
+						log.textContent = st.log || '';
+						var result = (st.log || '').match(/(?:^|\n)exit (\d+)\s*$/);
+						if (!st.running && result) {
+							finish(result[1] == '0');
+							return;
+						}
+						// Schedule after the response, not while an RPC is in flight.
+						window.setTimeout(status, 2000);
+					}).catch(function() { finish(false); });
+				};
 				fs.exec('/usr/libexec/fnport-update', [ 'start' ]).then(function() {
 					log.style.display = '';
-					var timer = window.setInterval(function() {
-						fs.exec('/usr/libexec/fnport-update', [ 'status' ]).then(function(res) {
-							var st = JSON.parse(res.stdout || '{}');
-							log.textContent = st.log || '';
-							if (!st.running && /exit \d+/.test(st.log || '')) {
-								window.clearInterval(timer);
-								if (/exit 0/.test(st.log))
-									ui.addNotification(null, E('p', _('fnport updated. Reload the page to see the new version.')), 'info');
-								else
-									ui.addNotification(null, E('p', _('The update failed, see the log below.')), 'danger');
-							}
-						});
-					}, 2000);
-				});
+					status();
+				}).catch(function() { finish(false); });
 			});
+
 			dom.content(box, E('div', { 'class': 'alert-message notice' }, [
 				E('p', {}, [ _('fnport %s is out (installed: %s).').format(rel.tag_name.replace(/^v/, ''), cur.replace(/-.*$/, '')), ' ',
 					E('a', { 'href': rel.html_url, 'target': '_blank', 'rel': 'noopener noreferrer' }, [ _('What is new') ]) ]),
