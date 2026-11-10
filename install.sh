@@ -42,11 +42,11 @@ echo "Looking up the latest release of $REPO..."
 fetch "$API" "$TMP/release.json"
 
 package_urls() {
- jsonfilter -i "$1" -e '@.assets[*].browser_download_url' | grep "\.$EXT\$" | grep -E '/(fnport|luci-app-fnport|luci-i18n-fnport-ru)[-_]' || true
+ jsonfilter -i "$1" -e '@.assets[*].browser_download_url' | grep "\.$EXT\$" | grep -E '/(openwrt-)?(fnport|luci-app-fnport|luci-i18n-fnport-ru)[-_]' || true
 }
 URLS="$(package_urls "$TMP/release.json")"
-# Public releases carry just the Windows ZIP. Router packages live in the matching
-# non-latest components release. Older releases with direct packages still work.
+# Public releases carry the Windows ZIP and small OpenWrt packages. Fall back
+# to the components release for versions that published router packages there.
 if [ -z "$URLS" ]; then
  TAG="$(jsonfilter -i "$TMP/release.json" -e '@.tag_name')"
  case "$TAG" in ''|*[!A-Za-z0-9._-]*) echo 'Invalid release tag' >&2; exit 1;; esac
@@ -56,7 +56,7 @@ fi
 [ -n "$URLS" ] || { echo "No .$EXT packages in the latest release" >&2; exit 1; }
 
 # version of the release, from the fnport package name: fnport-0.3.3-r1.apk / fnport_0.3.3-r1_all.ipk
-LATEST="$(echo "$URLS" | sed -n 's#.*/fnport[-_]\([0-9][^_]*\)\(_all\)\{0,1\}\.'"$EXT"'$#\1#p' | head -n1)"
+LATEST="$(echo "$URLS" | sed -n 's#.*/\(openwrt-\)\{0,1\}fnport[-_]\([0-9][^_]*\)\(_all\)\{0,1\}\.'"$EXT"'$#\2#p' | head -n1)"
 CURRENT="$(installed_version)"
 
 if [ -n "$CURRENT" ]; then
@@ -71,8 +71,12 @@ else
 fi
 
 for u in $URLS; do
-	echo "Downloading ${u##*/}"
-	fetch "$u" "$TMP/${u##*/}"
+	file=${u##*/}
+	echo "Downloading $file"
+	# Public names group router files after the Windows ZIP. The package manager
+	# still receives the canonical filenames used by older releases.
+	file=${file#openwrt-}
+	fetch "$u" "$TMP/$file"
 done
 
 # keep the settings: the package manager normally does, but not over files it did not install

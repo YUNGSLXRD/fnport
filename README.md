@@ -180,20 +180,20 @@
 
 ### Из релиза
 
-Скачайте из [служебного выпуска компонентов 0.7.0](../../releases/tag/components-v0.7.0) пакеты под свою версию OpenWrt:
+В [основном релизе](../../releases/latest) первым идет архив для Windows, затем шесть небольших пакетов OpenWrt. Для роутера скачайте три файла под свою версию:
 
 | OpenWrt | Пакеты |
 |---|---|
-| 25.12 | `fnport-*.apk`, `luci-app-fnport-*.apk`, `luci-i18n-fnport-ru-*.apk` |
-| 24.10 | `fnport_*.ipk`, `luci-app-fnport_*.ipk`, `luci-i18n-fnport-ru_*.ipk` |
+| 25.12 | `openwrt-fnport-*.apk`, `openwrt-luci-app-fnport-*.apk`, `openwrt-luci-i18n-fnport-ru-*.apk` |
+| 24.10 | `openwrt-fnport_*.ipk`, `openwrt-luci-app-fnport_*.ipk`, `openwrt-luci-i18n-fnport-ru_*.ipk` |
 
 Скопируйте их на роутер, например в `/tmp`, и установите:
 
 ```sh
 # OpenWrt 25.12
-apk add --allow-untrusted /tmp/fnport-*.apk /tmp/luci-app-fnport-*.apk /tmp/luci-i18n-fnport-ru-*.apk
+apk add --allow-untrusted /tmp/openwrt-fnport-*.apk /tmp/openwrt-luci-app-fnport-*.apk /tmp/openwrt-luci-i18n-fnport-ru-*.apk
 # OpenWrt 24.10
-opkg install /tmp/fnport_*.ipk /tmp/luci-app-fnport_*.ipk /tmp/luci-i18n-fnport-ru_*.ipk
+opkg install /tmp/openwrt-fnport_*.ipk /tmp/openwrt-luci-app-fnport_*.ipk /tmp/openwrt-luci-i18n-fnport-ru_*.ipk
 ```
 
 ### Установщиком (рекомендуется)
@@ -210,7 +210,7 @@ wget -O /tmp/fnport-install.sh https://raw.githubusercontent.com/YUNGSLXRD/fnpor
 
 ### Через LuCI, без консоли
 
-- **OpenWrt 24.10:** скачайте из [служебного выпуска компонентов](../../releases/tag/components-v0.7.0) три файла `.ipk`, в LuCI откройте
+- **OpenWrt 24.10:** скачайте из [основного релиза](../../releases/latest) три файла `openwrt-*.ipk`, в LuCI откройте
   **Система → Программное обеспечение**, нажмите «Загрузить пакет…» и установите по очереди:
   `fnport`, затем `luci-app-fnport`, затем `luci-i18n-fnport-ru`.
 - **OpenWrt 25.12:** так не получится. Пакеты fnport пока не подписаны, а страница «Программное

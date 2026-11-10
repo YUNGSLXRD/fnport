@@ -90,6 +90,7 @@ jobs:
         run: |
           mkdir -p windows/dist
           python3 tests/release-installer.py
+          python3 tests/release-layout.py
 
       - name: Build
         # tests, the Windows build, wintun.dll checked against its hash, the zip
@@ -168,12 +169,15 @@ jobs:
       # checksums of every file of the release, and fnport.exe out of the zip so it can be checked
       # on its own (wintun.dll is WireGuard's, signed by them, not built here)
       - name: Checksums
+        env:
+          RELEASE_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.version }}
         run: |
           # GitHub replaces tildes in uploaded asset names. Normalize before
           # hashing and attesting, so published names match the checksum list.
           for file in dist/*; do
             case "$file" in *'~'*) clean=$(printf '%s' "$file" | tr '~' '.'); test ! -e "$clean"; mv "$file" "$clean";; esac
           done
+          python3 tools/release-layout.py public-packages "$RELEASE_VERSION"
           unzip -j -o dist/fnport-windows-*.zip 'fnport/fnport.exe' -d attest
           (cd dist && sha256sum -- * > SHA256SUMS.txt)
           cat dist/SHA256SUMS.txt
@@ -186,7 +190,7 @@ jobs:
             dist/*
             attest/fnport.exe
 
-      - name: Publish Windows download and separate router components
+      - name: Publish compact downloads and separate router cores
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.version }}

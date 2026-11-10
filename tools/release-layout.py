@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Keep the public release to one ZIP without losing router distributions."""
+"""Publish one Windows ZIP and six small OpenWrt packages; keep cores separate."""
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -33,7 +34,8 @@ def release(tag):
 
 
 def sha256(path):
-    return hashlib.file_digest(path.open('rb'), 'sha256').hexdigest()
+    with path.open('rb') as source:
+        return hashlib.file_digest(source, 'sha256').hexdigest()
 
 
 def verify_remote(tag, paths):
@@ -76,6 +78,44 @@ def prepare(version):
     print('Verified and reused 15 router component archives')
 
 
+
+def public_packages(version):
+    """Keep Windows first alphabetically and hide SDK timestamps in translation names."""
+    patterns = ('fnport-*.apk', 'fnport_*.ipk', 'luci-app-fnport-*.apk',
+                'luci-app-fnport_*.ipk', 'luci-i18n-fnport-ru-*.apk',
+                'luci-i18n-fnport-ru_*.ipk')
+    paths = []
+    for pattern in patterns:
+        candidates = sorted(DIST.glob(pattern))
+        if len(candidates) != 1:
+            raise RuntimeError(f'Expected one package matching {pattern}, found {len(candidates)}')
+        source = candidates[0]
+        name = source.name
+        if name.startswith('luci-i18n-fnport-ru'):
+            name = ('luci-i18n-fnport-ru-' + version.removeprefix('v') + '.apk'
+                    if name.endswith('.apk') else
+                    'luci-i18n-fnport-ru_' + version.removeprefix('v') + '_all.ipk')
+        elif not re.fullmatch(r'(?:fnport|luci-app-fnport)[-_]' + re.escape(version.removeprefix('v')) + r'-r[0-9]+(?:_all)?\.(?:apk|ipk)', name):
+            raise RuntimeError(f'Package version does not match {version}: {name}')
+        target = DIST / ('openwrt-' + name)
+        shutil.copyfile(source, target)
+        paths.append(target)
+    return paths
+
+
+def verify_checksums(paths):
+    expected = {}
+    for line in (DIST / 'SHA256SUMS.txt').read_text().splitlines():
+        digest, name = line.split(maxsplit=1)
+        expected[name.removeprefix('*')] = digest
+    files = [p for p in paths if p.name != 'SHA256SUMS.txt']
+    if set(expected) != {p.name for p in files}:
+        raise RuntimeError('Checksum list does not cover the exact public and component files')
+    for path in files:
+        if sha256(path) != expected[path.name]:
+            raise RuntimeError(f'Local checksum mismatch: {path.name}')
+
+
 def publish(version):
     archive = DIST / f'fnport-windows-{version}.zip'
     with zipfile.ZipFile(archive) as zipped:
@@ -88,9 +128,14 @@ def publish(version):
         for notice in (b'== sing-box and libcronet', b'GNU GENERAL PUBLIC LICENSE', b'Source revision: c005f35300ce76427dc285481ec5695f5b179cd2'):
             if notice not in exe:
                 raise RuntimeError('Bundled core license or source notice missing from fnport.exe')
-    components = sorted(p for p in DIST.iterdir() if p.is_file() and p != archive)
+    public = [archive, *public_packages(version)]
+    components = sorted(p for p in DIST.iterdir() if p.is_file() and p not in public)
     if len(components) != 22 or not (DIST / 'SHA256SUMS.txt').is_file():
         raise RuntimeError('Incomplete router packages, cores or checksum list')
+    verify_checksums([*public, *components])
+    public_names = {p.name for p in public}
+    if sorted(public_names)[0] != archive.name:
+        raise RuntimeError('Windows ZIP would not appear first in the download list')
     tag = f'components-{version}'
     try:
         release(tag)
@@ -107,23 +152,24 @@ def publish(version):
     except subprocess.CalledProcessError:
         gh('release', 'create', version, '--repo', REPO, '--target', os.environ['GITHUB_SHA'],
            '--draft', '--title', f'fnport {version.removeprefix("v")}', '--notes-file', str(notes))
-    gh('release', 'upload', version, '--repo', REPO, '--clobber', str(archive))
-    verify_remote(version, [archive])
+    gh('release', 'upload', version, '--repo', REPO, '--clobber', *(str(p) for p in public))
+    verify_remote(version, public)
     # Remove old technical attachments only after every replacement has been
     # uploaded and checked by its server-side SHA-256 digest.
     for asset in release(version)['assets']:
-        if asset['name'] != archive.name:
+        if asset['name'] not in public_names:
             gh('release', 'delete-asset', version, asset['name'], '--repo', REPO, '--yes')
     gh('release', 'edit', version, '--repo', REPO, '--title', f'fnport {version.removeprefix("v")}',
        '--notes-file', str(notes), '--draft=false', '--latest=true')
-    if [a['name'] for a in release(version)['assets']] != [archive.name]:
+    if {a['name'] for a in release(version)['assets']} != public_names:
         raise RuntimeError('Public release still contains extra attachments')
-    print(f'Published {version}: one Windows ZIP; router components in {tag}')
+    print(f'Published {version}: Windows ZIP first, six OpenWrt packages; cores in {tag}')
 
 
 if __name__ == '__main__':
     if len(sys.argv) != 3 or not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', sys.argv[2]):
-        raise SystemExit('usage: release-layout.py prepare|publish vMAJOR.MINOR.PATCH')
-    if sys.argv[1] not in ('prepare', 'publish'):
+        raise SystemExit('usage: release-layout.py prepare|public-packages|publish vMAJOR.MINOR.PATCH')
+    actions = {'prepare': prepare, 'public-packages': public_packages, 'publish': publish}
+    if sys.argv[1] not in actions:
         raise SystemExit('unknown action')
-    globals()[sys.argv[1]](sys.argv[2])
+    actions[sys.argv[1]](sys.argv[2])
