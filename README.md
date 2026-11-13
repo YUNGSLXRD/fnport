@@ -1,6 +1,6 @@
 # Проверочная сборка fnport v0.7.1-dev1
 
-[Скачать архив Windows](https://raw.githubusercontent.com/YUNGSLXRD/fnport/codex/test-builds-0.7.1/fnport-windows-v0.7.1-dev1.zip)
+[Скачать архив Windows](https://raw.githubusercontent.com/YUNGSLXRD/fnport/dev/fnport-windows-v0.7.1-dev1.zip)
 
 Исправлены очередь новых игровых соединений, повторы сообщения о лимите проверок,
 выводы по неполным ответам и попадание игрового UDP Fortnite в выбранный VPN,
