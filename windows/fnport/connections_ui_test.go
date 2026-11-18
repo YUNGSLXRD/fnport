@@ -100,31 +100,46 @@ func connectionTestContext(router *input.Router, ops *op.Ops) C {
 		Constraints: layout.Constraints{Max: image.Pt(680, 4000)}}
 }
 
-func TestConnectionProtocolDropdownCollapsesAndSelects(t *testing.T) {
+func TestConnectionModeSelectorSwitchesModes(t *testing.T) {
 	v := newView(newController(defaultSettings()), &pinger{}, &checker{}, nil, func() {})
 	v.connections.load(defaultSettings())
 	router := new(input.Router)
 	frame := func() D {
 		ops := new(op.Ops)
-		d := v.connectionProtocolDropdown(connectionTestContext(router, ops))
+		gtx := connectionTestContext(router, ops)
+		gtx.Constraints = layout.Exact(image.Pt(600, 44))
+		d := v.connectionModeSelector(gtx)
 		router.Frame(ops)
 		return d
 	}
-	closed := frame()
-	click := func(y float32) {
-		at := f32.Pt(25, y)
-		router.Queue(pointer.Event{Kind: pointer.Press, Source: pointer.Mouse, Buttons: pointer.ButtonPrimary, Position: at},
-			pointer.Event{Kind: pointer.Release, Source: pointer.Mouse, Position: at})
+	d := frame()
+	if d.Size.Y <= 0 || v.connections.mode != "off" {
+		t.Fatalf("initial mode = %q, size = %v", v.connections.mode, d.Size)
 	}
-	click(15)
-	opened := frame()
-	if !v.connections.protocolOpen || opened.Size.Y != closed.Size.Y {
-		t.Fatalf("dropdown must expand into a bounded list: closed=%v open=%v", closed.Size, opened.Size)
+	clickX := func(x float32) {
+		at := f32.Pt(x, 20)
+		router.Queue(
+			pointer.Event{Kind: pointer.Press, Source: pointer.Mouse, Buttons: pointer.ButtonPrimary, Position: at},
+			pointer.Event{Kind: pointer.Release, Source: pointer.Mouse, Position: at},
+		)
 	}
-	click(float32(closed.Size.Y + 55))
-	selected := frame()
-	if v.connections.protocolOpen || v.connections.protocol != "warp" || selected.Size.Y != closed.Size.Y {
-		t.Fatalf("selection did not collapse dropdown: protocol=%q size=%v", v.connections.protocol, selected.Size)
+	// Segment 1: WARP
+	clickX(200)
+	frame()
+	if !v.connections.enabled.Value || v.connections.mode != "warp" || v.connections.protocol != "warp" {
+		t.Fatalf("did not switch to WARP: mode=%q proto=%q", v.connections.mode, v.connections.protocol)
+	}
+	// Segment 3: VPN / подписка
+	clickX(520)
+	frame()
+	if !v.connections.enabled.Value || v.connections.mode != "vpn" {
+		t.Fatalf("did not switch to VPN: mode=%q proto=%q", v.connections.mode, v.connections.protocol)
+	}
+	// Segment 0: Off
+	clickX(50)
+	frame()
+	if v.connections.enabled.Value || v.connections.mode != "off" {
+		t.Fatalf("did not switch back to off: mode=%q enabled=%v", v.connections.mode, v.connections.enabled.Value)
 	}
 }
 
@@ -181,6 +196,7 @@ func TestConnectionOptionalNullConfigAfterReload(t *testing.T) {
 			s := defaultSettings()
 			s.Connection.Protocol = protocol
 			s.Connection.Enabled = protocol == "warp"
+			s.Connection.Config = json.RawMessage("null")
 			s.Trace.Enabled = true
 			s.Trace.Processes = []string{"FortniteClient-Win64-Shipping.exe"}
 			data, err := json.Marshal(s)
@@ -293,28 +309,25 @@ func TestConnectionMenuApplyPersistsVLESS(t *testing.T) {
 		router.Frame(ops)
 	}
 	frame()
-	v.connections.protocolButton.Click()
+	v.connections.modeButtons[3].Click()
 	frame()
-	for i, p := range connectionUIProtocols {
-		if p.id == "vless" {
-			v.connections.protocolChoices[i].Click()
-		}
-	}
-	frame()
-	if !v.connections.enabled.Value || v.connections.protocol != "vless" {
-		t.Fatal("menu did not enable chosen connection")
+	if !v.connections.enabled.Value || v.connections.mode != "vpn" {
+		t.Fatal("segmented selector did not enable VPN mode")
 	}
 	v.connections.config.SetText("vless://00000000-0000-4000-8000-000000000001@127.0.0.1:443?security=tls&sni=example.org")
 	v.connections.epic.Value = true
 	v.connections.discord.Value = true
-	at := f32.Pt(50, 775)
-	router.Queue(pointer.Event{Kind: pointer.Press, Source: pointer.Mouse, Buttons: pointer.ButtonPrimary, Position: at}, pointer.Event{Kind: pointer.Release, Source: pointer.Mouse, Position: at})
+	v.connections.domains.SetText("youtube.com\n*.rutracker.org")
+	v.connections.saveTop.Click()
 	frame()
 	select {
 	case result := <-saved:
 		c := result.Connection
 		if !c.Enabled || c.Protocol != "vless" || !c.Epic || !c.Discord || len(c.Config) == 0 || result.Warp.Enabled {
 			t.Fatal("chosen VPN was not persisted for both services")
+		}
+		if !reflect.DeepEqual(c.Domains, []string{"youtube.com", "rutracker.org"}) {
+			t.Fatalf("custom domains not persisted: %v", c.Domains)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatalf("save was not submitted: %s", v.connections.message)

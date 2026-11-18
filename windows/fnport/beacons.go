@@ -10,6 +10,7 @@ import (
 
 	"github.com/YUNGSLXRD/fnport/windows/internal/geo"
 	"github.com/YUNGSLXRD/fnport/windows/internal/qos"
+	"github.com/YUNGSLXRD/fnport/windows/internal/wnet"
 )
 
 // Ping to Epic's QoS beacons (UDP echo on 22222), one per city, while the window is open:
@@ -80,9 +81,9 @@ func resolveBeacons() []netip.Addr {
 	try := func(server string) []netip.Addr {
 		r := net.DefaultResolver
 		if server != "" {
+			ap := netip.MustParseAddrPort(server)
 			r = &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				var d net.Dialer
-				return d.DialContext(ctx, "udp", server)
+				return wnet.DialUDP(ctx, ap)
 			}}
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

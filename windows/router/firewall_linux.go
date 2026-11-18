@@ -27,6 +27,7 @@ func nftInput(ctx context.Context, script string) error {
 	}
 	return nil
 }
+
 func jsonCommand(ctx context.Context, name string, args ...string) ([]map[string]any, error) {
 	b, err := exec.CommandContext(ctx, name, args...).Output()
 	if err != nil {
@@ -38,6 +39,7 @@ func jsonCommand(ctx context.Context, name string, args ...string) ([]map[string
 	}
 	return rows, nil
 }
+
 func routingAvailable(ctx context.Context) error {
 	rules, err := jsonCommand(ctx, "ip", "-j", "-4", "rule", "show")
 	if err != nil {
@@ -67,10 +69,13 @@ func routingAvailable(ctx context.Context) error {
 }
 
 type ownedFirewall struct {
-	mu                          sync.Mutex
-	config                      routerConfig
-	cache                       *serviceAddresses
-	table, route, bypass, proxy bool
+	mu     sync.Mutex
+	config routerConfig
+	cache  *serviceAddresses
+	table  bool
+	route  bool
+	bypass bool
+	proxy  bool
 }
 
 func newOwnedFirewall(ctx context.Context, c routerConfig, voice []string, cache *serviceAddresses) (*ownedFirewall, error) {
@@ -126,6 +131,7 @@ func newOwnedFirewall(ctx context.Context, c routerConfig, voice []string, cache
 	keep = true
 	return f, nil
 }
+
 func (f *ownedFirewall) alive(ctx context.Context, healthy bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -136,9 +142,9 @@ func (f *ownedFirewall) alive(ctx context.Context, healthy bool) error {
 	if healthy {
 		for _, s := range f.config.Devices {
 			if mac, e := net.ParseMAC(s); e == nil {
-				macs = append(macs, mac.String()+" timeout 5s")
+				macs = append(macs, mac.String()+" timeout 6s")
 			} else {
-				ips = append(ips, s+" timeout 5s")
+				ips = append(ips, s+" timeout 6s")
 			}
 		}
 	}
@@ -155,6 +161,7 @@ func (f *ownedFirewall) alive(ctx context.Context, healthy bool) error {
 	}
 	return err
 }
+
 func (f *ownedFirewall) publish(ctx context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -166,7 +173,8 @@ func (f *ownedFirewall) publish(ctx context.Context) error {
 	if !changed {
 		return nil
 	}
-	services, discord := map[netip.Addr]int{}, map[netip.Addr]int{}
+	services := make(map[netip.Addr]int)
+	discord := make(map[netip.Addr]int)
 	for _, l := range rows {
 		seconds := max(1, int(l.Until.Sub(now).Seconds()))
 		services[l.IP] = max(services[l.IP], seconds)
@@ -189,39 +197,37 @@ func (f *ownedFirewall) publish(ctx context.Context) error {
 		}
 	}
 	if err := nftInput(ctx, script); err != nil {
-		f.cache.Lock()
-		f.cache.dirty = true
-		f.cache.Unlock()
+		f.cache.MarkDirty()
 		return err
 	}
 	return nil
 }
+
 func (f *ownedFirewall) close() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	if f.table {
-		nftInput(ctx, "flush set inet fnport_connections clients4\nflush set inet fnport_connections clients_mac\n")
+		_ = nftInput(ctx, "flush set inet fnport_connections clients4\nflush set inet fnport_connections clients_mac\n")
 		clearDNSConntrack(ctx)
 	}
 	if f.proxy {
-		commandQuiet(ctx, "ip", "-4", "rule", "del", "pref", "79", "fwmark", strconv.Itoa(proxyMark), "lookup", strconv.Itoa(proxyTable))
+		_ = commandQuiet(ctx, "ip", "-4", "rule", "del", "pref", "79", "fwmark", strconv.Itoa(proxyMark), "lookup", strconv.Itoa(proxyTable))
 		f.proxy = false
 	}
 	if f.bypass {
-		commandQuiet(ctx, "ip", "-4", "rule", "del", "pref", "78", "fwmark", strconv.Itoa(bypassMark), "lookup", "main")
+		_ = commandQuiet(ctx, "ip", "-4", "rule", "del", "pref", "78", "fwmark", strconv.Itoa(bypassMark), "lookup", "main")
 		f.bypass = false
 	}
 	if f.route {
-		commandQuiet(ctx, "ip", "-4", "route", "del", "local", "0.0.0.0/0", "dev", "lo", "table", strconv.Itoa(proxyTable))
+		_ = commandQuiet(ctx, "ip", "-4", "route", "del", "local", "0.0.0.0/0", "dev", "lo", "table", strconv.Itoa(proxyTable))
 		f.route = false
 	}
 	if f.table {
-		commandQuiet(ctx, "nft", "delete", "table", "inet", "fnport_connections")
+		_ = commandQuiet(ctx, "nft", "delete", "table", "inet", "fnport_connections")
 		f.table = false
 	}
-
 }
 
 type clientACL struct {
@@ -233,7 +239,11 @@ type clientACL struct {
 }
 
 func newClientACL(c routerConfig) *clientACL {
-	a := &clientACL{macs: map[string]bool{}, lan: map[string]bool{}, neighbors: map[netip.Addr]bool{}}
+	a := &clientACL{
+		macs:      make(map[string]bool),
+		lan:       make(map[string]bool),
+		neighbors: make(map[netip.Addr]bool),
+	}
 	for _, i := range c.LAN {
 		a.lan[i] = true
 	}
@@ -246,6 +256,7 @@ func newClientACL(c routerConfig) *clientACL {
 	}
 	return a
 }
+
 func (a *clientACL) allow(ip netip.Addr) bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -256,12 +267,13 @@ func (a *clientACL) allow(ip netip.Addr) bool {
 	}
 	return a.neighbors[ip]
 }
+
 func (a *clientACL) refresh(ctx context.Context) error {
 	rows, err := jsonCommand(ctx, "ip", "-j", "neigh", "show")
 	if err != nil {
 		return err
 	}
-	next := map[netip.Addr]bool{}
+	next := make(map[netip.Addr]bool)
 	for _, row := range rows {
 		dev, _ := row["dev"].(string)
 		mac, _ := row["lladdr"].(string)
@@ -303,12 +315,12 @@ func recoverOwnedFirewall(ctx context.Context) error {
 	if !owned {
 		return errors.New("firewall_table_in_use")
 	}
-	nftInput(ctx, "flush set inet fnport_connections clients4\nflush set inet fnport_connections clients_mac\n")
+	_ = nftInput(ctx, "flush set inet fnport_connections clients4\nflush set inet fnport_connections clients_mac\n")
 	clearDNSConntrack(ctx)
-	commandQuiet(ctx, "ip", "-4", "rule", "del", "pref", "79", "fwmark", strconv.Itoa(proxyMark), "lookup", strconv.Itoa(proxyTable))
-	commandQuiet(ctx, "ip", "-4", "rule", "del", "pref", "78", "fwmark", strconv.Itoa(bypassMark), "lookup", "main")
-	commandQuiet(ctx, "ip", "-4", "rule", "del", "pref", "81", "oif", tunnelName, "lookup", strconv.Itoa(tunnelTable))
-	commandQuiet(ctx, "ip", "-4", "route", "del", "local", "0.0.0.0/0", "dev", "lo", "table", strconv.Itoa(proxyTable))
+	_ = commandQuiet(ctx, "ip", "-4", "rule", "del", "pref", "79", "fwmark", strconv.Itoa(proxyMark), "lookup", strconv.Itoa(proxyTable))
+	_ = commandQuiet(ctx, "ip", "-4", "rule", "del", "pref", "78", "fwmark", strconv.Itoa(bypassMark), "lookup", "main")
+	_ = commandQuiet(ctx, "ip", "-4", "rule", "del", "pref", "81", "oif", tunnelName, "lookup", strconv.Itoa(tunnelTable))
+	_ = commandQuiet(ctx, "ip", "-4", "route", "del", "local", "0.0.0.0/0", "dev", "lo", "table", strconv.Itoa(proxyTable))
 	return commandQuiet(ctx, "nft", "delete", "table", "inet", "fnport_connections")
 }
 
@@ -316,6 +328,6 @@ func recoverOwnedFirewall(ctx context.Context) error {
 // Drop both families' owned NAT entries when interception stops.
 func clearDNSConntrack(ctx context.Context) {
 	for _, family := range []string{"ipv4", "ipv6"} {
-		commandQuiet(ctx, "conntrack", "-D", "-f", family, "--mark", "61811")
+		_ = commandQuiet(ctx, "conntrack", "-D", "-f", family, "--mark", "61811")
 	}
 }

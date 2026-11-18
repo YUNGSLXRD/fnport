@@ -1,6 +1,6 @@
 #!/bin/sh
 # fnport installer and updater: installs the latest release, or updates an installed fnport to it.
-# Settings in /etc/config/fnport are kept.
+# Settings in /etc/config/fnport and /etc/config/fnport_connections are kept.
 #   wget -O /tmp/fnport-install.sh https://raw.githubusercontent.com/YUNGSLXRD/fnport/main/install.sh && sh /tmp/fnport-install.sh
 # Add -f to reinstall even if the latest version is already installed.
 set -e
@@ -9,59 +9,67 @@ REPO="YUNGSLXRD/fnport"
 API="https://api.github.com/repos/$REPO/releases/latest"
 TMP="/tmp/fnport-install"
 CONF="/etc/config/fnport"
+CONN_CONF="${CONF}_connections"
 
 FORCE=0
-[ "$1" = "-f" ] && FORCE=1
+[ "${1:-}" = "-f" ] && FORCE=1
 
 fetch() {
- media=${3:-application/vnd.github+json}
- if command -v uclient-fetch >/dev/null 2>&1; then
-  uclient-fetch -q --timeout=30 --header="Accept: $media" -O "$2" "$1"
- elif command -v wget >/dev/null 2>&1; then
-  wget -q -T 30 --header="Accept: $media" -O "$2" "$1"
- else
-  curl -fsSL --connect-timeout 10 --max-time 60 -H "Accept: $media" -o "$2" "$1"
- fi
+	media=${3:-application/vnd.github+json}
+	if command -v uclient-fetch >/dev/null 2>&1; then
+		uclient-fetch -q --timeout=30 --header="Accept: $media" -O "$2" "$1"
+	elif command -v wget >/dev/null 2>&1; then
+		wget -q -T 30 --header="Accept: $media" -O "$2" "$1"
+	else
+		curl -fsSL --connect-timeout 10 --max-time 60 -H "Accept: $media" -o "$2" "$1"
+	fi
 }
 
 asset_valid() {
- case "$2" in
-  ''|null) return 0;; # old GitHub releases did not supply per-asset digests
-  sha256:*)
-   digest=${2#sha256:}
-   [ "${#digest}" -eq 64 ] || return 1
-   case "$digest" in *[!0-9a-fA-F]*) return 1;; esac
-   printf '%s  %s\n' "$digest" "$1" | sha256sum -c - >/dev/null 2>&1;;
-  *) return 1;;
- esac
+	case "$2" in
+		''|null)
+			return 0 ;; # old GitHub releases did not supply per-asset digests
+		sha256:*)
+			digest=${2#sha256:}
+			[ "${#digest}" -eq 64 ] || return 1
+			case "$digest" in *[!0-9a-fA-F]*) return 1 ;; esac
+			printf '%s  %s\n' "$digest" "$1" | sha256sum -c - >/dev/null 2>&1 ;;
+		*)
+			return 1 ;;
+	esac
 }
 
 fetch_asset() {
- browser=$1; asset_api=$2; destination=$3; expected=$4
- part="$destination.partial"
- # Router-originated github.com downloads can fail behind fakeip routing even
- # when the API and the release CDN work. The public API needs no user token.
- case "$asset_api" in
-  https://api.github.com/repos/YUNGSLXRD/fnport/releases/assets/*)
-   if fetch "$asset_api" "$part" application/octet-stream && asset_valid "$part" "$expected"; then
-    mv "$part" "$destination"
-    return 0
-   fi
-   echo "Asset API download failed; trying the release URL..." >&2;;
- esac
- if fetch "$browser" "$part" application/octet-stream && asset_valid "$part" "$expected"; then
-  mv "$part" "$destination"
-  return 0
- fi
- rm -f "$part"
- echo "Could not download or verify ${destination##*/}; no packages were installed." >&2
- return 1
+	browser=$1
+	asset_api=$2
+	destination=$3
+	expected=$4
+	part="$destination.partial"
+	# Router-originated github.com downloads can fail behind fakeip routing even
+	# when the API and the release CDN work. The public API needs no user token.
+	case "$asset_api" in
+		https://api.github.com/repos/YUNGSLXRD/fnport/releases/assets/*)
+			if fetch "$asset_api" "$part" application/octet-stream && asset_valid "$part" "$expected"; then
+				mv "$part" "$destination"
+				return 0
+			fi
+			echo "Asset API download failed; trying the release URL..." >&2 ;;
+	esac
+	if fetch "$browser" "$part" application/octet-stream && asset_valid "$part" "$expected"; then
+		mv "$part" "$destination"
+		return 0
+	fi
+	rm -f "$part"
+	echo "Could not download or verify ${destination##*/}; no packages were installed." >&2
+	return 1
 }
 
 if command -v apk >/dev/null 2>&1; then
-	PM=apk; EXT=apk
+	PM=apk
+	EXT=apk
 elif command -v opkg >/dev/null 2>&1; then
-	PM=opkg; EXT=ipk
+	PM=opkg
+	EXT=ipk
 else
 	echo "Neither apk nor opkg found: is this OpenWrt?" >&2
 	exit 1
@@ -76,23 +84,25 @@ installed_version() {
 	fi
 }
 
-rm -rf "$TMP"; mkdir -p "$TMP"
+rm -rf "$TMP"
+mkdir -p "$TMP"
 echo "Looking up the latest release of $REPO..."
 fetch "$API" "$TMP/release.json"
 
 package_urls() {
- jsonfilter -i "$1" -e '@.assets[*].browser_download_url' | grep "\.$EXT\$" | grep -E '/(openwrt-)?(fnport|luci-app-fnport|luci-i18n-fnport-ru)[-_]' || true
+	jsonfilter -i "$1" -e '@.assets[*].browser_download_url' | grep "\.$EXT\$" | grep -E '/(openwrt-)?(fnport|luci-app-fnport|luci-i18n-fnport-ru)[-_]' || true
 }
+
 PACKAGE_JSON="$TMP/release.json"
 URLS="$(package_urls "$PACKAGE_JSON")"
 # Public releases carry the Windows ZIP and small OpenWrt packages. Fall back
 # to the components release for versions that published router packages there.
 if [ -z "$URLS" ]; then
- TAG="$(jsonfilter -i "$TMP/release.json" -e '@.tag_name')"
- case "$TAG" in ''|*[!A-Za-z0-9._-]*) echo 'Invalid release tag' >&2; exit 1;; esac
- fetch "https://api.github.com/repos/$REPO/releases/tags/components-$TAG" "$TMP/components.json"
- PACKAGE_JSON="$TMP/components.json"
- URLS="$(package_urls "$PACKAGE_JSON")"
+	TAG="$(jsonfilter -i "$TMP/release.json" -e '@.tag_name')"
+	case "$TAG" in ''|*[!A-Za-z0-9._-]*) echo 'Invalid release tag' >&2; exit 1 ;; esac
+	fetch "https://api.github.com/repos/$REPO/releases/tags/components-$TAG" "$TMP/components.json"
+	PACKAGE_JSON="$TMP/components.json"
+	URLS="$(package_urls "$PACKAGE_JSON")"
 fi
 [ -n "$URLS" ] || { echo "No .$EXT packages in the latest release" >&2; exit 1; }
 
@@ -124,7 +134,9 @@ done
 
 # keep the settings: the package manager normally does, but not over files it did not install
 HAD_CONF=0
+HAD_CONN_CONF=0
 [ -f "$CONF" ] && { cp -p "$CONF" "$TMP/fnport.conf"; HAD_CONF=1; }
+[ -f "$CONN_CONF" ] && { cp -p "$CONN_CONF" "$TMP/fnport_connections.conf"; HAD_CONN_CONF=1; }
 
 echo "Installing..."
 if [ "$PM" = apk ]; then
@@ -140,12 +152,23 @@ if [ "$HAD_CONF" = 1 ]; then
 		cp -p "$TMP/fnport.conf" "$CONF"
 		echo "Settings restored from before the update"
 	fi
-	# the package's default config, set aside next to the kept one
 	rm -f "$CONF.apk-new" "$CONF-opkg"
+fi
+
+if [ "$HAD_CONN_CONF" = 1 ]; then
+	if ! cmp -s "$TMP/fnport_connections.conf" "$CONN_CONF"; then
+		cp -p "$TMP/fnport_connections.conf" "$CONN_CONF"
+	fi
+	rm -f "$CONN_CONF.apk-new" "$CONN_CONF-opkg"
 fi
 
 rm -rf /tmp/luci-indexcache* /tmp/luci-modulecache
 rm -rf "$TMP"
+
+if [ "$(uci -q get fnport_connections.main.enabled || echo 0)" = 1 ] && [ -x /etc/init.d/fnport-connections ]; then
+	/etc/init.d/fnport-connections enable || true
+	/etc/init.d/fnport-connections restart || true
+fi
 
 echo
 if [ "$(uci -q get fnport.main.enabled)" = 1 ]; then

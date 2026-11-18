@@ -49,3 +49,10 @@
   [wgcf](https://github.com/ViRb3/wgcf) (ViRb3, MIT); стек TCP туннеля (`windows/internal/awgnet`) сделан по
   `tun/netstack` из wireguard-go (WireGuard LLC, MIT). Лицензия wgcf —
   в [`windows/third_party/wgcf-LICENSE.txt`](windows/third_party/wgcf-LICENSE.txt) и в программе.
+- **`sing-box` 1.14.4** ([SagerNet/sing-box](https://github.com/SagerNet/sing-box), GNU GPL v3.0 or later) —
+  отдельный статический исполняемый файл (`sing-box.exe` в архиве Windows и опциональный пакет ядра на OpenWrt),
+  собираемый без `libcronet.dll` из зафиксированной ревизии `c005f35300ce76427dc285481ec5695f5b179cd2`
+  скриптами [`windows/core.sh`](windows/core.sh) и [`windows/build-router-core.sh`](windows/build-router-core.sh).
+  `fnport` взаимодействует с ним как с отдельным процессом через локальный SOCKS5 / TProxy; полный текст
+  GPL-3.0 и сведения об исходниках приложены в [`windows/third_party/sing-box-GPL-3.0.txt`](windows/third_party/sing-box-GPL-3.0.txt)
+  и [`windows/third_party/sing-box-SOURCES.txt`](windows/third_party/sing-box-SOURCES.txt).

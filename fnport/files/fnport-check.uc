@@ -12,7 +12,7 @@ import * as socket from 'socket';
 import { rand } from 'math';
 import { popen, readfile, writefile, rename, access } from 'fs';
 import { cursor } from 'uci';
-import { verdict, count, both_passed, both_answered, all_silent, compare_fake, measured_ttl, select_ttl } from './fnport-check-policy.uc';
+import { verdict, count, both_passed, both_answered, all_silent, compare_fake, full_series, measured_ttl, select_ttl } from './fnport-check-policy.uc';
 
 const SELF = '/usr/libexec/fnport-check';
 const STATE = '/var/run/fnport-check.json';   // root-only directory: no symlink games
@@ -211,13 +211,16 @@ function fake_files(uci) {
 
 // Current TTL first. Mixed passing/frozen results retain the active settings;
 // a different TTL requires two complete rounds. This only records a proposal.
-function scan_ttl(r,host,fake,lo,hi,st){
- st=st??r;
- return select_ttl(lo,hi,st.current_ttl,r.fake==st.fake&&st.fake_enabled,r,(ttl)=>{
-  st.step=ttl?'ttl':'control';st.ttl_now=ttl;st.fake_now=r.fake;save(st);
-  sleep_ms(GAP_MS);
-  return probe_check(host,2,ttl?fake:null,ttl?ttl:null);
- });
+function scan_ttl(r, host, fake, lo, hi, st) {
+	st = st ?? r;
+	return select_ttl(lo, hi, st.current_ttl, r.fake == st.fake && st.fake_enabled, r, (ttl) => {
+		st.step = ttl ? 'ttl' : 'control';
+		st.ttl_now = ttl;
+		st.fake_now = r.fake;
+		save(st);
+		sleep_ms(GAP_MS);
+		return probe_check(host, 2, ttl ? fake : null, ttl ? ttl : null);
+	});
 }
 
 function run() {
@@ -269,14 +272,46 @@ function run() {
 
 	if (!host) {
 		// Same-beacon comparison only. Limited or mixed baselines are inconclusive.
-  if (fake) {
-   let target = filter(answered, (ip) => both_passed(st.control[index(b.list, ip)].replies))[0] ?? answered[0];
-   let baseline = st.control[index(b.list, target)].replies;
-   st.step = 'fake'; save(st);
-   sleep_ms(GAP_MS);
-   let replies = probe_check(target, 2, fake, cur_ttl);
-   st.fake_check = { city: city(target), control: baseline, ttl: cur_ttl, replies, verdict: compare_fake(baseline, replies) };
-  }
+		if (fake) {
+			let target = filter(answered, (ip) => both_passed(st.control[index(b.list, ip)].replies))[0] ?? answered[0];
+			let baseline = st.control[index(b.list, target)].replies;
+			st.step = 'fake';
+			save(st);
+			sleep_ms(GAP_MS);
+			let replies = probe_check(target, 2, fake, cur_ttl);
+			let fv = compare_fake(baseline, replies);
+			st.fake_check = { city: city(target), control: baseline, ttl: cur_ttl, replies, verdict: fv };
+			// When the current TTL kills flows on the beacon, scan lower TTLs (cur_ttl - 1 .. 1)
+			// with a confirmation round so a harmless shorter TTL can be recommended.
+			if (fv == 'kills' && cur_ttl > 1) {
+				st.beacon = city(target);
+				st.ttl = [];
+				for (let t = cur_ttl - 1; t >= 1; t--) {
+					st.step = 'ttl';
+					st.ttl_now = t;
+					st.fake_now = st.fake;
+					save(st);
+					sleep_ms(GAP_MS);
+					let first = probe_check(target, 2, fake, t);
+					if (compare_fake(baseline, first) == 'harmless') {
+						sleep_ms(GAP_MS);
+						let more = probe_check(target, 2, fake, t);
+						let all = [ ...first, ...more ];
+						push(st.ttl, { ttl: t, replies: all });
+						save(st);
+						if (full_series(all)) {
+							st.recommended_ttl = t;
+							st.fake_check.lower_ttl = t;
+							break;
+						}
+					}
+					else {
+						push(st.ttl, { ttl: t, replies: first });
+						save(st);
+					}
+				}
+			}
+		}
 		return finish('no_freeze');
 	}
 	st.beacon = city(host);
@@ -286,7 +321,8 @@ function run() {
 	// kills flows (the DPI may treat another name differently). Unless a spare works, the verdict
 	// is the fake in use's
 	let res = scan_ttl(st, host, fake, 1, MAX_TTL);
- if(res=='fake_partial'&&st.fake_enabled)return finish(res);
+	if (res == 'fake_partial' && st.fake_enabled)
+		return finish(res);
 	for (let i = 1; res != 'fake_works' && i < length(fakes) && i <= 2; i++) {
 		st.spares = st.spares ?? [];
 		let sp = { fake: fakes[i].name };
@@ -296,7 +332,7 @@ function run() {
 			st.recommended_ttl = sp.recommended_ttl;
 			st.works_from = sp.works_from;
 			st.recommended_fake = fakes[i].name;
-   break;
+			break;
 		}
 	}
 	return finish(res == 'spare_works' ? 'fake_works' : res);
@@ -311,8 +347,8 @@ if (cmd == 'status') {
 	let uci = cursor();
 	st.now_ttl = +(uci.get('fnport', 'main', 'fake_ttl') ?? 3);
 	let current_fakes = fake_list(uci);
- st.now_fake = length(current_fakes) > 0;
- st.now_fake_name = current_fakes[0] ? replace(current_fakes[0], /.*\//, '') : null;
+	st.now_fake = length(current_fakes) > 0;
+	st.now_fake_name = current_fakes[0] ? replace(current_fakes[0], /.*\//, '') : null;
 	printf('%J\n', st);
 }
 else if (cmd == 'start') {
@@ -338,15 +374,23 @@ else if (cmd == 'run') {
 else if (cmd == 'apply') {
 	let st = load_state();
 	let t = +(st?.recommended_ttl ?? 0);
-	if (st?.state != 'done' || st.policy != 3 || st.verdict != 'fake_works' || t < 1 || t > 16 || !measured_ttl(st, t)) { printf('%J\n', { error: 'nothing to apply' }); exit(1); }
+	let can_apply = st?.verdict == 'fake_works' || (st?.verdict == 'no_freeze' && st?.fake_check?.lower_ttl == t);
+	if (st?.state != 'done' || st.policy != 3 || !can_apply || t < 1 || t > 16 || !measured_ttl(st, t)) {
+		printf('%J\n', { error: 'nothing to apply' });
+		exit(1);
+	}
 	let uci = cursor();
 	let list = fake_list(uci);
- if (!length(list)) list = [DEFAULT_FAKE];
- let tested = st.recommended_fake ?? st.fake;
- let p = filter(list, x => replace(x, /.*\//, '') == tested)[0];
- if (!p) {printf('%J\n',{error:'fake_changed_repeat_check'});exit(1);}
- list = [p,...filter(list,x=>x!=p)];
- uci.set('fnport','main','fake_ttl',`${t}`);
+	if (!length(list))
+		list = [ DEFAULT_FAKE ];
+	let tested = st.recommended_fake ?? st.fake;
+	let p = filter(list, x => replace(x, /.*\//, '') == tested)[0];
+	if (!p) {
+		printf('%J\n', { error: 'fake_changed_repeat_check' });
+		exit(1);
+	}
+	list = [ p, ...filter(list, x => x != p) ];
+	uci.set('fnport', 'main', 'fake_ttl', `${t}`);
 	uci.set('fnport', 'main', 'whitelist_fake', list);
 	uci.commit('fnport');
 	system('/etc/init.d/fnport reload >/dev/null 2>&1');

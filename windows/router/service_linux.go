@@ -9,16 +9,16 @@ import (
 	"net"
 	"os"
 	"time"
-)
 
-var epicServiceDomains = []string{"fortnite-vod.akamaized.net", "fortnite-storage-live.s3.amazonaws.com", "epicgames.com", "epicgames.dev", "epicgames.net", "epicgamescdn.com", "unrealengine.com", "fortnite.com", "easyanticheat.net", "hcaptcha.com", "epicgames-download1.akamaized.net", "egdownload.fastly-edge.com"}
+	"github.com/YUNGSLXRD/fnport/windows/internal/vpn"
+)
 
 type routerPaths struct{ Core, Run, Data string }
 
 func loadDiscordData(dir string) ([]string, []string, error) {
 	text, err := os.ReadFile(dir + "/discord-domains.lst")
 	if err != nil {
-		return nil, nil, errors.New("discord_rules_missing")
+		return append([]string(nil), vpn.DiscordDomains...), append([]string(nil), vpn.DiscordVoiceNetworks...), nil
 	}
 	raw, err := os.ReadFile(dir + "/discord-rules.json")
 	if err != nil {
@@ -37,10 +37,29 @@ func loadDiscordData(dir string) ([]string, []string, error) {
 	}
 	return domains, voice, nil
 }
-func runRouter(parent context.Context, c routerConfig, paths routerPaths) (result error) {
+
+func probeTunnelConnectivity(ctx context.Context, c routerConfig) bool {
+	check, stop := context.WithTimeout(ctx, 8*time.Second)
+	defer stop()
+	provider := dnsProviders[c.DNSProvider]
+	port := "443"
+	if c.DNSMode == "tls" {
+		port = "853"
+	} else if c.DNSMode == "plain" {
+		port = "53"
+	}
+	link, err := dialCore(check, net.JoinHostPort(provider.IP, port))
+	if err != nil {
+		return false
+	}
+	_ = link.Close()
+	return true
+}
+
+func runRouter(parent context.Context, c routerConfig, nodeName string, paths routerPaths) (result error) {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
-	status := connectionStatus{State: "starting", Protocol: c.Protocol}
+	status := connectionStatus{State: "starting", Protocol: c.Protocol, NodeName: nodeName}
 	defer func() {
 		if result != nil && parent.Err() == nil {
 			status.State = "failed"
@@ -58,6 +77,7 @@ func runRouter(parent context.Context, c routerConfig, paths routerPaths) (resul
 		return err
 	}
 	saveStatus(paths.Run, status)
+
 	var discord, voice []string
 	var err error
 	if c.Discord {
@@ -72,8 +92,6 @@ func runRouter(parent context.Context, c routerConfig, paths routerPaths) (resul
 		return err
 	}
 	defer fw.close()
-	// Disable interception before stopping core/TUN. Empty client sets also expire
-	// automatically within five seconds if the process cannot run its cleanup.
 
 	var native *nativeTunnel
 	if c.Protocol == "warp" || c.Protocol == "amneziawg" || c.Protocol == "wireguard" {
@@ -89,7 +107,10 @@ func runRouter(parent context.Context, c routerConfig, paths routerPaths) (resul
 			if e != nil {
 				return e
 			}
-			status.Colo, status.Country, status.Address, status.RTTMS = report.Colo, report.Country, report.Address, report.RTT.Milliseconds()
+			status.Colo = report.Colo
+			status.Country = report.Country
+			status.Address = report.Address
+			status.RTTMS = report.RTT.Milliseconds()
 		} else {
 			endpoint, e := resolveNativeEndpoint(ctx, c.WAN, c.Native.Endpoint)
 			if e != nil {
@@ -100,6 +121,7 @@ func runRouter(parent context.Context, c routerConfig, paths routerPaths) (resul
 			}
 		}
 	}
+
 	config, err := c.coreConfig()
 	if err != nil {
 		return err
@@ -112,14 +134,15 @@ func runRouter(parent context.Context, c routerConfig, paths routerPaths) (resul
 	defer func() {
 		cleanup, stop := context.WithTimeout(context.Background(), 2*time.Second)
 		defer stop()
-		fw.alive(cleanup, false)
+		_ = fw.alive(cleanup, false)
 	}()
+
 	acl := newClientACL(c)
 	if err := acl.refresh(ctx); err != nil {
 		return err
 	}
 	ready := make(chan struct{})
-	dns := newDNSBroker(c, epicServiceDomains, discord, cache, acl.allow)
+	dns := newDNSBroker(c, vpn.EpicDomains, discord, cache, acl.allow)
 	dns.publish = fw.publish
 	dns.ready = ready
 	dnsDone := make(chan error, 1)
@@ -132,28 +155,19 @@ func runRouter(parent context.Context, c routerConfig, paths routerPaths) (resul
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	// Verify that the selected transport, not merely its local listening socket,
-	// accepts a TCP connection before redirecting selected clients' DNS.
-	check, stop := context.WithTimeout(ctx, 8*time.Second)
-	provider := dnsProviders[c.DNSProvider]
-	port := "443"
-	if c.DNSMode == "tls" {
-		port = "853"
-	} else if c.DNSMode == "plain" {
-		port = "53"
-	}
-	link, e := dialCore(check, net.JoinHostPort(provider.IP, port))
-	stop()
-	if e != nil {
+
+	if !probeTunnelConnectivity(ctx, c) {
 		return errors.New("selected_connection_unreachable")
 	}
-	link.Close()
 	if status.Address == "" {
 		check, stop := context.WithTimeout(ctx, 6*time.Second)
 		report, e := traceExit(check, dialCore)
 		stop()
 		if e == nil {
-			status.Colo, status.Country, status.Address, status.RTTMS = report.Colo, report.Country, report.Address, report.RTT.Milliseconds()
+			status.Colo = report.Colo
+			status.Country = report.Country
+			status.Address = report.Address
+			status.RTTMS = report.RTT.Milliseconds()
 		}
 	}
 	if err := fw.alive(ctx, true); err != nil {
@@ -161,8 +175,16 @@ func runRouter(parent context.Context, c routerConfig, paths routerPaths) (resul
 	}
 	status.State = "connected"
 	saveStatus(paths.Run, status)
+
+	go dns.preResolveServices(ctx)
+
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
+	healthTick := time.NewTicker(60 * time.Second)
+	defer healthTick.Stop()
+	tickCount := 0
+	healthFails := 0
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -175,18 +197,41 @@ func runRouter(parent context.Context, c routerConfig, paths routerPaths) (resul
 			}
 			return errors.New("dns_stopped")
 		case <-tick.C:
+			tickCount++
 			round, stop := context.WithTimeout(ctx, 2*time.Second)
-			err := acl.refresh(round)
-			if err == nil {
-				err = fw.publish(round)
-			}
-			if err == nil {
-				err = fw.alive(round, true)
+			err := fw.publish(round)
+			if err == nil && tickCount%2 == 0 {
+				err = acl.refresh(round)
+				if err == nil {
+					err = fw.alive(round, true)
+				}
 			}
 			stop()
 			if err != nil {
 				return err
 			}
+		case <-healthTick.C:
+			if probeTunnelConnectivity(ctx, c) {
+				healthFails = 0
+				continue
+			}
+			healthFails++
+			if healthFails < 2 {
+				continue
+			}
+			healthFails = 0
+			dns.doh.CloseIdle()
+			if c.Protocol == "warp" && native != nil {
+				if report, e := selectNativeExit(ctx, native, c.Native.Endpoint); e == nil && probeTunnelConnectivity(ctx, c) {
+					status.Colo = report.Colo
+					status.Country = report.Country
+					status.Address = report.Address
+					status.RTTMS = report.RTT.Milliseconds()
+					saveStatus(paths.Run, status)
+					continue
+				}
+			}
+			return errors.New("tunnel_healthcheck_failed")
 		}
 	}
 }

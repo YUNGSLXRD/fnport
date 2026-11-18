@@ -166,7 +166,8 @@ func (k *checker) probe(host netip.Addr, fake []byte, ttl int) []int {
 // warpForCheck: the tunnel fnport runs, or, with WARP set up and fnport off, one brought up for
 // the check (closed when the check ends); nil without WARP
 func (k *checker) warpForCheck(cur settings) *warpTunnel {
-	if !cur.Warp.Enabled || !cur.Warp.ready() {
+	warpConfigured := (cur.Connection.Enabled && cur.Connection.Protocol == "warp") || cur.Warp.Enabled
+	if !warpConfigured || !cur.Warp.ready() {
 		return nil
 	}
 	if k.tunnel != nil {

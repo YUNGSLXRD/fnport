@@ -93,12 +93,17 @@ func TestPreview(t *testing.T) {
 		st    state
 		theme string
 	}{{"main-on", tabMain, stateOn, "dark"}, {"main-off", tabMain, stateOff, "dark"}, {"summary", tabSummary, stateOn, "dark"},
-		{"log", tabLog, stateOn, "dark"}, {"warp", tabWarp, stateOff, "dark"}, {"connections-vless", tabWarp, stateOff, "dark"}, {"connections-awg", tabWarp, stateOff, "dark"}, {"connections-subscription", tabWarp, stateOff, "dark"}, {"connections-servers", tabWarp, stateOff, "dark"}, {"connections-menu", tabWarp, stateOff, "dark"}, {"connections-processes", tabWarp, stateOff, "dark"}, {"switch-middle", tabWarp, stateOff, "dark"}, {"settings", tabSettings, stateOff, "dark"}, {"settings2", tabSettings, stateOff, "dark"},
+		{"log", tabLog, stateOn, "dark"}, {"warp", tabWarp, stateOff, "dark"}, {"connections-warp", tabWarp, stateOn, "dark"},
+		{"connections-vless", tabWarp, stateOff, "dark"}, {"connections-awg", tabWarp, stateOff, "dark"},
+		{"connections-subscription", tabWarp, stateOff, "dark"}, {"connections-light", tabWarp, stateOff, "light"},
+		{"connections-processes", tabWarp, stateOff, "dark"}, {"switch-middle", tabWarp, stateOff, "dark"},
+		{"settings", tabSettings, stateOff, "dark"}, {"settings2", tabSettings, stateOff, "dark"},
 		{"main-light", tabMain, stateOn, "light"}, {"main-starting", tabMain, stateStarting, "dark"}, {"summary-light", tabSummary, stateOn, "light"},
 		{"check-no-change", tabSettings, stateOff, "dark"},
 		{"check-unclear", tabSettings, stateOff, "dark"},
 		{"check-on", tabSettings, stateOn, "dark"},
 		{"readme", tabMain, stateOn, "dark"}} {
+		ctl.set = defaultSettings()
 		if tc.name == "readme" {
 			// the README's picture: a calm evening, no freezes left in the last minutes
 			for i := range ctl.history {
@@ -108,34 +113,50 @@ func TestPreview(t *testing.T) {
 			ping.list[1].RTT, ping.list[2].RTT = 78*time.Millisecond, 72*time.Millisecond
 		}
 		v.tab, ctl.st, ctl.set.Theme = tc.tab, tc.st, tc.theme
-		if tc.name == "connections-subscription" || tc.name == "connections-servers" || tc.name == "connections-awg" || tc.name == "connections-vless" || tc.name == "connections-menu" || tc.name == "connections-processes" || tc.name == "switch-middle" {
+		if tc.tab == tabWarp {
+			v.warpPage.Position = layout.Position{}
 			v.connections.load(ctl.settings())
-			v.connections.protocol = "vless"
-			v.connections.enabled.Value = true
 			v.pickAWGFile = func() (string, error) { return "", nil }
-			if tc.name == "connections-subscription" || tc.name == "connections-servers" {
-				nodes, _, _ := parseSubscription([]byte(testSubLinks))
+			switch tc.name {
+			case "warp":
+				v.connections.setMode("off", time.Time{})
+			case "connections-warp":
+				s := ctl.settings()
+				s.Warp.PrivateKey = "cGFzc3dvcmRwYXNzd29yZHBhc3N3b3JkcGFzc3dvcmQ="
+				s.Warp.PeerKey = "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
+				s.Warp.Address = "172.16.0.2"
+				s.Connection.Enabled = true
+				s.Connection.Protocol = "warp"
+				s.Connection.Discord = true
+				ctl.set = s
+				v.connections.load(s)
+			case "connections-vless":
+				v.connections.setMode("vpn", time.Time{})
+				v.connections.config.SetText("vless://00000000-0000-4000-8000-000000000001@nl.example.org:443?security=reality&pbk=test&sni=www.microsoft.com#NL")
+				v.connections.discord.Value = true
+			case "connections-subscription", "connections-light":
+				richSub := "vless://00000000-0000-4000-8000-000000000001@de.example:443?security=tls#\U0001F1E9\U0001F1EA%20%D0%93%D0%B5%D1%80%D0%BC%D0%B0%D0%BD%D0%B8%D1%8F%20%C2%B7%20Frankfurt\n" +
+					"hy2://pass@nl.example:443?sni=nl.example#\U0001F1F3\U0001F1F1%20%D0%9D%D0%B8%D0%B4%D0%B5%D1%80%D0%BB%D0%B0%D0%BD%D0%B4%D1%8B%20%C2%B7%20Amsterdam\n" +
+					"ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwYXNz@fi.example:8388#\U0001F1EB\U0001F1EE%20%D0%A4%D0%B8%D0%BD%D0%BB%D1%8F%D0%BD%D0%B4%D0%B8%D1%8F%20%C2%B7%20Helsinki\n" +
+					"trojan://pass@se.example:443?sni=se.example#\U0001F1F8\U0001F1EA%20%D0%A8%D0%B2%D0%B5%D1%86%D0%B8%D1%8F%20%C2%B7%20Stockholm"
+				nodes, _, _ := parseSubscription([]byte(richSub))
+				v.connections.setMode("vpn", time.Time{})
 				v.connections.config.SetText("https://subscription.example/profile")
-				v.connections.loadSubscriptionView(&connectionSubscription{URL: "https://subscription.example/profile", Nodes: nodes, Selected: nodes[0].ID})
-				v.connections.imports.serverOpen = tc.name == "connections-servers"
-			}
-			if tc.name == "connections-awg" {
-				v.connections.protocol = "amneziawg"
+				v.connections.loadSubscriptionView(&connectionSubscription{URL: "https://subscription.example/profile", Title: "Европа", Nodes: nodes, Selected: nodes[0].ID})
+				v.connections.discord.Value = true
+			case "connections-awg":
+				v.connections.setMode("amneziawg", time.Time{})
 				v.connections.config.SingleLine = false
 				v.connections.config.SetText(sampleAWGConf)
-			}
-			if tc.name == "switch-middle" {
-				v.switches = map[*widget.Bool]*switchMotion{&v.connections.epic: {from: 0, to: 1, start: time.Now().Add(-60 * time.Millisecond), ready: true}}
-			}
-			if tc.name == "connections-menu" {
-				v.connections.protocolOpen = true
-			}
-			if tc.name == "connections-processes" {
-				v.warpPage.Position.Offset = 420
+			case "switch-middle":
+				v.connections.setMode("warp", time.Time{})
+				v.switches = map[*widget.Bool]*switchMotion{&v.connections.epic: {from: 0, to: 1, start: now.Add(-60 * time.Millisecond), ready: true}}
+			case "connections-processes":
+				v.connections.setMode("warp", time.Time{})
+				v.warpPage.Position.Offset = int(420 * scale)
 				v.warpPage.Position.BeforeEnd = true
-				v.connections.advancedOpen = true
 				v.connections.picker.open = true
-				for _, name := range []string{"Discord.exe", "EpicGamesLauncher.exe", "FortniteClient-Win64-Shipping.exe", "chrome.exe", "firefox.exe"} {
+				for _, name := range []string{"Discord.exe", "EpicGamesLauncher.exe", "chrome.exe", "firefox.exe"} {
 					v.connections.picker.rows = append(v.connections.picker.rows, &connectionProcessChoice{name: name})
 				}
 			}

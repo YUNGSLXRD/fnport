@@ -122,10 +122,10 @@ def publish(version):
         names = zipped.namelist()
         if 'fnport/fnport.exe' not in names:
             raise RuntimeError('Windows application missing')
-        if any('license' in name.lower() for name in names):
-            raise RuntimeError('Loose license file remains in the Windows ZIP')
+        if any('license' in name.lower() or 'libcronet' in name.lower() or name.lower().endswith('readme.md') for name in names):
+            raise RuntimeError('Loose license, readme or libcronet file remains in the Windows ZIP')
         exe = zipped.read('fnport/fnport.exe')
-        for notice in (b'== sing-box and libcronet', b'GNU GENERAL PUBLIC LICENSE', b'Source revision: c005f35300ce76427dc285481ec5695f5b179cd2'):
+        for notice in (b'== sing-box', b'GNU GENERAL PUBLIC LICENSE', b'Source revision: c005f35300ce76427dc285481ec5695f5b179cd2'):
             if notice not in exe:
                 raise RuntimeError('Bundled core license or source notice missing from fnport.exe')
     public = [archive, *public_packages(version)]

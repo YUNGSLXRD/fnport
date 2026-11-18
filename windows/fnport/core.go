@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/YUNGSLXRD/fnport/windows/internal/fakes"
+	"github.com/YUNGSLXRD/fnport/windows/internal/vpn"
 	"github.com/YUNGSLXRD/fnport/windows/internal/wnet"
 )
 
@@ -256,11 +257,8 @@ func (c *controller) start() {
 		changes.Add(1)
 	}
 	set := c.settings()
+	migrateLegacyWarp(&set)
 	set.Trace.Enabled = set.Trace.Enabled && traceAvailable()
-	// One selected transport owns service routing. Legacy WARP is migrated by the UI.
-	if set.Connection.Enabled {
-		set.Warp.Enabled = false
-	}
 	cfg, err := set.config()
 	if err != nil {
 		fail(err)
@@ -277,8 +275,11 @@ func (c *controller) start() {
 	if info.Tunnel {
 		logf("ВНИМАНИЕ: похоже, это VPN. Игра пойдёт через него, а не напрямую: выключите VPN/WARP.")
 	}
-	// Bring up the helper before installing catch-all routes. Some protocols resolve
-	// server hostnames during initialization; routing DNS into an unread TUN would hang.
+	if set.Connection.Enabled && set.Connection.Protocol == "warp" && !set.Warp.ready() {
+		fail(errorf("для выбранного подключения сначала получите ключ WARP"))
+		return
+	}
+
 	life, cancelConnection := context.WithCancel(context.Background())
 	var helper *connectionTransport
 	var native *warpTunnel
@@ -302,26 +303,30 @@ func (c *controller) start() {
 		}
 	}
 	if helper != nil {
-		logf("Подключение %s: ядро готово; сервисы Epic: %t, Discord: %t", set.Connection.Protocol, set.Connection.Epic, set.Connection.Discord)
+		logf("Подключение %s: ядро готово; сервисы Epic: %t, Discord: %t", vpn.ProtocolLabel(set.Connection.Protocol), set.Connection.Epic, set.Connection.Discord)
 	}
-	if set.Connection.Enabled && set.Connection.Protocol == "amneziawg" {
-		native, err = nativeAWGConfig(set.Connection.Config)
-		if err != nil {
-			fail(err)
-			return
+
+	// Only full-process rules need 0.0.0.0/1 + 128.0.0.0/1. Service and domain rules
+	// use interface DNS + dynamic /32 routes (+ Discord voice UDP prefixes when Discord is on),
+	// keeping the rest of the PC's traffic on the native Windows network stack.
+	cfg.captureAll = set.Connection.Enabled && len(set.Connection.Processes) > 0
+	routed := append([]netip.Prefix(nil), cfg.routes...)
+	if cfg.captureAll {
+		routed = append(routed, netip.MustParsePrefix("0.0.0.0/1"), netip.MustParsePrefix("128.0.0.0/1"))
+	} else if set.Connection.Enabled && set.Connection.Discord {
+		for _, vp := range vpn.DiscordVoicePrefixes {
+			if !inPrefixes(vp.Addr(), routed) {
+				routed = append(routed, vp)
+			}
 		}
 	}
-	routed := cfg.routes
-	cfg.captureAll = set.Connection.Enabled
-	if cfg.captureAll {
-		// A single ingress also sees Discord and HTTPS outside the AWS game prefixes.
-		routed = append(append([]netip.Prefix(nil), cfg.routes...), netip.MustParsePrefix("0.0.0.0/1"), netip.MustParsePrefix("128.0.0.0/1"))
+	cfg.routes = routed
+
+	var tunDNS []netip.Addr
+	if set.Connection.Enabled {
+		tunDNS = []netip.Addr{wnet.TunDNSAddr}
 	}
-	if set.Connection.Enabled && set.Connection.Protocol == "warp" && !set.Warp.ready() {
-		fail(errorf("для выбранного подключения сначала получите ключ WARP"))
-		return
-	}
-	dev, clientIP, err := wnet.OpenTun("fnport", routed)
+	dev, clientIP, err := wnet.OpenTunWithDNS("fnport", routed, tunDNS)
 	if err != nil {
 		fail(err)
 		return
@@ -332,9 +337,32 @@ func (c *controller) start() {
 		fail(err)
 		return
 	}
+	tcp.captureAll = cfg.captureAll
+	e := newEngine(cfg, dev, clientIP, tcp)
+
+	if set.Connection.Enabled && set.Connection.Protocol == "amneziawg" {
+		native, err = nativeAWGConfig(set.Connection.Config, set, e.prober.fakeTTL)
+		if err != nil {
+			tcp.close()
+			dev.Close()
+			fail(err)
+			return
+		}
+	}
+
 	router := &connectionRouter{settings: set.Connection, tcp: tcp, transport: helper, native: native, cancel: cancelConnection}
+	alwaysEpic := set.Connection.EpicAlways || (set.Connection.Epic && !set.Connection.EpicAlways && networkFreezes())
+	router.always.Store(alwaysEpic)
+	tcp.always.Store(alwaysEpic)
 	tcp.connection = router
+	e.connection = router
 	owned = true
+
+	if set.Connection.Enabled {
+		dnsBroker := newWinDNSBroker(router, dev, routed)
+		tcp.dns = dnsBroker
+		e.dns = dnsBroker
+	}
 	if set.Trace.Enabled {
 		ts := set.Trace
 		ts.Processes = append(append([]string(nil), ts.Processes...), "Discord.exe", "DiscordPTB.exe", "DiscordCanary.exe")
@@ -344,26 +372,53 @@ func (c *controller) start() {
 		}
 		router.trace = trace
 	}
-	e := newEngine(cfg, dev, clientIP, tcp)
-	e.connection = router
 	if cfg.captureAll {
-		logf("Подключения: перехват IPv4 включён, остальные процессы идут напрямую. IPv6 не перенаправляется.")
-	}
-
-	if !set.Connection.Enabled && !set.Warp.Enabled {
+		logf("Подключения: перехват IPv4 включён для выбранных приложений (%d), остальные процессы идут напрямую", len(set.Connection.Processes))
+	} else if !set.Connection.Enabled {
 		logf("Дополнительное подключение выключено: сервисы Epic и Discord идут напрямую")
 	}
 	if set.Trace.Enabled && !cfg.captureAll {
-		logf("Сетевой след: запись без дополнительных маршрутов")
+		logf("Сетевой след: запись без глобального перехвата маршрутов")
 	}
 	e.gone = c.addHistory
 	go e.run()
-	if (set.Warp.Enabled || (set.Connection.Enabled && set.Connection.Protocol == "warp")) && set.Warp.ready() && (!set.Passthrough || set.Connection.Enabled) {
+
+	if set.Connection.Enabled && set.Connection.Protocol == "warp" && set.Warp.ready() {
 		ws := set.Warp.withFake(set)
-		ws.servicesOff = !set.Warp.Enabled
-		ws.ttlNow = e.prober.fakeTTL // the tunnel's fake follows the game's
+		ws.Always = set.Connection.EpicAlways
+		ws.servicesOff = !set.Connection.Epic
+		ws.ttlNow = e.prober.fakeTTL
 		tcp.warpWait.Store(true)
 		go runWarp(ws, dev, routed, tcp)
+	} else if set.Connection.Enabled {
+		go func() {
+			if tcp.dns != nil {
+				tcp.dns.refreshServiceRoutes(tcp.ctx, true)
+			}
+			router.probeExit(tcp.ctx)
+			tk := time.NewTicker(2 * time.Minute)
+			defer tk.Stop()
+			label := vpn.ProtocolLabel(set.Connection.Protocol)
+			for {
+				select {
+				case <-tcp.ctx.Done():
+					if s := tcp.statsSummary(); s != "" {
+						logf("%s, сервисы Epic до выключения: %s", label, s)
+					}
+					return
+				case <-tk.C:
+					if s := tcp.statsSummary(); s != "" {
+						logf("%s, сервисы Epic за 2 минуты: %s", label, s)
+					}
+					if tcp.dns != nil {
+						tcp.dns.refreshServiceRoutes(tcp.ctx, true)
+					}
+					if router.exitReport.Load() == nil {
+						router.probeExit(tcp.ctx)
+					}
+				}
+			}
+		}()
 	}
 
 	stop := make(chan struct{})

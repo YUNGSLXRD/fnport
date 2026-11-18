@@ -1,19 +1,14 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
-	"crypto/ecdh"
-	"crypto/rand"
 	"crypto/tls"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	mrand "math/rand/v2"
 	"net"
 	"net/http"
 	"net/netip"
@@ -26,10 +21,10 @@ import (
 
 	"github.com/YUNGSLXRD/fnport/windows/internal/awgnet"
 	"github.com/YUNGSLXRD/fnport/windows/internal/fakes"
+	"github.com/YUNGSLXRD/fnport/windows/internal/vpn"
 	"github.com/YUNGSLXRD/fnport/windows/internal/wnet"
 	"github.com/amnezia-vpn/amneziawg-go/conn"
 	"github.com/amnezia-vpn/amneziawg-go/device"
-	utls "github.com/refraction-networking/utls"
 )
 
 // WARP for Epic's services: login, store, downloads go through Cloudflare WARP when the ISP
@@ -174,9 +169,9 @@ func lookupAllContext(parent context.Context, host string) []netip.Addr {
 	}
 	out := try(net.DefaultResolver)
 	for _, server := range []string{"77.88.8.8:53", "8.8.8.8:53"} {
+		ap := netip.MustParseAddrPort(server)
 		r := &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			var d net.Dialer
-			return d.DialContext(ctx, "udp", server)
+			return wnet.DialUDP(ctx, ap)
 		}}
 		if ips := try(r); len(ips) > 0 {
 			return append(out, ips...)
@@ -192,105 +187,6 @@ func isFakeIP(a netip.Addr) bool { return fakeIPNet.Contains(a) }
 // ---- registration: the same request the 1.1.1.1 app for Android makes (as wgcf does it)
 
 const warpAPI = "api.cloudflareclient.com"
-const warpAPIVersion = "v0a5641"
-
-type warpReg struct {
-	ID     string `json:"id"`
-	Token  string `json:"token"`
-	Config *struct {
-		Peers []struct {
-			PublicKey string `json:"public_key"`
-			Endpoint  struct {
-				V4    string `json:"v4"`
-				Ports []int  `json:"ports"`
-			} `json:"endpoint"`
-		} `json:"peers"`
-		Interface struct {
-			Addresses struct {
-				V4 string `json:"v4"`
-			} `json:"addresses"`
-		} `json:"interface"`
-	} `json:"config"`
-}
-
-// warpHello: Cloudflare answers the registration only to a ClientHello like the Android app's.
-// The spec is wgcf's (github.com/ViRb3/wgcf, MIT)
-func warpHello() *utls.ClientHelloSpec {
-	return &utls.ClientHelloSpec{
-		TLSVersMin:         utls.VersionTLS12,
-		TLSVersMax:         utls.VersionTLS12,
-		CipherSuites:       []uint16{utls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384, utls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384},
-		CompressionMethods: []uint8{0},
-		Extensions: []utls.TLSExtension{
-			&utls.SNIExtension{},
-			&utls.ExtendedMasterSecretExtension{},
-			&utls.RenegotiationInfoExtension{Renegotiation: utls.RenegotiateNever},
-			&utls.SupportedCurvesExtension{Curves: []utls.CurveID{utls.X25519, utls.CurveP256, utls.CurveP384}},
-			&utls.SupportedPointsExtension{SupportedPoints: []uint8{0}},
-			&utls.SessionTicketExtension{},
-			&utls.ALPNExtension{AlpnProtocols: []string{"http/1.1"}},
-			&utls.StatusRequestExtension{},
-			&utls.SignatureAlgorithmsExtension{SupportedSignatureAlgorithms: []utls.SignatureScheme{
-				utls.ECDSAWithP256AndSHA256, utls.PSSWithSHA256, utls.PKCS1WithSHA256,
-				utls.ECDSAWithP384AndSHA384, utls.PSSWithSHA384, utls.PKCS1WithSHA384,
-				utls.PSSWithSHA512, utls.PKCS1WithSHA512, utls.PKCS1WithSHA1,
-			}},
-			&utls.UtlsPaddingExtension{GetPaddingLen: utls.BoringPaddingStyle},
-		},
-	}
-}
-
-// warpAPIAddrs: the API's addresses as Google's DNS gives them. Russian resolvers answer with
-// 8.47.69.0 and 8.6.112.0, which do not answer from Russia (October 2026)
-var warpAPIAddrs = []netip.Addr{netip.MustParseAddr("104.16.24.84"), netip.MustParseAddr("104.16.192.82")}
-
-// warpConnect: a TLS connection to the WARP API, trying its addresses in turn, the ClientHello
-// cut in TCP segments first, then also in TLS records
-func warpConnect() (*utls.UConn, error) {
-	ips := append(append([]netip.Addr(nil), warpAPIAddrs...), lookupAll(warpAPI)...)
-	var last error
-	for _, records := range []bool{false, true} {
-		tried := map[netip.Addr]bool{}
-		for _, ip := range ips {
-			if tried[ip] {
-				continue
-			}
-			tried[ip] = true
-			tc, err := warpTLS(ip, records)
-			if err == nil {
-				return tc, nil
-			}
-			last = err
-		}
-	}
-	if last == nil {
-		last = errors.New("не найден адрес " + warpAPI)
-	}
-	return nil, last
-}
-
-func warpTLS(ip netip.Addr, records bool) (*utls.UConn, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-	defer cancel()
-	raw, err := wnet.DialTCP(ctx, netip.AddrPortFrom(ip, 443))
-	if err != nil {
-		return nil, fmt.Errorf("не соединяется с Cloudflare: %w", err)
-	}
-	raw.SetDeadline(time.Now().Add(6 * time.Second))
-	sc := &splitConn{Conn: raw, mark: []byte(warpAPI), records: records}
-	tc := utls.UClient(sc, &utls.Config{ServerName: warpAPI, NextProtos: []string{"http/1.1"}}, utls.HelloCustom)
-	if err := tc.ApplyPreset(warpHello()); err != nil {
-		raw.Close()
-		return nil, err
-	}
-	if err := tc.HandshakeContext(ctx); err != nil {
-		raw.Close()
-		return nil, fmt.Errorf("HTTPS к Cloudflare не прошёл (%v): похоже, провайдер блокирует регистрацию WARP. "+
-			"Получите ключ в другой сети (дома, с телефона) — он сохранится в fnport.json — или вставьте готовый конфиг ниже", err)
-	}
-	raw.SetDeadline(time.Now().Add(20 * time.Second))
-	return tc, nil
-}
 
 // splitConn: the first write (the ClientHello) goes out in three TCP segments, the cut in the
 // middle of the server's name, a moment apart: a DPI that looks for the name in one packet
@@ -315,7 +211,6 @@ func (c *splitConn) Write(b []byte) (int, error) {
 	}
 	parts := [][]byte{b[:1], b[1:cut], b[cut:]}
 	if c.records && len(b) > 5 && b[0] == 22 && cut > 5 && cut < len(b) {
-		// one handshake message in two records: the same type and version, each its own length
 		rec := func(body []byte) []byte {
 			return append([]byte{b[0], b[1], b[2], byte(len(body) >> 8), byte(len(body))}, body...)
 		}
@@ -334,167 +229,59 @@ func (c *splitConn) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-// parseWarpConf: a WireGuard or AmneziaWG config as the apps export it, over the old settings
+// parseWarpConf parses a WireGuard or AmneziaWG config over existing WARP settings.
 func parseWarpConf(text string, old warpSettings) (warpSettings, error) {
+	cfg, err := vpn.ParseWARPConf(text, old.Jc, old.Jmin, old.Jmax)
+	if err != nil {
+		return old, err
+	}
 	w := old
-	w.Endpoint, w.I1 = "", ""
-	for _, l := range strings.Split(text, "\n") {
-		k, v, ok := strings.Cut(l, "=")
-		if !ok {
-			continue
-		}
-		k, v = strings.ToLower(strings.TrimSpace(k)), strings.TrimSpace(v)
-		num := func(d int) int {
-			var n int
-			if _, err := fmt.Sscan(v, &n); err == nil {
-				return n
-			}
-			return d
-		}
-		switch k {
-		case "privatekey":
-			w.PrivateKey = v
-		case "publickey":
-			w.PeerKey = v
-		case "address":
-			for _, a := range strings.Split(v, ",") {
-				a, _, _ = strings.Cut(strings.TrimSpace(a), "/")
-				if ip, err := netip.ParseAddr(a); err == nil && ip.Is4() {
-					w.Address = ip.String()
-					break
+	w.PrivateKey = cfg.PrivateKey
+	w.PeerKey = cfg.PeerKey
+	w.Address = cfg.Address
+	w.Endpoint = cfg.Endpoint
+	if cfg.Endpoint != "" {
+		if host, port, e := net.SplitHostPort(cfg.Endpoint); e == nil {
+			if _, ipErr := netip.ParseAddr(host); ipErr != nil {
+				if ips := lookupAll(host); len(ips) > 0 {
+					w.Endpoint = net.JoinHostPort(ips[0].String(), port)
+				} else {
+					w.Endpoint = ""
 				}
 			}
-		case "endpoint":
-			host, port, err := net.SplitHostPort(v)
-			if err != nil {
-				return old, fmt.Errorf("Endpoint «%s» непонятен", v)
-			}
-			if ip, err := netip.ParseAddr(host); err == nil {
-				w.Endpoint = netip.AddrPortFrom(ip, 0).Addr().String() + ":" + port
-			} else if ips := lookupAll(host); len(ips) > 0 {
-				w.Endpoint = ips[0].String() + ":" + port
-			}
-		case "jc":
-			w.Jc = num(w.Jc)
-		case "jmin":
-			w.Jmin = num(w.Jmin)
-		case "jmax":
-			w.Jmax = num(w.Jmax)
-		case "i1":
-			w.I1 = v
 		}
 	}
-	if _, err := b64hex(w.PrivateKey); err != nil {
-		return old, errors.New("в конфиге нет PrivateKey или он испорчен")
+	if cfg.MTU != 0 {
+		w.MTU = cfg.MTU
 	}
-	if _, err := b64hex(w.PeerKey); err != nil {
-		return old, errors.New("в конфиге нет PublicKey или он испорчен")
-	}
-	if w.Address == "" {
-		return old, errors.New("в конфиге нет адреса IPv4 (Address)")
-	}
+	w.Jc, w.Jmin, w.Jmax = cfg.Jc, cfg.Jmin, cfg.Jmax
+	w.I1 = cfg.I1
 	return w, nil
 }
 
-// warpCall: one HTTPS request to the WARP API, straight out of the physical adapter
-func warpCall(method, path, token string, body []byte) ([]byte, error) {
-	tc, err := warpConnect()
-	if err != nil {
-		return nil, err
-	}
-	defer tc.Close()
-	req, _ := http.NewRequest(method, "https://"+warpAPI+"/"+warpAPIVersion+path, bytes.NewReader(body))
-	req.Header.Set("User-Agent", "1.1.1.1/6.38.9-5641 (Android 16.0.0)")
-	req.Header.Set("CF-Client-Version", "a-6.38.9-5641")
-	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
-	req.Header.Set("Connection", "close")
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	if err := req.Write(tc); err != nil {
-		return nil, err
-	}
-	resp, err := http.ReadResponse(bufio.NewReader(tc), req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("Cloudflare ответил %s", resp.Status)
-	}
-	return b, nil
-}
-
-// registerWarp makes a key pair here and registers its public half as a new WARP device
+// registerWarp makes a key pair here and registers its public half as a new WARP device.
 func registerWarp(old warpSettings) (warpSettings, error) {
-	priv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	defer cancel()
+	cfg, err := vpn.RegisterWARP(ctx, wnet.DialTCP, lookupAllContext(ctx, warpAPI))
 	if err != nil {
 		return old, err
-	}
-	body, _ := json.Marshal(map[string]any{
-		"fcm_token": "", "install_id": "", "key": base64.StdEncoding.EncodeToString(priv.PublicKey().Bytes()),
-		"locale": "en_US", "model": "PC", "tos": time.Now().Format(time.RFC3339Nano), "serial_number": "",
-		"os_version": "16.0.0", "key_type": "curve25519", "tunnel_type": "wireguard",
-	})
-	b, err := warpCall("POST", "/reg", "", body)
-	if err != nil {
-		return old, err
-	}
-	var reg warpReg
-	if err := json.Unmarshal(b, &reg); err != nil {
-		return old, fmt.Errorf("непонятный ответ Cloudflare: %w", err)
-	}
-	if reg.Config == nil && reg.ID != "" {
-		if b, err = warpCall("GET", "/reg/"+reg.ID, reg.Token, nil); err == nil {
-			json.Unmarshal(b, &reg)
-		}
-	}
-	if reg.Config == nil || len(reg.Config.Peers) == 0 || reg.Config.Interface.Addresses.V4 == "" {
-		return old, errors.New("Cloudflare не прислал настройки туннеля")
 	}
 	w := old
-	w.PrivateKey = base64.StdEncoding.EncodeToString(priv.Bytes())
-	w.PeerKey = reg.Config.Peers[0].PublicKey
-	w.Address = reg.Config.Interface.Addresses.V4
+	w.PrivateKey = cfg.PrivateKey
+	w.PeerKey = cfg.PeerKey
+	w.Address = cfg.Address
 	w.Endpoint = ""
+	if w.Jc == 0 {
+		w.Jc, w.Jmin, w.Jmax = 4, 40, 70
+	}
 	return w, nil
 }
 
 // ---- the tunnel
 
-// warpEndpoints: the one from the settings, then those reported working in Russia (4PDA,
-// October 2026: 188.114.96–97 everywhere, 98–99 and 162.159.192 not everywhere, 193 banned)
 func warpEndpoints(first string) []string {
-	var out []string
-	if first != "" {
-		out = append(out, first)
-	}
-	// the one that worked last time on this network: found again at once, not after a minute
-	if last := lastEndpoint(); last != "" && last != first {
-		out = append(out, last)
-	}
-	ranges := []string{"188.114.96", "188.114.97", "188.114.98", "188.114.99", "162.159.192"}
-	ports := []int{2408, 500, 1701, 4500, 854, 878, 894, 7559, 3138}
-	pick := func(net3 string, port int) string { return fmt.Sprintf("%s.%d:%d", net3, 1+mrand.IntN(254), port) }
-	// one of each range first: the ranges lead to different points of Cloudflare
-	for _, r := range ranges {
-		out = append(out, pick(r, 2408))
-	}
-	for _, r := range ranges[:2] {
-		for _, p := range ports[1:] {
-			out = append(out, pick(r, p))
-		}
-	}
-	for _, r := range ranges[2:] {
-		for _, p := range ports[1:3] {
-			out = append(out, pick(r, p))
-		}
-	}
-	return out
+	return vpn.WarpEndpoints(first, lastEndpoint())
 }
 
 type warpTunnel struct {
@@ -513,11 +300,11 @@ type warpTunnel struct {
 }
 
 func b64hex(s string) (string, error) {
-	b, err := base64.StdEncoding.DecodeString(strings.TrimSpace(s))
-	if err != nil || len(b) != 32 {
+	h, err := vpn.B64ToHexKey(s)
+	if err != nil {
 		return "", errors.New("ключ WARP испорчен")
 	}
-	return hex.EncodeToString(b), nil
+	return h, nil
 }
 
 // newWarpDev: the AWG device with the key, up, no endpoint yet
@@ -1246,6 +1033,9 @@ func runWarp(ws warpSettings, dev wnet.Dev, routed []netip.Prefix, t *tcpRelay) 
 		}
 		return
 	}
+	if t.dns != nil {
+		go t.dns.refreshServiceRoutes(t.ctx, true)
+	}
 	changes.Add(1)
 	if ws.servicesOff {
 		logf("WARP подключён через %s: для выбранных сервисов и приложений", w.where())
@@ -1277,6 +1067,9 @@ func runWarp(ws warpSettings, dev wnet.Dev, routed []netip.Prefix, t *tcpRelay) 
 				logf("WARP, сайты Epic за 2 минуты: %s", s)
 			}
 			refresh()
+			if t.dns != nil {
+				t.dns.refreshServiceRoutes(t.ctx, true)
+			}
 		case <-health.C:
 			// a second try: one lost check is no reason to cut everything going through it
 			if w.works() || w.works() {
@@ -1375,6 +1168,9 @@ func rememberNetworkFreezes() {
 // meanwhile. nil when fnport went off
 func (t *tcpRelay) rebuildWarp(ws warpSettings, old *warpTunnel) *warpTunnel {
 	t.warp.Store(nil)
+	if t.dns != nil {
+		t.dns.closeIdle()
+	}
 	t.state.Store("переподключается…")
 	changes.Add(1)
 	old.close()

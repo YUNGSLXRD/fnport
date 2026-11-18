@@ -245,6 +245,7 @@ func (p *prober) probe(dst netip.AddrPort, ports []int, qos bool, fake []byte, t
 		tag  [2]byte
 		mu   sync.Mutex
 		got  int
+		late bool
 	}
 	var socks []*sock
 	for _, port := range ports {
@@ -285,11 +286,14 @@ func (p *prober) probe(dst netip.AddrPort, ports []int, qos bool, fake []byte, t
 				if from.Addr().Unmap() != dst.Addr() || from.Port() != dst.Port() {
 					continue
 				}
-				if qos && (n < 2 || buf[0] != s.tag[0] || buf[1] != s.tag[1]) {
+				if qos && (n < 4 || buf[0] != s.tag[0] || buf[1] != s.tag[1]) {
 					continue
 				}
 				s.mu.Lock()
 				s.got++
+				if qos && binary.BigEndian.Uint16(buf[2:4]) >= 25 {
+					s.late = true
+				}
 				s.mu.Unlock()
 			}
 		}(s)
@@ -313,7 +317,12 @@ func (p *prober) probe(dst netip.AddrPort, ports []int, qos bool, fake []byte, t
 	for _, s := range socks {
 		s.c.Close()
 		s.mu.Lock()
-		res[s.port] = s.got
+		got := s.got
+		if qos && got >= frozenMin && got < probePass && s.late {
+			// Replies past packet 25 prove the flow was not frozen at 25: treat as packet loss, not freeze.
+			got = frozenMin - 1
+		}
+		res[s.port] = got
 		s.mu.Unlock()
 	}
 	return res

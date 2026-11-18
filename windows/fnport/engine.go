@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	mrand "math/rand/v2"
@@ -134,6 +135,7 @@ func (f *uflow) info(active bool) flowInfo {
 
 type engine struct {
 	connection *connectionRouter
+	dns        *winDNSBroker
 	cfg        *config
 	dev        wnet.Dev
 	clientIP   netip.Addr
@@ -190,10 +192,21 @@ func (e *engine) run() {
 			}
 		case 17:
 			p, err := wnet.ParseUDP4(pkt)
-			if err != nil || (p.Src.Addr() != e.clientIP && p.Src.Addr() != wnet.PhysAddr) || !e.routed(p.Dst.Addr()) {
+			if err != nil || (p.Src.Addr() != e.clientIP && p.Src.Addr() != wnet.PhysAddr) {
 				continue // broadcasts and multicast of network discovery
 			}
 			if p.Src.Addr() == wnet.PhysAddr && wnet.IsOwnUDP(p.Src) {
+				continue
+			}
+			if e.dns != nil && p.Dst == netip.AddrPortFrom(wnet.TunDNSAddr, 53) {
+				ctx := context.Background()
+				if e.tcp != nil {
+					ctx = e.tcp.ctx
+				}
+				e.dns.handleUDPPacket(ctx, e.dev, p, func() uint16 { return uint16(e.ipID.Add(1)) })
+				continue
+			}
+			if !e.routed(p.Dst.Addr()) {
 				continue
 			}
 			e.udp(p)
@@ -212,6 +225,9 @@ func (e *engine) routed(a netip.Addr) bool {
 		if r.Contains(a) {
 			return true
 		}
+	}
+	if e.connection != nil && e.connection.leases != nil && e.connection.leases.ServiceOf(a) != "" {
+		return true
 	}
 	return false
 }
@@ -330,11 +346,7 @@ func (e *engine) assign(f *uflow) {
 		deadline := f.started.Add(maxProbeQueueWait)
 		if lockBefore(&e.portMu, deadline, e.done) {
 			defer e.portMu.Unlock()
-			if !devSkipControlProbes(e.cfg, dst) {
-				choice = e.prober.pickBefore(dst, e.busy, deadline, e.done)
-			} else {
-				logf("дев-сравнение: контрольный порт %d без искусственных проб, фейк по текущим настройкам", dst.Port())
-			}
+			choice = e.prober.pickBefore(dst, e.busy, deadline, e.done)
 		}
 		select {
 		case <-e.done:

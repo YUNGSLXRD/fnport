@@ -30,6 +30,15 @@ func DialTCP(ctx context.Context, dst netip.AddrPort) (net.Conn, error) {
 	return d.DialContext(ctx, "tcp4", dst.String())
 }
 
+func DialUDP(ctx context.Context, dst netip.AddrPort) (net.Conn, error) {
+	var d net.Dialer
+	return d.DialContext(ctx, "udp4", dst.String())
+}
+
+func PhysicalDNS() []netip.Addr {
+	return []netip.Addr{netip.MustParseAddr("77.88.8.8"), netip.MustParseAddr("8.8.8.8")}
+}
+
 func SendWithTTL(c *net.UDPConn, b []byte, dst netip.AddrPort, ttl int) error {
 	rc, err := c.SyscallConn()
 	if err != nil {

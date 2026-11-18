@@ -181,7 +181,7 @@ func TestSubscriptionRoundTripJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	var loaded settings
-	if json.Unmarshal(data, &loaded) != nil || loaded.Connection.Subscription.node().ID != nodes[1].ID {
+	if json.Unmarshal(data, &loaded) != nil || loaded.Connection.Subscription.ActiveNode().ID != nodes[1].ID {
 		t.Fatal("cached selection lost")
 	}
 }

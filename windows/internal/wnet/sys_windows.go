@@ -88,6 +88,50 @@ func DialTCP(ctx context.Context, dst netip.AddrPort) (net.Conn, error) {
 	return d.DialContext(ctx, "tcp4", dst.String())
 }
 
+// DialUDP opens a connected UDP socket bound to the physical interface so DNS queries
+// never loop back into the Wintun adapter.
+func DialUDP(ctx context.Context, dst netip.AddrPort) (net.Conn, error) {
+	d := net.Dialer{Control: sockControl(true, true), Timeout: 5 * time.Second}
+	if PhysAddr.IsValid() {
+		d.LocalAddr = &net.UDPAddr{IP: PhysAddr.AsSlice()}
+	}
+	c, err := d.DialContext(ctx, "udp4", dst.String())
+	if err != nil {
+		return nil, err
+	}
+	if uc, ok := c.(*net.UDPConn); ok {
+		rememberUDP(uc)
+	}
+	return c, nil
+}
+
+// PhysicalDNS returns the IPv4 DNS servers configured on the physical interface,
+// followed by public fallback resolvers.
+func PhysicalDNS() []netip.Addr {
+	var out []netip.Addr
+	seen := make(map[netip.Addr]bool)
+	add := func(ip netip.Addr) {
+		ip = ip.Unmap()
+		if !ip.Is4() || ip.IsUnspecified() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || tunAddr.Contains(ip) || seen[ip] {
+			return
+		}
+		seen[ip] = true
+		out = append(out, ip)
+	}
+	if PhysIndex != 0 {
+		if luid, err := winipcfg.LUIDFromIndex(PhysIndex); err == nil {
+			if servers, err := luid.DNS(); err == nil {
+				for _, ip := range servers {
+					add(ip)
+				}
+			}
+		}
+	}
+	add(netip.MustParseAddr("77.88.8.8"))
+	add(netip.MustParseAddr("8.8.8.8"))
+	return out
+}
+
 // SendWithTTL sends one datagram with a small TTL and puts the socket's TTL back
 func SendWithTTL(c *net.UDPConn, b []byte, dst netip.AddrPort, ttl int) error {
 	rc, err := c.SyscallConn()

@@ -54,13 +54,13 @@ func TestRouterDNSSelectsServicesAndPreservesOtherDNS(t *testing.T) {
 		}
 		return dnsAnswer(t, q, [4]byte{8, 8, 4, 4}, 60), nil
 	}
-	for _, host := range []string{"voice.discord.media", "account.epicgames.com", "router.lan", "discord.com.attacker.test"} {
+	for _, host := range []string{"voice.discord.media", "account.epicgames.com", "ping-eu.ds.on.epicgames.com", "router.lan", "discord.com.attacker.test"} {
 		if b.answer(context.Background(), dnsQuery(t, host, dnsmessage.TypeA)) == nil {
 			t.Fatal("missing response")
 		}
 	}
-	if selectedCalls != 2 || directCalls != 2 {
-		t.Fatal("DNS escaped selected service boundary")
+	if selectedCalls != 2 || directCalls != 3 {
+		t.Fatal("DNS escaped selected service boundary or routed Epic beacon")
 	}
 	rows, _ := cache.snapshot(time.Now())
 	if len(rows) != 2 {

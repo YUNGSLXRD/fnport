@@ -48,6 +48,9 @@
 				],
 				"/usr/libexec/fnport-connectionsctl register": [
 					"exec"
+				],
+				"/usr/libexec/fnport-connectionsctl subscription": [
+					"exec"
 				]
 			},
 			"uci": [

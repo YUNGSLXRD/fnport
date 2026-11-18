@@ -63,3 +63,33 @@ func TestParisGameServerCoverage(t *testing.T) {
 		t.Fatal("HTTPS was classified as game UDP")
 	}
 }
+
+func TestSettingsBackupRestoreAndLegacyWarpMigration(t *testing.T) {
+	dir := t.TempDir()
+	localFile := dir + "/new-version/fnport.json"
+	backupFile := dir + "/appdata/fnport/settings-backup.json"
+
+	old := defaultSettings()
+	old.FakeTTL = 4
+	old.Warp.Enabled = true
+	old.Warp.Always = true
+	old.Warp.PrivateKey = "priv"
+	old.Warp.PeerKey = "peer"
+	old.Warp.Address = "172.16.0.2"
+	old.Warp.Domains = []string{"epicgames.com", "youtube.com"}
+	if err := writeSettingsAtomic(backupFile, old); err != nil {
+		t.Fatal(err)
+	}
+
+	restored := loadSettingsFrom(localFile, backupFile)
+	if restored.FakeTTL != 4 || !restored.Connection.Enabled || restored.Connection.Protocol != "warp" ||
+		!restored.Connection.Epic || !restored.Connection.EpicAlways || restored.Warp.Enabled {
+		t.Fatalf("legacy WARP backup did not migrate cleanly: %+v / %+v", restored.Connection, restored.Warp)
+	}
+	if !reflect.DeepEqual(restored.Connection.Domains, []string{"youtube.com"}) {
+		t.Fatalf("unexpected migrated extra domains: %v", restored.Connection.Domains)
+	}
+	if restored.Warp.PrivateKey != "priv" {
+		t.Fatal("WARP key lost during backup restore")
+	}
+}

@@ -10,10 +10,8 @@ mkdir -p dist
 printf 'module fnport.invalid/build-artifacts\n' > dist/go.mod
 export GOTOOLCHAIN=local CGO_ENABLED=0
 BUILD_TAGS=
-DEV_LDFLAGS=
 if [ "${FNPORT_DEV_TRACE:-off}" = on ]; then
- BUILD_TAGS=devtrace
- DEV_LDFLAGS="-X main.devControlProbes=${FNPORT_DEV_CONTROL_PROBES:-on}"
+	BUILD_TAGS=devtrace
 fi
 
 # the fakes are the package's own files, embedded into the program
@@ -23,29 +21,31 @@ cp ../fnport/files/quic_initial_*.bin internal/fakes/
 licenses() {
 	printf '%s\n\n' "Licenses of the Go code compiled into this program."
 	go_license="$(go env GOROOT)/LICENSE"
- if [ ! -f "$go_license" ]; then go_license="$(go env GOROOT)/../LICENSE"; fi
- test -f "$go_license" || { echo "Go license not found" >&2; exit 1; }
- printf '%s\n\n%s\n\n' "== Go $(go env GOVERSION | sed 's/^go//') (standard library and runtime)" "$(cat "$go_license")"
+	if [ ! -f "$go_license" ]; then
+		go_license="$(go env GOROOT)/../LICENSE"
+	fi
+	test -f "$go_license" || { echo "Go license not found" >&2; exit 1; }
+	printf '%s\n\n%s\n\n' "== Go $(go env GOVERSION | sed 's/^go//') (standard library and runtime)" "$(cat "$go_license")"
 	GOOS=windows GOARCH=amd64 go list -tags "$BUILD_TAGS" -deps -f '{{with .Module}}{{if not .Main}}{{.Path}} {{.Version}} {{.Dir}}{{end}}{{end}}' "$1" |
-		sort -u | while read -r path ver dir; do
+		sort -u | while read -r mod_path ver dir; do
 			f=$(ls "$dir" | grep -i -E '^(licen[cs]e|copying|unlicense)' | head -n 1)
-			test -n "$f" || { echo "no license file in $path" >&2; exit 1; }
-			printf '%s\n\n%s\n\n' "== $path $ver" "$(cat "$dir/$f")"
+			test -n "$f" || { echo "no license file in $mod_path" >&2; exit 1; }
+			printf '%s\n\n%s\n\n' "== $mod_path $ver" "$(cat "$dir/$f")"
 		done
 }
 
-# every license text the program ships, built into fnport.exe (Settings → «Лицензии»):
-# the zip itself carries no loose license files
+# every license text the program ships, built into fnport.exe (Settings -> «Лицензии»):
+# the zip itself carries no loose license or readme files
 {
 	licenses ./fnport
 	printf '%s\n\n%s\n\n' "== Wintun (wintun.dll), WireGuard LLC" "$(cat third_party/wintun-LICENSE.txt)"
 	printf '%s\n\n%s\n\n' "== wgcf (the WARP registration request and TLS fingerprint), ViRb3" "$(cat third_party/wgcf-LICENSE.txt)"
 	printf '%s\n\n%s\n\n' "== Inter font" "$(cat internal/fonts/OFL.txt)"
 	printf '%s\n\n%s\n' "== Fake QUIC Initials (fakes/*.bin), from zapret" "$(cat ../fnport/files/quic_initial_vk_com.bin.LICENSE)"
- if [ -n "${FNPORT_SING_BOX_DIR:-}" ]; then
-  printf '\n\n%s\n\n' '== sing-box and libcronet (bundled upstream programs)'
-  cat "$FNPORT_SING_BOX_DIR/LICENSE" third_party/sing-box-GPL-3.0.txt third_party/sing-box-SOURCES.txt
- fi
+	if [ -n "${FNPORT_SING_BOX_DIR:-}" ]; then
+		printf '\n\n%s\n\n' '== sing-box (bundled upstream core)'
+		cat "$FNPORT_SING_BOX_DIR/LICENSE" third_party/sing-box-GPL-3.0.txt third_party/sing-box-SOURCES.txt
+	fi
 } > fnport/licenses.txt
 
 go vet -tags "$BUILD_TAGS" ./...
@@ -74,17 +74,16 @@ go run ./tools/mkicon fnport/winres
 pack() {
 	out="$tmp/$1"
 	mkdir -p "$out" dist
-	GOOS=windows GOARCH=amd64 go build -tags "$BUILD_TAGS" -trimpath -ldflags "-s -w -X main.version=$VER -X main.devTrace=${FNPORT_DEV_TRACE:-off} $DEV_LDFLAGS ${4:-}" -o "$out/$1.exe" "./$2"
+	GOOS=windows GOARCH=amd64 go build -tags "$BUILD_TAGS" -trimpath \
+		-ldflags "-s -w -X main.version=$VER -X main.devTrace=${FNPORT_DEV_TRACE:-off} ${4:-}" \
+		-o "$out/$1.exe" "./$2"
 	cp "$dll" "$out/wintun.dll"
- if [ "$1" = fnport ] && [ -n "${FNPORT_SING_BOX_DIR:-}" ]; then
-  cp "$FNPORT_SING_BOX_DIR/sing-box.exe" "$out/sing-box.exe"
-  if [ -f "$FNPORT_SING_BOX_DIR/libcronet.dll" ]; then cp "$FNPORT_SING_BOX_DIR/libcronet.dll" "$out/libcronet.dll"; fi
-  if [ "${FNPORT_DEV_TRACE:-off}" = on ]; then
-   cp ../docs/connections-dev.md "$out/README-dev.md"
-  else
-   cp ../docs/connections.md "$out/README.md"
-  fi
- fi
+	if [ "$1" = fnport ] && [ -n "${FNPORT_SING_BOX_DIR:-}" ]; then
+		cp "$FNPORT_SING_BOX_DIR/sing-box.exe" "$out/sing-box.exe"
+		if [ "${FNPORT_DEV_TRACE:-off}" = on ] && [ -f ../docs/connections-dev.md ]; then
+			cp ../docs/connections-dev.md "$out/README-dev.md"
+		fi
+	fi
 	if [ "$1" != fnport ]; then
 		cp third_party/wintun-LICENSE.txt "$out/wintun-LICENSE.txt"
 		cp ../fnport/files/quic_initial_vk_com.bin.LICENSE "$out/quic-fakes-LICENSE.txt"
@@ -94,6 +93,7 @@ pack() {
 	(cd "$tmp" && zip -qr - "$1") > "dist/$3-$VER.zip"
 	ls -l "dist/$3-$VER.zip"
 }
+
 pack fnport-probe probe fnport-windows-probe
 # the program has a window, not a console; its fakes sit in a folder next to it
 mkdir -p "$tmp/fnport/fakes"

@@ -700,3 +700,76 @@ msgstr "смешанные ответы с фейком"
 
 msgid "tested TTL"
 msgstr "проверенный TTL"
+
+msgid "AmneziaWG / WireGuard"
+msgstr "AmneziaWG / WireGuard"
+
+msgid "Subscription or VPN link"
+msgstr "Подписка или ссылка VPN"
+
+msgid "Paste a subscription https:// link, a vless://, hy2://, ss://, trojan:// or socks5:// link, a WireGuard/AmneziaWG .conf, or a single sing-box JSON outbound."
+msgstr "Вставьте ссылку подписки https://, ссылку vless://, hy2://, ss://, trojan:// или socks5://, файл WireGuard/AmneziaWG .conf или один JSON-объект sing-box."
+
+msgid "Subscription"
+msgstr "Подписка"
+
+msgid "Loads servers from an https:// subscription link and saves them on the router."
+msgstr "Загружает серверы по ссылке подписки https:// и сохраняет их на роутере."
+
+msgid "Update subscription"
+msgstr "Обновить подписку"
+
+msgid "Load servers"
+msgstr "Загрузить серверы"
+
+msgid "Subscription server"
+msgstr "Сервер подписки"
+
+msgid "Choose a server from your subscription, then save and apply."
+msgstr "Выберите сервер из подписки, затем сохраните и примените настройки."
+
+msgid "Automatic (first available)"
+msgstr "Автоматически (первый доступный)"
+
+msgid "Refresh WARP key"
+msgstr "Обновить ключ WARP"
+
+msgid "Messaging and voice. All supported protocols carry UDP for voice."
+msgstr "Сообщения и голос. Все поддерживаемые протоколы передают голосовой UDP."
+
+msgid "Server"
+msgstr "Сервер"
+
+msgid "Exit"
+msgstr "Выход"
+
+msgid "Loading subscription…"
+msgstr "Загрузка подписки…"
+
+msgid "Subscription updated."
+msgstr "Подписка обновлена."
+
+msgid "Could not install required OpenWrt network packages (kmod-tun, kmod-nft-tproxy, ip-full, ca-bundle)."
+msgstr "Не удалось установить системные пакеты OpenWrt (kmod-tun, kmod-nft-tproxy, ip-full, ca-bundle)."
+
+msgid "The tunnel stopped responding and was restarted."
+msgstr "Туннель перестал отвечать и был перезапущен."
+
+msgid "Could not load the subscription. Check the https:// link and connection."
+msgstr "Не удалось загрузить подписку. Проверьте ссылку https:// и соединение."
+
+msgid "Enter a subscription link starting with https:// or http://."
+msgstr "Укажите ссылку подписки, начинающуюся с https:// или http://."
+
+msgid "Load the subscription servers first."
+msgstr "Сначала загрузите серверы подписки."
+
+msgid "Check the WireGuard / AmneziaWG configuration."
+msgstr "Проверьте конфигурацию WireGuard / AmneziaWG."
+
+msgid "Check the connection link or configuration."
+msgstr "Проверьте ссылку или конфигурацию подключения."
+
+msgid "At TTL %d the fake probes stopped replying, while lower TTL %d passed all confirmation probes."
+msgstr "При TTL %d пробы с фейком перестали отвечать, а меньший TTL %d прошёл все подтверждающие проверки."
+

@@ -35,7 +35,7 @@ class DownloadLayout(unittest.TestCase):
         (self.dist / 'fnport-router-core-source-1.14.4.tar.gz').write_bytes(b'source fixture')
         self.archive = self.dist / 'fnport-windows-v0.7.0.zip'
         with zipfile.ZipFile(self.archive, 'w') as z:
-            z.writestr('fnport/fnport.exe', b'== sing-box and libcronet\nGNU GENERAL PUBLIC LICENSE\nSource revision: c005f35300ce76427dc285481ec5695f5b179cd2')
+            z.writestr('fnport/fnport.exe', b'== sing-box\nGNU GENERAL PUBLIC LICENSE\nSource revision: c005f35300ce76427dc285481ec5695f5b179cd2')
 
     def checksums(self):
         files = sorted(p for p in self.dist.iterdir() if p.name != 'SHA256SUMS.txt')

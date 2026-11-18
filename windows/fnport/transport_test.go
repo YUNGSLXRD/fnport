@@ -31,7 +31,7 @@ func TestTransportConfigOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	route := root["route"].(map[string]any)
-	if route["final"] != "chosen" || route["default_interface"] != "Ethernet" || len(route) != 3 {
+	if route["final"] != "chosen" || route["default_interface"] != "Ethernet" || len(route) != 4 {
 		t.Fatal(route)
 	}
 	out := root["outbounds"].([]any)[0].(map[string]any)
@@ -657,12 +657,15 @@ func TestTransportCapabilityOptions(t *testing.T) {
 		raw string
 		udp bool
 	}{
-		{`{"type":"naive","udp_over_tcp":{"enabled":true}}`, true},
-		{`{"type":"naive"}`, false},
-		{`{"type":"socks","version":"4a"}`, false},
 		{`{"type":"vless","network":["tcp"]}`, false},
 		{`{"type":"vless","network":["tcp","udp"]}`, true},
-		{`{"type":"snell","version":4}`, true},
+		{`{"type":"hysteria2"}`, true},
+		{`{"type":"shadowsocks","method":"2022-blake3-aes-128-gcm"}`, true},
+		{`{"type":"trojan"}`, true},
+		{`{"type":"socks"}`, true},
+		{`{"type":"socks","version":"4a"}`, false},
+		{`{"type":"naive","udp_over_tcp":{"enabled":true}}`, false},
+		{`{"type":"http"}`, false},
 	} {
 		_, udp, err := connectionConfig(transportSettings(tt.raw), "Ethernet", 1, "u", "p")
 		if err != nil || udp != tt.udp {

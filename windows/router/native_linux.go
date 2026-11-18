@@ -30,6 +30,7 @@ func commandQuiet(ctx context.Context, name string, args ...string) error {
 	}
 	return nil
 }
+
 func boundSocket(iface string, mark int) func(string, string, syscall.RawConn) error {
 	return func(_, _ string, c syscall.RawConn) error {
 		var socketErr error
@@ -47,6 +48,7 @@ func boundSocket(iface string, mark int) func(string, string, syscall.RawConn) e
 		return socketErr
 	}
 }
+
 func ifaceIPv4(name string) (netip.Addr, error) {
 	iface, err := net.InterfaceByName(name)
 	if err != nil {
@@ -63,15 +65,16 @@ func ifaceIPv4(name string) (netip.Addr, error) {
 	}
 	return netip.Addr{}, errors.New("interface_has_no_ipv4")
 }
-func readTunnelFake(path string) ([]byte, error) {
-	if path == "" {
+
+func readTunnelFake(filePath string) ([]byte, error) {
+	if filePath == "" {
 		return nil, nil
 	}
-	dir, name := filepath.Dir(path), filepath.Base(path)
+	dir, name := filepath.Dir(filePath), filepath.Base(filePath)
 	if (dir != "/usr/share/fnport" && dir != "/etc/fnport") || !strings.HasSuffix(name, ".bin") || strings.Contains(name, "..") {
 		return nil, errors.New("invalid_fake_path")
 	}
-	f, err := os.Open(path)
+	f, err := os.Open(filePath)
 	if err != nil {
 		return nil, errors.New("fake_unavailable")
 	}
@@ -116,6 +119,9 @@ func (b *nativeBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	}
 	c := pc.(*net.UDPConn)
 	b.sock = c
+	b.sendMu.Lock()
+	b.last = make(map[netip.AddrPort]time.Time)
+	b.sendMu.Unlock()
 	receive := func(packets [][]byte, sizes []int, endpoints []conn.Endpoint) (int, error) {
 		for failures := 0; ; failures++ {
 			n, from, err := c.ReadFromUDPAddrPort(packets[0])
@@ -131,6 +137,7 @@ func (b *nativeBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	}
 	return []conn.ReceiveFunc{receive}, uint16(c.LocalAddr().(*net.UDPAddr).Port), nil
 }
+
 func (b *nativeBind) Close() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -141,12 +148,15 @@ func (b *nativeBind) Close() error {
 	b.sock = nil
 	return err
 }
+
 func (b *nativeBind) SetMark(uint32) error { return nil }
 func (b *nativeBind) BatchSize() int       { return 1 }
+
 func (b *nativeBind) ParseEndpoint(s string) (conn.Endpoint, error) {
 	a, err := netip.ParseAddrPort(s)
 	return routerEndpoint(a), err
 }
+
 func sendNativeFake(c *net.UDPConn, payload []byte, dst netip.AddrPort, ttl int) error {
 	raw, err := c.SyscallConn()
 	if err != nil {
@@ -167,7 +177,9 @@ func sendNativeFake(c *net.UDPConn, payload []byte, dst netip.AddrPort, ttl int)
 		return socketErr
 	}
 	_, sendErr := c.WriteToUDPAddrPort(payload, dst)
-	restoreErr := raw.Control(func(fd uintptr) { socketErr = unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_TTL, old) })
+	restoreErr := raw.Control(func(fd uintptr) {
+		socketErr = unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_TTL, old)
+	})
 	if sendErr != nil {
 		return sendErr
 	}
@@ -176,6 +188,7 @@ func sendNativeFake(c *net.UDPConn, payload []byte, dst netip.AddrPort, ttl int)
 	}
 	return socketErr
 }
+
 func (b *nativeBind) Send(packets [][]byte, endpoint conn.Endpoint) error {
 	b.mu.Lock()
 	c := b.sock
@@ -192,7 +205,7 @@ func (b *nativeBind) Send(packets [][]byte, endpoint conn.Endpoint) error {
 	defer b.sendMu.Unlock()
 	if len(b.fake) > 0 && b.ttl > 0 {
 		if b.last == nil {
-			b.last = map[netip.AddrPort]time.Time{}
+			b.last = make(map[netip.AddrPort]time.Time)
 		}
 		if time.Since(b.last[dst]) > 20*time.Second {
 			if err := sendNativeFake(c, b.fake, dst, b.ttl); err != nil {
@@ -210,20 +223,20 @@ func (b *nativeBind) Send(packets [][]byte, endpoint conn.Endpoint) error {
 }
 
 type nativeTunnel struct {
-	dev         *device.Device
-	bind        *nativeBind
-	profile     nativeAWGSettings
-	route, rule bool
-	once        sync.Once
+	dev     *device.Device
+	bind    *nativeBind
+	profile nativeAWGSettings
+	route   bool
+	rule    bool
+	once    sync.Once
 }
 
 func newNativeTunnel(ctx context.Context, c routerConfig) (*nativeTunnel, error) {
 	if _, err := net.InterfaceByName(tunnelName); err == nil {
 		return nil, errors.New("native_interface_already_exists")
 	}
-	raw, _ := jsonNative(c.Native)
-	profile, err := parseNativeAWG(raw)
-	if err != nil {
+	profile := c.Native
+	if err := profile.Validate(c.Protocol != "warp"); err != nil {
 		return nil, errors.New("invalid_native_profile")
 	}
 	address, err := ifaceIPv4(c.WAN)
@@ -252,7 +265,12 @@ func newNativeTunnel(ctx context.Context, c routerConfig) (*nativeTunnel, error)
 		}
 	}()
 	private, _ := b64hex(profile.PrivateKey)
-	ipc := fmt.Sprintf("private_key=%s\njc=%d\njmin=%d\njmax=%d\ns1=%d\ns2=%d\nh1=%d\nh2=%d\nh3=%d\nh4=%d\n", private, profile.Jc, profile.Jmin, profile.Jmax, profile.S1, profile.S2, profile.H1, profile.H2, profile.H3, profile.H4)
+	ipc := fmt.Sprintf(
+		"private_key=%s\njc=%d\njmin=%d\njmax=%d\ns1=%d\ns2=%d\nh1=%d\nh2=%d\nh3=%d\nh4=%d\n",
+		private, profile.Jc, profile.Jmin, profile.Jmax,
+		profile.S1, profile.S2,
+		profile.H1, profile.H2, profile.H3, profile.H4,
+	)
 	for i, v := range []string{profile.I1, profile.I2, profile.I3, profile.I4, profile.I5} {
 		if v != "" {
 			ipc += fmt.Sprintf("i%d=%s\n", i+1, v)
@@ -261,7 +279,11 @@ func newNativeTunnel(ctx context.Context, c routerConfig) (*nativeTunnel, error)
 	if d.IpcSet(ipc) != nil {
 		return nil, errors.New("native_settings_rejected")
 	}
-	for _, args := range [][]string{{"-4", "addr", "add", profile.Address + "/32", "dev", tunnelName}, {"link", "set", "dev", tunnelName, "mtu", strconv.Itoa(mtu), "up"}} {
+	setupCmds := [][]string{
+		{"-4", "addr", "add", profile.Address + "/32", "dev", tunnelName},
+		{"link", "set", "dev", tunnelName, "mtu", strconv.Itoa(mtu), "up"},
+	}
+	for _, args := range setupCmds {
 		if commandQuiet(ctx, "ip", args...) != nil {
 			return nil, errors.New("native_interface_setup_failed")
 		}
@@ -280,6 +302,28 @@ func newNativeTunnel(ctx context.Context, c routerConfig) (*nativeTunnel, error)
 	keep = true
 	return t, nil
 }
+
+// rebind cycles the WireGuard UDP socket onto a fresh ephemeral source port
+// when a TSPU freezes the previous flow after ~25 packets.
+func (t *nativeTunnel) rebind() error {
+	_ = t.dev.Down()
+	if err := t.dev.Up(); err != nil {
+		return errors.New("native_rebind_failed")
+	}
+	return nil
+}
+
+func (t *nativeTunnel) setDecoyI1(i1 string) error {
+	if !validPacketTemplate(i1) {
+		return errors.New("invalid_decoy_template")
+	}
+	if err := t.dev.IpcSet("i1=" + i1 + "\n"); err != nil {
+		return errors.New("native_settings_rejected")
+	}
+	t.profile.I1 = i1
+	return nil
+}
+
 func (t *nativeTunnel) setEndpoint(endpoint string) error {
 	a, err := netip.ParseAddrPort(endpoint)
 	if err != nil || !a.Addr().Is4() {
@@ -290,7 +334,10 @@ func (t *nativeTunnel) setEndpoint(endpoint string) error {
 	if t.profile.Keepalive != nil {
 		keepalive = *t.profile.Keepalive
 	}
-	ipc := fmt.Sprintf("replace_peers=true\npublic_key=%s\nendpoint=%s\nallowed_ip=0.0.0.0/0\npersistent_keepalive_interval=%d\n", peer, a.String(), keepalive)
+	ipc := fmt.Sprintf(
+		"replace_peers=true\npublic_key=%s\nendpoint=%s\nallowed_ip=0.0.0.0/0\npersistent_keepalive_interval=%d\n",
+		peer, a.String(), keepalive,
+	)
 	if t.profile.PresharedKey != "" {
 		key, _ := b64hex(t.profile.PresharedKey)
 		ipc += "preshared_key=" + key + "\n"
@@ -300,19 +347,25 @@ func (t *nativeTunnel) setEndpoint(endpoint string) error {
 	}
 	return nil
 }
+
 func (t *nativeTunnel) dial(ctx context.Context, address string) (net.Conn, error) {
-	d := net.Dialer{Control: boundSocket(tunnelName, tunnelMark), LocalAddr: &net.TCPAddr{IP: net.ParseIP(t.profile.Address)}, Timeout: 6 * time.Second}
+	d := net.Dialer{
+		Control:   boundSocket(tunnelName, tunnelMark),
+		LocalAddr: &net.TCPAddr{IP: net.ParseIP(t.profile.Address)},
+		Timeout:   6 * time.Second,
+	}
 	return d.DialContext(ctx, "tcp4", address)
 }
+
 func (t *nativeTunnel) close() {
 	t.once.Do(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		if t.rule {
-			commandQuiet(ctx, "ip", "-4", "rule", "del", "pref", "81", "oif", tunnelName, "lookup", strconv.Itoa(tunnelTable))
+			_ = commandQuiet(ctx, "ip", "-4", "rule", "del", "pref", "81", "oif", tunnelName, "lookup", strconv.Itoa(tunnelTable))
 		}
 		if t.route {
-			commandQuiet(ctx, "ip", "-4", "route", "del", "default", "dev", tunnelName, "table", strconv.Itoa(tunnelTable))
+			_ = commandQuiet(ctx, "ip", "-4", "route", "del", "default", "dev", tunnelName, "table", strconv.Itoa(tunnelTable))
 		}
 		t.dev.Close()
 	})

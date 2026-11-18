@@ -7,7 +7,7 @@
 import { readfile, writefile } from 'fs';
 
 const SELF = '/usr/libexec/fnport-update';
-const LOG = '/var/run/fnport-update.log';   // root-only directory
+const LOG = '/var/run/fnport-update.log'; // root-only directory
 const PIDFILE = '/var/run/fnport-update.pid';
 const INSTALLER = 'https://raw.githubusercontent.com/YUNGSLXRD/fnport/main/install.sh';
 
@@ -21,7 +21,10 @@ if (cmd == 'status') {
 	printf('%J\n', { running: !!running(), log: readfile(LOG) ?? '' });
 }
 else if (cmd == 'start') {
-	if (running()) { printf('%J\n', { error: 'running' }); exit(1); }
+	if (running()) {
+		printf('%J\n', { error: 'running' });
+		exit(1);
+	}
 	writefile(LOG, '');
 	// detached: the update replaces the LuCI files and restarts the service under rpcd's feet
 	system([ 'start-stop-daemon', '-S', '-b', '-x', SELF, '--', 'run' ]);
@@ -29,7 +32,8 @@ else if (cmd == 'start') {
 }
 else if (cmd == 'run') {
 	writefile(PIDFILE, split(readfile('/proc/self/stat') ?? '', ' ')[0]);
-	system(`{ wget -q -O /tmp/fnport-install.sh '${INSTALLER}' && sh /tmp/fnport-install.sh; echo "exit $?"; } >${LOG} 2>&1`);
+	let dl = `(uclient-fetch -q --timeout=30 -O /tmp/fnport-install.sh '${INSTALLER}' || wget -q -T 30 -O /tmp/fnport-install.sh '${INSTALLER}' || curl -fsSL --connect-timeout 10 --max-time 60 -o /tmp/fnport-install.sh '${INSTALLER}')`;
+	system(`{ ${dl} && sh /tmp/fnport-install.sh; echo "exit $?"; } >${LOG} 2>&1`);
 }
 else {
 	warn('usage: fnport-update start|status\n');

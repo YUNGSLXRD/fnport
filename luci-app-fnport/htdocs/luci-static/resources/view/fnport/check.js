@@ -52,7 +52,7 @@ function cityOf(ip) {
 	if ((x == 3 && y >= 8 && y <= 11) || (x == 18 && ((y >= 130 && y <= 135) || (y >= 168 && y <= 171))) ||
 	    (x == 13 && y >= 40 && y <= 43) || (x == 35 && y >= 176 && y <= 179))
 		return 'london';
-	if ((x == 13 && y >= 36 && y <= 39) || (x == 15 && (y == 188 || y == 236 || y == 237)) || (x == 35 && (y == 180 || y == 181)))
+	if ((x == 13 && y >= 36 && y <= 39) || (x == 15 && (y == 188 || y == 236 || y == 237)) || (x == 35 && (y == 180 || y == 181)) || (x == 51 && y == 44))
 		return 'paris';
 	return null;
 }
@@ -119,8 +119,8 @@ function verdictMain(st) {
 			? _('The ISP freezes game UDP. The first fake did not help, but the spare %s does. Recommended fake TTL: %d.').format(st.recommended_fake, st.recommended_ttl)
 			: _('The ISP freezes game UDP, and the whitelist fake lifts the freeze. Recommended fake TTL: %d.').format(st.recommended_ttl);
 	case 'fake_partial':
-  return _('Some ports passed with the fake, but the replies are mixed. Keep the current fake and TTL; game connections still need port selection.');
- case 'fake_kills':
+		return _('Some ports passed with the fake, but the replies are mixed. Keep the current fake and TTL; game connections still need port selection.');
+	case 'fake_kills':
 		return _('The ISP freezes game UDP, and the fake kills the whole flow once it gets far enough (from TTL %d). fnport can only look for passing ports without the fake here. Please send a report.').format(st.fake_kills_from);
 	case 'fake_fails':
 		return _('A packet-count freeze was detected, but the tried fakes and TTLs did not give a confirmed improvement. Limited or mixed replies remain inconclusive. Please send the report.');
@@ -159,10 +159,11 @@ function report(st, log, stats) {
 			(sp.ttl || []).map(function(e) { return 'TTL %d: %s'.format(e.ttl, repliesText(e.replies)); }).join('; ')));
 	});
 	if (st.fake_check) {
-  out.push('**%s** (%s): %s'.format(_('Same-beacon control'),cityName(st.fake_check.city),repliesText(st.fake_check.control)));
-  out.push('**%s**: TTL %d: %s (%s)'.format(_('Fake at the current TTL'),st.fake_check.ttl,repliesText(st.fake_check.replies),st.fake_check.verdict || 'unclear'));
- }
- if (st.kill_control) out.push('**%s**: %s'.format(_('Control after silent fake probes'),repliesText(st.kill_control)));
+		out.push('**%s** (%s): %s'.format(_('Same-beacon control'), cityName(st.fake_check.city), repliesText(st.fake_check.control)));
+		out.push('**%s**: TTL %d: %s (%s)'.format(_('Fake at the current TTL'), st.fake_check.ttl, repliesText(st.fake_check.replies), st.fake_check.verdict || 'unclear'));
+	}
+	if (st.kill_control)
+		out.push('**%s**: %s'.format(_('Control after silent fake probes'), repliesText(st.kill_control)));
 	var short = {
 		no_freeze: _('no freeze'), fake_works: _('the fake works'), fake_kills: _('the fake kills flows'),
 		fake_partial: _('mixed replies with the fake'), fake_fails: _('the fake does not help'), unclear: _('unclear'), no_reply: _('no reply'), freeze_no_fake: _('no fake file')
@@ -267,14 +268,21 @@ return view.extend({
 		nodes.push(E('h3', {}, _('Result')));
 		nodes.push(E('p', {}, [ E('strong', {}, [ verdictText(st) ]) ]));
 
-		if (st.verdict == 'no_freeze' && st.fake_check && st.fake_check.verdict == 'kills')
-			nodes.push(E('p', { 'style': 'color:#c60' }, [ _('At TTL %d the fake probes stopped replying, while both control probes on the same beacon passed. This check does not change your settings.').format(st.fake_check.ttl) ]));
+		if (st.verdict == 'no_freeze' && st.fake_check && st.fake_check.verdict == 'kills') {
+			var killMsg = st.fake_check.lower_ttl
+				? _('At TTL %d the fake probes stopped replying, while lower TTL %d passed all confirmation probes.')
+					.format(st.fake_check.ttl, st.fake_check.lower_ttl)
+				: _('At TTL %d the fake probes stopped replying, while both control probes on the same beacon passed. This check does not change your settings.')
+					.format(st.fake_check.ttl);
+			nodes.push(E('p', { 'style': 'color:#c60' }, [ killMsg ]));
+		}
 
 		if (st.policy == 3 && st.recommended_ttl) {
 			var selected = st.recommended_fake || st.fake;
-   var steps = selected == st.fake ? st.ttl || [] : ((st.spares || []).filter(function(sp){return sp.fake == selected;})[0] || {}).ttl || [];
-   var measuredCurrent = steps.some(function(e){return e.ttl == st.now_ttl && count(e.replies,'pass') >= 2;});
-   if (st.now_fake && st.now_fake_name == selected && measuredCurrent)
+			var spareMatch = (st.spares || []).filter(function(sp) { return sp.fake == selected; })[0];
+			var steps = selected == st.fake ? (st.ttl || []) : ((spareMatch && spareMatch.ttl) || []);
+			var measuredCurrent = steps.some(function(e) { return e.ttl == st.now_ttl && count(e.replies, 'pass') >= 4; });
+			if (st.now_fake && st.now_fake_name == selected && measuredCurrent)
 				nodes.push(E('p', {}, [ _('Your current TTL %d passed the recorded probes with this fake.').format(st.now_ttl) ]));
 			else
 				nodes.push(E('p', {}, [
@@ -309,10 +317,15 @@ return view.extend({
 			(sp.ttl || []).forEach(function(e) { row(_('%s, spare %s, TTL %d').format(cityName(st.beacon), sp.fake, e.ttl), e.replies); });
 		});
 		if (st.fake_check) {
-   row(_('%s, no fake').format(cityName(st.fake_check.city)), st.fake_check.control);
-   row(_('%s, fake TTL %d').format(cityName(st.fake_check.city),st.fake_check.ttl),st.fake_check.replies);
-   nodes.push(E('p',{},st.fake_check.verdict == 'harmless' ? _('Both probes passed with and without the fake on the same beacon. This is not a guarantee for game servers.') : st.fake_check.verdict == 'kills' ? _('The control probes passed; the fake probes did not reply.') : _('The fake comparison is inconclusive. No setting change is recommended from it.')));
-  }
+			row(_('%s, no fake').format(cityName(st.fake_check.city)), st.fake_check.control);
+			row(_('%s, fake TTL %d').format(cityName(st.fake_check.city), st.fake_check.ttl), st.fake_check.replies);
+			var fakeNote = st.fake_check.verdict == 'harmless'
+				? _('Both probes passed with and without the fake on the same beacon. This is not a guarantee for game servers.')
+				: (st.fake_check.verdict == 'kills'
+					? _('The control probes passed; the fake probes did not reply.')
+					: _('The fake comparison is inconclusive. No setting change is recommended from it.'));
+			nodes.push(E('p', {}, [ fakeNote ]));
+		}
 		nodes.push(E('table', { 'class': 'table' }, rows));
 		nodes.push(E('p', { 'class': 'cbi-section-descr' }, [
 			_('More than 25 replies, or a tagged reply past packet 25: the probe was not frozen. 20-25 replies without a later packet suggest a freeze. Fewer replies can be rate limiting, filtering or loss. A beacon result is not a game-server guarantee.')

@@ -28,6 +28,7 @@ import (
 	"github.com/YUNGSLXRD/fnport/windows/internal/fonts"
 	"github.com/YUNGSLXRD/fnport/windows/internal/geo"
 	"github.com/YUNGSLXRD/fnport/windows/internal/icon"
+	"github.com/YUNGSLXRD/fnport/windows/internal/vpn"
 	"github.com/YUNGSLXRD/fnport/windows/internal/wnet"
 )
 
@@ -133,11 +134,12 @@ type view struct {
 	scrolls    map[*widget.List]*smoothScroll
 	theme      widget.Enum
 
-	power    widget.Clickable
-	flowList widget.List
-	mainList widget.List
-	logs     widget.List
-	openLog  widget.Clickable
+	power      widget.Clickable
+	flowList   widget.List
+	mainList   widget.List
+	logs       widget.List
+	openLog    widget.Clickable
+	openUpdate widget.Clickable
 
 	// settings: a draft edited here, applied with "Save"
 	page        widget.List
@@ -153,20 +155,9 @@ type view struct {
 	rounds      widget.Editor
 	budget      widget.Editor
 	passthru    widget.Bool
-	warpMode    widget.Enum // "off", "auto", "always"
 	warpPage    widget.List
-	warpList    widget.Editor // the names that go through WARP, one per line
-	warpSave    widget.Clickable
-	warpReset   widget.Clickable
-	warpDraft   bool // the list editor holds the saved list
 	warpSpeed   widget.Clickable
-	warpConf    widget.Editor // a config pasted by the user
-	warpUseCfg  widget.Clickable
-	speedBusy   bool
 	warpReg     widget.Clickable
-	warpBusy    bool
-	warpMsg     string
-	warpErr     bool
 	save        widget.Clickable
 	reset       widget.Clickable
 	openFakes   widget.Clickable
@@ -199,6 +190,7 @@ func newView(ctl *controller, ping *pinger, check *checker, open func(string), o
 	for _, e := range []*widget.Editor{&v.batch, &v.rounds, &v.budget} {
 		e.SingleLine, e.Filter = true, "0123456789"
 	}
+	checkUpdateOnce()
 	return v
 }
 
@@ -416,7 +408,6 @@ func (v *view) frame(gtx C) {
 			if v.tab == tabSettings {
 				v.draftFor = 0
 			}
-			v.warpDraft = false
 		}
 	}
 	if v.power.Clicked(gtx) {
@@ -429,6 +420,9 @@ func (v *view) frame(gtx C) {
 		if p != "" && v.open != nil {
 			v.open(p)
 		}
+	}
+	if v.openUpdate.Clicked(gtx) && v.open != nil {
+		v.open(releasesURL)
 	}
 	v.animating = false
 	paint.Fill(gtx.Ops, colBg)
@@ -475,9 +469,16 @@ func (v *view) sidebar(gtx C) D {
 						layout.Rigid(widget.Image{Src: v.logo, Scale: 38.0 / 96}.Layout),
 						hspace(10),
 						layout.Rigid(func(gtx C) D {
-							return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+							kids := []layout.FlexChild{
 								layout.Rigid(bold(v.label(18, colText, "fnport")).Layout),
-								layout.Rigid(v.label(11, colMuted, version).Layout))
+								layout.Rigid(v.label(11, colMuted, version).Layout),
+							}
+							if up := latestUpdate(); up != "" {
+								kids = append(kids, layout.Rigid(func(gtx C) D {
+									return v.openUpdate.Layout(gtx, v.label(11, colGreen, "доступна v"+up).Layout)
+								}))
+							}
+							return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
 						}))
 				})
 			}),
@@ -611,71 +612,71 @@ func (v *view) mainColumn(gtx C, st state, titleC color.NRGBA, s, sub string, su
 		layout.Rigid(v.countersCard),
 		layout.Rigid(func(gtx C) D {
 			s := v.ctl.settings()
-			if st != stateOn || !((s.Warp.Enabled && !s.Connection.Enabled) || (s.Connection.Enabled && s.Connection.Protocol == "warp")) {
+			migrateLegacyWarp(&s)
+			if st != stateOn || !s.Connection.Enabled {
 				return D{}
 			}
-			return layout.Inset{Top: 12}.Layout(gtx, v.warpMainCard)
-		}), layout.Rigid(func(gtx C) D {
-			cs := v.ctl.settings().Connection
-			if st != stateOn || !cs.Enabled || cs.Protocol == "warp" {
-				return D{}
-			}
-			status := v.ctl.connectionStatus()
-			if cs.Protocol == "amneziawg" {
-				status = "Устройство AmneziaWG запущено. Доступность сервера проверяется при соединении."
-			}
-			return layout.Inset{Top: 12}.Layout(gtx, func(gtx C) D {
-				return v.card(gtx, func(gtx C) D {
-					kids := v.sectionTitle("Подключение: "+connectionProtocolLabel(cs.Protocol), status)
-					return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
-				})
-			})
+			return layout.Inset{Top: 12}.Layout(gtx, v.connectionMainCard)
 		}))
 }
 
-// exitName: "Москва (DME), Россия" for Cloudflare's point and country
 func exitName(colo string) string {
-	s := coloCity[colo]
-	if s == "" {
-		s = colo
-	} else {
-		s += " (" + colo + ")"
-	}
-	if c := countryRU[coloCountry[colo]]; c != "" {
-		s += ", " + c
-	}
-	return s
+	return vpn.ExitName(colo)
 }
 
-// warpMainCard: on the main page while fnport is on with WARP: is it up, where it comes out
-func (v *view) warpMainCard(gtx C) D {
-	w := v.ctl.warpTunnel()
-	dotC, state := colYellow, v.ctl.warpStatus(false)
-	if state == "" {
-		state = "ищет выход…"
+func (v *view) connectionMainCard(gtx C) D {
+	s := v.ctl.settings()
+	migrateLegacyWarp(&s)
+	cs := s.Connection
+	title := vpn.ProtocolLabel(cs.Protocol)
+	if cs.Subscription != nil {
+		if n := cs.Subscription.ActiveNode(); n != nil {
+			cleanName, _ := vpn.DisplayNodeName(n.Name)
+			if cleanName != "" {
+				title = vpn.ProtocolLabel(cs.Protocol) + " · " + cleanName
+			}
+		}
 	}
-	var colo string
-	if w != nil {
-		dotC, state = colGreen, fmt.Sprintf("подключен, открыто соединений: %d", w.conns.Load())
-		colo, _, _ = w.exitParts()
-	} else if strings.HasPrefix(state, "не подключился") {
-		dotC = colRed
+
+	dotC := colYellow
+	status := v.ctl.connectionStatus()
+	if cs.Protocol == "warp" {
+		if w := v.ctl.warpTunnel(); w != nil {
+			dotC = colGreen
+			status = fmt.Sprintf("подключён, открыто соединений: %d", w.conns.Load())
+		} else if strings.HasPrefix(status, "не подключился") {
+			dotC = colRed
+		} else if status == "" {
+			status = "ищет выход…"
+		}
+	} else {
+		if strings.HasPrefix(status, "ядро завершилось") {
+			dotC = colRed
+		} else {
+			dotC = colGreen
+		}
 	}
+
+	exit := v.ctl.connectionExit()
 	return v.card(gtx, func(gtx C) D {
 		kids := []layout.FlexChild{
 			layout.Rigid(func(gtx C) D {
 				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 					layout.Rigid(func(gtx C) D { return dot(gtx, dotC, 10) }), hspace(10),
-					layout.Rigid(bold(v.label(14, colText, "WARP")).Layout), hspace(10),
-					layout.Flexed(1, v.label(13, colMuted, state).Layout))
+					layout.Rigid(bold(v.label(14, colText, title)).Layout), hspace(10),
+					layout.Flexed(1, v.label(13, colMuted, status).Layout))
 			}),
 		}
-		if colo != "" {
+		if exit != nil && exit.Colo != "" {
+			cc := exit.Country
+			if cc == "" {
+				cc = vpn.ColoCountry[exit.Colo]
+			}
 			kids = append(kids, vspace(8), layout.Rigid(func(gtx C) D {
 				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 					layout.Rigid(v.label(13, colMuted, "Выход:").Layout), hspace(8),
-					layout.Rigid(func(gtx C) D { return drawFlag(gtx, coloCountry[colo], 13) }), hspace(7),
-					layout.Rigid(v.label(13, colText, exitName(colo)).Layout))
+					layout.Rigid(func(gtx C) D { return drawFlag(gtx, cc, 13) }), hspace(7),
+					layout.Rigid(v.label(13, colText, exitName(exit.Colo)).Layout))
 			}))
 		}
 		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
@@ -1370,243 +1371,6 @@ func (v *view) fakeCard(gtx C) D {
 				layout.Flexed(1, func(gtx C) D { return D{Size: image.Pt(gtx.Constraints.Min.X, 0)} }),
 				layout.Rigid(func(gtx C) D { return v.button(gtx, &v.openFakes, "Открыть папку", false, true) }))
 		}))
-		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
-	})
-}
-
-// warpTab: Epic's services through the user's own WARP, the game direct. The switch and the
-// key take effect at once, without "Save"
-func (v *view) legacyWarpTab(gtx C) D {
-	s := v.ctl.settings()
-	if v.warpReg.Clicked(gtx) && !v.warpBusy {
-		v.warpBusy, v.warpMsg, v.warpErr = true, "Получаю ключ у Cloudflare…", false
-		go func() {
-			cur := v.ctl.settings()
-			if ws, err := registerWarp(cur.Warp); err != nil {
-				v.warpMsg, v.warpErr = "Не получилось: "+err.Error(), true
-			} else {
-				ws.Enabled = true
-				if err := v.ctl.update(func(next *settings) error {
-					ws.Domains, ws.Always = next.Warp.Domains, next.Warp.Always
-					next.Warp = ws
-					return nil
-				}); err != nil {
-					v.warpMsg, v.warpErr = err.Error(), true
-				} else {
-					v.warpMsg, v.warpErr = "Ключ получен и сохранён, WARP включён.", false
-					logf("WARP: ключ получен и сохранён в fnport.json")
-					v.draftFor = 0
-				}
-			}
-			v.warpBusy = false
-			changes.Add(1)
-		}()
-	}
-	// one choice of three: off, only what does not open directly, everything listed
-	mode := func(w warpSettings) string {
-		switch {
-		case !w.Enabled:
-			return "off"
-		case w.Always:
-			return "always"
-		}
-		return "auto"
-	}
-	if v.warpMode.Update(gtx) {
-		m := v.warpMode.Value
-		go func() {
-			cur := v.ctl.settings()
-			if err := v.ctl.update(func(next *settings) error {
-				next.Warp.Enabled, next.Warp.Always = m != "off", m == "always"
-				return nil
-			}); err != nil {
-				v.warpMsg, v.warpErr = err.Error(), true
-			} else if m != "off" && !cur.Warp.ready() {
-				v.warpMsg, v.warpErr = "Включено, но ключа ещё нет: нажмите «Получить ключ WARP».", false
-			} else {
-				v.warpMsg, v.warpErr = "", false
-			}
-			changes.Add(1)
-		}()
-	} else {
-		v.warpMode.Value = mode(s.Warp)
-	}
-	if !v.warpDraft {
-		v.warpList.SetText(strings.Join(s.Warp.domains(), "\n"))
-		v.warpDraft = true
-	}
-	if v.warpSpeed.Clicked(gtx) && !v.speedBusy && !v.ctl.nativeAWGActive() {
-		v.speedBusy, v.warpMsg, v.warpErr = true, "Меряю скорость: 15 с напрямую, потом через WARP (если fnport выключен, сначала подниму WARP)…", false
-		go func() {
-			s := v.ctl.settings()
-			v.warpMsg = "Скорость: " + speedTest(v.ctl.warpTunnel(), s.Warp.withFake(s))
-			v.speedBusy = false
-			changes.Add(1)
-		}()
-	}
-	if v.warpUseCfg.Clicked(gtx) {
-		text := v.warpConf.Text()
-		go func() {
-			cur := v.ctl.settings()
-			ws, err := parseWarpConf(text, cur.Warp)
-			if err != nil {
-				v.warpMsg, v.warpErr = err.Error(), true
-			} else {
-				ws.Enabled = true
-				if err := v.ctl.update(func(next *settings) error {
-					ws.Domains, ws.Always = next.Warp.Domains, next.Warp.Always
-					next.Warp = ws
-					return nil
-				}); err != nil {
-					v.warpMsg, v.warpErr = err.Error(), true
-				} else {
-					v.warpMsg, v.warpErr = "Конфиг принят и сохранён, WARP включён.", false
-					v.warpConf.SetText("")
-				}
-			}
-			changes.Add(1)
-		}()
-	}
-	if v.warpReset.Clicked(gtx) {
-		v.warpList.SetText(strings.Join(warpSettings{}.domains(), "\n"))
-	}
-	if v.warpSave.Clicked(gtx) {
-		var list []string
-		for _, l := range strings.Split(v.warpList.Text(), "\n") {
-			if d := cleanDomain(l); d != "" {
-				list = append(list, d)
-			}
-		}
-		go func() {
-			if strings.Join(warpSettings{Domains: list}.domains(), " ") == strings.Join(warpSettings{}.domains(), " ") {
-				list = nil
-			}
-			if err := v.ctl.update(func(next *settings) error { next.Warp.Domains = list; return nil }); err != nil {
-				v.warpMsg, v.warpErr = err.Error(), true
-			} else {
-				v.warpMsg, v.warpErr = "Список сохранён.", false
-				v.warpDraft = false
-			}
-			changes.Add(1)
-		}()
-	}
-	var lines []string
-	for _, l := range logLines() {
-		if strings.Contains(l, "WARP") {
-			lines = append(lines, l)
-		}
-	}
-	if len(lines) > 200 {
-		lines = lines[len(lines)-200:]
-	}
-	sections := []layout.Widget{
-		func(gtx C) D { return v.connectionsCard(gtx) },
-		func(gtx C) D { return v.warpCard(gtx, s) },
-		func(gtx C) D { return v.warpListCard(gtx) },
-		func(gtx C) D {
-			return v.card(gtx, func(gtx C) D {
-				kids := v.sectionTitle("Журнал WARP", "")
-				if len(lines) == 0 {
-					kids = append(kids, layout.Rigid(v.label(13, colMuted, "Здесь будет видно, как подключается WARP и какие сайты идут через него.").Layout))
-				}
-				for _, l := range lines {
-					l := l
-					kids = append(kids, layout.Rigid(func(gtx C) D {
-						lb := mono(v.label(12, colText, l))
-						if strings.Contains(l, "не подключился") {
-							lb.Color = colYellow
-						}
-						return layout.Inset{Bottom: 3}.Layout(gtx, lb.Layout)
-					}))
-				}
-				return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
-			})
-		},
-	}
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-		v.title("Подключения"),
-		layout.Flexed(1, func(gtx C) D {
-			return v.list(gtx, &v.warpPage, len(sections), func(gtx C, i int) D {
-				return layout.Inset{Bottom: 12, Right: 10}.Layout(gtx, sections[i])
-			})
-		}))
-}
-
-func (v *view) warpListCard(gtx C) D {
-	return v.card(gtx, func(gtx C) D {
-		kids := v.sectionTitle("Что идёт через WARP", "По одному сайту в строке; строка покрывает и всё под ним (epicgames.com — это и "+
-			"store.epicgames.com). Сюда можно дописать свои, например discord.com. Через WARP идёт только TCP: игра и голос "+
-			"(UDP) остаются напрямую.")
-		kids = append(kids,
-			layout.Rigid(func(gtx C) D { return v.field(gtx, &v.warpList, "epicgames.com", 8) }),
-			vspace(10),
-			layout.Rigid(func(gtx C) D {
-				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-					layout.Rigid(func(gtx C) D { return v.button(gtx, &v.warpSave, "Сохранить список", true, true) }),
-					hspace(10),
-					layout.Rigid(func(gtx C) D { return v.button(gtx, &v.warpReset, "Вернуть список Epic", false, true) }))
-			}))
-		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
-	})
-}
-
-func (v *view) warpCard(gtx C, s settings) D {
-	return v.card(gtx, func(gtx C) D {
-		kids := v.sectionTitle("Сервисы Epic через WARP", "Если провайдер режет вход, магазин или загрузки Epic, они пойдут "+
-			"через Cloudflare WARP (AmneziaWG), а игра — напрямую, как раньше. Ключ WARP ваш и бесплатный: программа "+
-			"получает его у Cloudflare одной кнопкой. Что именно идёт через WARP — в списке ниже.")
-		kids = append(kids,
-			v.radio("off", "Выключен", &v.warpMode),
-			v.radio("auto", "Только то, что напрямую не открывается или замерзает (рекомендуется)", &v.warpMode),
-			v.radio("always", "Всё из списка — всегда через WARP", &v.warpMode))
-		info := "Ключа WARP пока нет."
-		if s.Warp.ready() {
-			info = "Ключ WARP есть."
-		}
-		if st := v.ctl.warpStatus(false); st != "" {
-			info += " Сейчас WARP " + st + "."
-		} else if s.Warp.Enabled && s.Warp.ready() {
-			info += " WARP подключится, когда вы включите fnport."
-		}
-		label := "Получить ключ WARP"
-		if s.Warp.ready() {
-			label = "Получить новый ключ"
-		}
-		msgC := colGreen
-		if v.warpErr {
-			msgC = colRed
-		}
-		kids = append(kids, vspace(10), layout.Rigid(v.label(13, colMuted, info).Layout))
-		if w := v.ctl.warpTunnel(); w != nil {
-			if colo, _, ip := w.exitParts(); colo != "" {
-				city := exitName(colo)
-				kids = append(kids, vspace(8), layout.Rigid(func(gtx C) D {
-					return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-						layout.Rigid(v.label(13, colMuted, "Выход WARP:").Layout), hspace(8),
-						layout.Rigid(func(gtx C) D { return drawFlag(gtx, coloCountry[colo], 13) }), hspace(7),
-						layout.Rigid(v.label(13, colText, city).Layout), hspace(8),
-						layout.Rigid(mono(v.label(12, colMuted, ip)).Layout))
-				}))
-			}
-		}
-		kids = append(kids, vspace(10),
-			layout.Rigid(func(gtx C) D {
-				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-					layout.Rigid(func(gtx C) D { return v.button(gtx, &v.warpReg, label, false, !v.warpBusy) }),
-					hspace(10),
-					layout.Rigid(func(gtx C) D {
-						return v.button(gtx, &v.warpSpeed, "Проверить скорость", false, !v.speedBusy && !v.ctl.nativeAWGActive())
-					}),
-					hspace(12),
-					layout.Flexed(1, v.label(13, msgC, v.warpMsg).Layout))
-			}),
-			vspace(14),
-			layout.Rigid(v.label(13, colMuted, "Если ключ не получается (провайдер блокирует регистрацию WARP), вставьте готовый "+
-				"конфиг WARP или AmneziaWG, полученный на другом устройстве или через бота:").Layout),
-			vspace(6),
-			layout.Rigid(func(gtx C) D { return v.field(gtx, &v.warpConf, "[Interface]\nPrivateKey = …", 3) }),
-			vspace(8),
-			layout.Rigid(func(gtx C) D { return v.button(gtx, &v.warpUseCfg, "Применить конфиг", false, true) }))
 		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
 	})
 }

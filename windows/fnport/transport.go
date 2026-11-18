@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/YUNGSLXRD/fnport/windows/internal/vpn"
 )
 
 const connectionCoreVersion = "1.14.4"
@@ -24,43 +26,41 @@ const connectionCoreVersion = "1.14.4"
 type connectionSettings struct {
 	Enabled      bool                    `json:"enabled"`
 	Protocol     string                  `json:"protocol"`
-	Config       json.RawMessage         `json:"config"`
-	Processes    []string                `json:"processes"`
+	Config       json.RawMessage         `json:"config,omitempty"`
+	SourceText   string                  `json:"source_text,omitempty"`
+	Processes    []string                `json:"processes,omitempty"`
+	Domains      []string                `json:"domains,omitempty"`
 	Epic         bool                    `json:"epic"`
+	EpicAlways   bool                    `json:"epic_always,omitempty"`
 	Discord      bool                    `json:"discord"`
-	Final        string                  `json:"final"`
+	Final        string                  `json:"final,omitempty"`
 	Subscription *connectionSubscription `json:"subscription,omitempty"`
 }
 
 type connectionProtocol struct {
-	ID, Label         string
-	Endpoint, TCPOnly bool
+	ID, Label string
 }
 
-// Descriptive catalog, not a claim about compiled-in features. The bundled core's
-// check command is authoritative. Transport/TLS/multiplex options stay in Config.
+// connectionProtocols lists the focused, UDP-capable protocol set supported by fnport.
 func connectionProtocols() []connectionProtocol {
 	return []connectionProtocol{
-		{"warp", "WARP (native)", false, false},
-		{"amneziawg", "AmneziaWG 1.5 (native)", false, false},
-		{"socks", "SOCKS", false, false}, {"http", "HTTP CONNECT", false, true},
-		{"shadowsocks", "Shadowsocks", false, false},
-		{"vmess", "VMess", false, false}, {"vless", "VLESS", false, false},
-		{"trojan", "Trojan", false, false}, {"naive", "Naive (UDP requires UoT)", false, false},
-		{"shadowtls", "ShadowTLS (detour)", false, true}, {"anytls", "AnyTLS", false, false},
-		{"snell", "Snell", false, false},
-		{"hysteria", "Hysteria", false, false}, {"hysteria2", "Hysteria 2", false, false},
-		{"tuic", "TUIC", false, false}, {"ssh", "SSH", false, true}, {"tor", "Tor", false, true},
-		{"wireguard", "WireGuard", true, false}, {"tailscale", "Tailscale", true, false},
-		{"openconnect", "OpenConnect", true, false}, {"openvpn-client", "OpenVPN client", true, false},
-		{"direct", "Direct", false, false}, {"bridge", "Bridge", false, false},
-		{"selector", "Selector", false, false}, {"urltest", "URLTest", false, false},
-		{"custom", "Custom outbound / full JSON", false, false},
+		{"warp", "WARP"},
+		{"amneziawg", "AmneziaWG / WireGuard"},
+		{"vless", "VLESS"},
+		{"hysteria2", "Hysteria 2"},
+		{"shadowsocks", "Shadowsocks"},
+		{"trojan", "Trojan"},
+		{"socks", "SOCKS5"},
 	}
 }
 
 func (s connectionSettings) validate() error {
-	if !s.Enabled || s.Protocol == "warp" {
+	for _, d := range s.Domains {
+		if vpn.CleanDomain(d) == "" {
+			return errors.New("проверьте список доменов подключения")
+		}
+	}
+	if !s.Enabled || s.Protocol == "warp" || s.Protocol == "off" {
 		return nil
 	}
 	if s.Protocol == "amneziawg" {
@@ -109,7 +109,7 @@ func connectionConfig(s connectionSettings, iface string, port int, user, passwo
 	if !full {
 		typ, _ := root["type"].(string)
 		if typ == "" || (s.Protocol != "custom" && typ != s.Protocol) {
-			return fail("outbound type must match the selected protocol")
+			return fail("тип профиля не совпадает с выбранным протоколом")
 		}
 		tag, _ := root["tag"].(string)
 		if tag == "" {
@@ -117,22 +117,12 @@ func connectionConfig(s connectionSettings, iface string, port int, user, passwo
 			root["tag"] = tag
 		}
 		if final != "" && final != tag {
-			return fail("final tag does not match the outbound")
+			return fail("тег выхода не совпадает с профилем")
 		}
 		final = tag
-		endpoint := false
-		for _, p := range connectionProtocols() {
-			if p.ID == typ {
-				endpoint = p.Endpoint
-			}
-		}
-		key := "outbounds"
-		if endpoint {
-			key = "endpoints"
-		}
-		root = map[string]any{key: []any{root}}
+		root = map[string]any{"outbounds": []any{root}}
 	} else if final == "" {
-		return fail("full config requires an explicit final tag")
+		return fail("для расширенного JSON нужен тег выхода")
 	}
 	nodes := map[string]map[string]any{}
 	for _, key := range []string{"outbounds", "endpoints"} {
@@ -142,32 +132,30 @@ func connectionConfig(s connectionSettings, iface string, port int, user, passwo
 		}
 		list, ok := raw.([]any)
 		if !ok {
-			return fail("outbounds and endpoints must be arrays")
+			return fail("outbounds и endpoints должны быть массивами")
 		}
 		for _, v := range list {
 			obj, ok := v.(map[string]any)
 			if !ok {
-				return fail("outbound or endpoint must be an object")
+				return fail("элемент outbounds должен быть объектом")
 			}
 			tag, _ := obj["tag"].(string)
 			typ, _ := obj["type"].(string)
 			if tag == "" || typ == "" || nodes[tag] != nil {
-				return fail("outbounds and endpoints require unique tags and types")
+				return fail("у каждого выхода должны быть уникальные tag и type")
 			}
 			nodes[tag] = obj
 		}
 	}
 	if nodes[final] == nil {
-		return fail("final tag must name an outbound or endpoint")
+		return fail("указанный тег выхода не найден")
 	}
 	if s.Protocol != "custom" {
 		typ, _ := nodes[final]["type"].(string)
 		if typ != s.Protocol {
-			return fail("final type must match the selected protocol")
+			return fail("тип выхода не совпадает с выбранным протоколом")
 		}
 	}
-	// Binding a raw outbound as well as the route prevents an imported bind from
-	// overriding the physical default. Virtual selector/urltest nodes have no dial fields.
 	for _, obj := range nodes {
 		typ, _ := obj["type"].(string)
 		switch typ {
@@ -178,10 +166,37 @@ func connectionConfig(s connectionSettings, iface string, port int, user, passwo
 	}
 	udp := connectionUDP(nodes, final, map[string]bool{})
 	if s.Discord && !udp {
-		return fail("selected connection cannot guarantee UDP required for Discord voice; choose a UDP-capable protocol")
+		return fail("выбранный профиль не поддерживает UDP, необходимый для голосовых каналов Discord")
 	}
 	root["log"] = map[string]any{"disabled": true}
-	root["route"] = map[string]any{"final": final, "default_interface": iface, "auto_detect_interface": false}
+	if root["dns"] == nil {
+		root["dns"] = map[string]any{
+			"servers": []any{
+				map[string]any{
+					"type":           "udp",
+					"tag":            "bootstrap",
+					"server":         "77.88.8.8",
+					"bind_interface": iface,
+				},
+			},
+		}
+	}
+	routeObj := map[string]any{
+		"final":                   final,
+		"default_interface":       iface,
+		"auto_detect_interface":   false,
+		"default_domain_resolver": map[string]any{"server": "bootstrap", "strategy": "ipv4_only"},
+	}
+	if dnsObj, ok := root["dns"].(map[string]any); ok {
+		if servers, ok := dnsObj["servers"].([]any); ok && len(servers) > 0 {
+			if first, ok := servers[0].(map[string]any); ok {
+				if tag, _ := first["tag"].(string); tag != "" && tag != "bootstrap" {
+					routeObj["default_domain_resolver"] = map[string]any{"server": tag, "strategy": "ipv4_only"}
+				}
+			}
+		}
+	}
+	root["route"] = routeObj
 	root["inbounds"] = []any{map[string]any{"type": "socks", "tag": "fnport-local", "listen": "127.0.0.1", "listen_port": port,
 		"users": []any{map[string]any{"username": user, "password": password}}}}
 	b, err := json.Marshal(root)
@@ -197,6 +212,9 @@ func connectionSafeFields(v any, iface string) error {
 	switch x := v.(type) {
 	case map[string]any:
 		for k, val := range x {
+			if strings.HasSuffix(k, "_path") || k == "command" || k == "executable" || k == "arguments" {
+				return errors.New("в профиле запрещены локальные файлы и команды")
+			}
 			switch k {
 			case "listen", "listen_port", "external_controller", "external_ui", "clash_api", "v2ray_api", "ssh_server", "relay_server_port":
 				return errors.New("imported listener or API settings are prohibited")
@@ -264,21 +282,10 @@ func connectionUDP(nodes map[string]map[string]any, tag string, visiting map[str
 		if ver, _ := n["version"].(string); ver == "4" || ver == "4a" {
 			return false
 		}
-	case "naive":
-		uot, ok := n["udp_over_tcp"].(map[string]any)
-		if !ok || uot["enabled"] != true {
-			return false
-		}
-	case "http", "ssh", "tor", "shadowtls", "block", "dns":
+	case "http", "ssh", "tor", "shadowtls", "naive", "block", "dns":
 		return false
 	default:
-		known := false
-		for _, p := range connectionProtocols() {
-			if p.ID == typ && p.ID != "custom" && p.ID != "warp" && p.ID != "amneziawg" {
-				known = true
-			}
-		}
-		if !known {
+		if !vpn.CoreOutbounds[typ] && typ != "direct" && typ != "wireguard" {
 			return false
 		}
 	}

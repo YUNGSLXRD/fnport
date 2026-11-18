@@ -9,6 +9,7 @@ import (
 	"github.com/YUNGSLXRD/fnport/windows/internal/fakes"
 	"github.com/YUNGSLXRD/fnport/windows/internal/geo"
 	"github.com/YUNGSLXRD/fnport/windows/internal/qos"
+	"github.com/YUNGSLXRD/fnport/windows/internal/vpn"
 )
 
 // The report for a GitHub issue, as the router's ISP check makes it: the check's results, the
@@ -83,12 +84,24 @@ func (c *controller) report(r *checkResult) string {
 		}
 		line("Сервисы Epic через WARP", strings.Join(ep, "; "))
 	}
-	if r.Settings.Warp.Enabled {
-		st := c.warpStatus(true)
-		if st == "" {
-			st = "включён в настройках, fnport сейчас выключен"
+	if r.Settings.Connection.Enabled || r.Settings.Warp.Enabled {
+		proto := r.Settings.Connection.Protocol
+		if !r.Settings.Connection.Enabled {
+			proto = "warp"
 		}
-		line("WARP для Epic", st)
+		if proto == "warp" {
+			st := maskAddresses(c.warpStatus(true))
+			if st == "" {
+				st = "включён в настройках, fnport сейчас выключен"
+			}
+			line("Подключение (WARP)", st)
+		} else {
+			st := maskAddresses(c.connectionStatus())
+			if st == "" || st == "Подключение выключено." {
+				st = "включено в настройках, fnport сейчас выключен"
+			}
+			line("Подключение ("+vpn.ProtocolLabel(proto)+")", st)
+		}
 	}
 	var ctl []string
 	for _, c := range r.Control {

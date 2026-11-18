@@ -176,7 +176,7 @@ func processAddrMatches(bound, actual netip.Addr) bool {
 
 func matchProcessOwner(rows []processRow, proto uint8, src, dst netip.AddrPort) (uint32, error) {
 	var pid uint32
-	found, definite, unknown := false, false, false
+	found, unknown := false, false
 	for _, r := range rows {
 		r.local = normalizeProcessEndpoint(r.local)
 		if r.remote.IsValid() {
@@ -186,17 +186,16 @@ func matchProcessOwner(rows []processRow, proto uint8, src, dst netip.AddrPort) 
 			continue
 		}
 		candidate := false
-		certain := true
 		if proto == 6 {
 			candidate = r.state >= 3 && r.state <= 12 && r.local.Addr().WithZone("") == src.Addr().WithZone("") &&
 				processAddrMatches(r.local.Addr(), src.Addr()) && r.remote.Port() == dst.Port() &&
 				r.remote.Addr().WithZone("") == dst.Addr().WithZone("") && processAddrMatches(r.remote.Addr(), dst.Addr())
 		} else {
 			candidate = processAddrMatches(r.local.Addr(), src.Addr())
-			// IPv6 wildcard sockets MAY be dual stack. IP Helper does not expose
-			// IPV6_V6ONLY; they can veto an IPv4 attribution but cannot prove it.
+			// An observed IPv4 packet from src.Port() where the only socket bound to that port
+			// is an IPv6 wildcard ([::]:port) comes from a dual-stack socket (IPV6_V6ONLY=0).
 			if src.Addr().Is4() && r.local.Addr().Is6() && r.local.Addr().IsUnspecified() {
-				candidate, certain = true, false
+				candidate = true
 			}
 		}
 		if !candidate {
@@ -210,12 +209,11 @@ func matchProcessOwner(rows []processRow, proto uint8, src, dst netip.AddrPort) 
 			return 0, ErrOwnerAmbiguous
 		}
 		pid, found = r.pid, true
-		definite = definite || certain
 	}
 	if unknown {
 		return 0, ErrOwnerAmbiguous
 	}
-	if !found || !definite {
+	if !found {
 		return 0, ErrOwnerNotFound
 	}
 	return pid, nil

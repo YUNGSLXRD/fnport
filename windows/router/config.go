@@ -8,23 +8,30 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/YUNGSLXRD/fnport/windows/internal/vpn"
 )
 
-const coreVersion = "1.14.4"
-const bypassMark = 0xf170
-const proxyMark = 0xf171
-const tunnelMark = 0xf172
-const proxyTable = 49071
-const tunnelTable = 49072
-const proxyPort = 10897
-const socksPort = 10898
-const dnsPort = 10553
-const tunnelName = "fnpwarp0"
+const (
+	coreVersion = "1.14.4"
+	bypassMark  = 0xf170
+	proxyMark   = 0xf171
+	tunnelMark  = 0xf172
+	proxyTable  = 49071
+	tunnelTable = 49072
+	proxyPort   = 10897
+	socksPort   = 10898
+	dnsPort     = 10553
+	tunnelName  = "fnpwarp0"
+)
+
+type nativeAWGSettings = vpn.AWGConfig
 
 // Only the administrator's private profile is persisted. Status never includes it.
 type routerConfig struct {
 	Protocol    string            `json:"protocol"`
 	Profile     string            `json:"profile,omitempty"`
+	Node        string            `json:"node,omitempty"`
 	Devices     []string          `json:"devices"`
 	Epic        bool              `json:"epic"`
 	Discord     bool              `json:"discord"`
@@ -38,9 +45,52 @@ type routerConfig struct {
 	FakeTTL     int               `json:"fake_ttl"`
 }
 
-var validIface = regexp.MustCompile(`^[A-Za-z0-9_.@-]{1,15}$`)
-var validHost = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$`)
-var routerProtocols = map[string]bool{"warp": true, "amneziawg": true, "wireguard": true, "socks": true, "http": true, "shadowsocks": true, "vmess": true, "vless": true, "trojan": true, "anytls": true, "snell": true, "hysteria": true, "hysteria2": true, "tuic": true, "ssh": true}
+var (
+	validIface      = regexp.MustCompile(`^[A-Za-z0-9_.@-]{1,15}$`)
+	validHost       = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$`)
+	dnsProviders    = vpn.DNSProviders
+	routerProtocols = map[string]bool{
+		"warp":        true,
+		"amneziawg":   true,
+		"wireguard":   true,
+		"vless":       true,
+		"hysteria2":   true,
+		"shadowsocks": true,
+		"trojan":      true,
+		"socks":       true,
+		"vpn":         true,
+	}
+)
+
+func parseNativeAWG(raw json.RawMessage) (nativeAWGSettings, error) {
+	return vpn.ParseAWGJSON(raw)
+}
+
+func looksLikeAWGConf(text string) bool {
+	return vpn.LooksLikeWGConf(text)
+}
+
+func importAWGConf(text string) (json.RawMessage, error) {
+	_, raw, err := vpn.ImportAWG(text)
+	return raw, err
+}
+
+func b64hex(s string) (string, error) {
+	return vpn.B64ToHexKey(s)
+}
+
+func validPacketTemplate(s string) bool {
+	return vpn.ValidPacketTemplate(s)
+}
+
+func importConnection(text string, required bool) (json.RawMessage, string, error) {
+	raw, proto, _, err := vpn.ImportProfile(text, required)
+	return raw, proto, err
+}
+
+func jsonNative(s nativeAWGSettings) (json.RawMessage, error) {
+	return json.Marshal(s)
+}
 
 func domainName(s string) string {
 	s = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(s), "."))
@@ -49,6 +99,7 @@ func domainName(s string) string {
 	}
 	return s
 }
+
 func domainMatch(host string, domains []string) bool {
 	host = domainName(host)
 	if host == "" {
@@ -61,8 +112,9 @@ func domainMatch(host string, domains []string) bool {
 	}
 	return false
 }
+
 func domainList(s string) []string {
-	seen := map[string]bool{}
+	seen := make(map[string]bool)
 	for _, line := range strings.Split(s, "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "#") {
@@ -79,6 +131,7 @@ func domainList(s string) []string {
 	sort.Strings(out)
 	return out
 }
+
 func (c *routerConfig) validate() error {
 	if !routerProtocols[c.Protocol] || !validIface.MatchString(c.WAN) {
 		return errors.New("invalid_protocol_or_interface")
@@ -134,52 +187,27 @@ func (c *routerConfig) validate() error {
 	return nil
 }
 
-func safeOutbound(v any, wan string) error {
-	switch x := v.(type) {
-	case map[string]any:
-		for k, val := range x {
-			if strings.HasSuffix(k, "_path") || k == "command" || k == "executable" || k == "arguments" {
-				return errors.New("profile_file_or_command_not_allowed")
-			}
-			switch k {
-			case "inbounds", "outbounds", "endpoints", "route", "dns", "experimental", "services", "log",
-				"listen", "listen_port", "external_controller", "external_ui", "auto_route", "auto_redirect",
-				"set_system_proxy", "netns", "routing_mark", "inet4_bind_address", "inet6_bind_address", "detour":
-				return errors.New("profile_routing_or_listeners_not_allowed")
-			case "system_interface", "system":
-				if val != false {
-					return errors.New("profile_system_interface_not_allowed")
-				}
-			case "bind_interface":
-				x[k] = wan
-			}
-			if err := safeOutbound(val, wan); err != nil {
-				return err
-			}
-		}
-	case []any:
-		for _, v := range x {
-			if err := safeOutbound(v, wan); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
 func (c routerConfig) coreConfig() ([]byte, error) {
 	var node map[string]any
 	if c.Protocol == "warp" || c.Protocol == "amneziawg" || c.Protocol == "wireguard" {
-		node = map[string]any{"type": "direct", "bind_interface": tunnelName, "routing_mark": tunnelMark}
+		node = map[string]any{
+			"type":           "direct",
+			"bind_interface": tunnelName,
+			"routing_mark":   tunnelMark,
+		}
 	} else {
 		raw, kind, err := importConnection(c.Profile, true)
-		if err != nil || (kind != "" && kind != c.Protocol) {
+		if err != nil || (c.Protocol != "vpn" && kind != "" && kind != c.Protocol) {
 			return nil, errors.New("invalid_profile")
 		}
-		if json.Unmarshal(raw, &node) != nil || node == nil || node["type"] != c.Protocol {
+		if json.Unmarshal(raw, &node) != nil || node == nil {
 			return nil, errors.New("profile_type_mismatch")
 		}
-		if err := safeOutbound(node, c.WAN); err != nil {
+		typ, _ := node["type"].(string)
+		if !vpn.CoreOutbounds[typ] || (c.Protocol != "vpn" && typ != c.Protocol) {
+			return nil, errors.New("profile_type_mismatch")
+		}
+		if err := vpn.SanitizeOutbound(node, c.WAN); err != nil {
 			return nil, err
 		}
 		node["bind_interface"] = c.WAN
@@ -187,21 +215,41 @@ func (c routerConfig) coreConfig() ([]byte, error) {
 	}
 	node["tag"] = "selected"
 	root := map[string]any{
-		"log":      map[string]any{"disabled": true},
-		"dns":      map[string]any{"servers": []any{map[string]any{"type": "udp", "tag": "bootstrap", "server": "77.88.8.8", "bind_interface": c.WAN, "routing_mark": bypassMark}}},
-		"inbounds": []any{map[string]any{"type": "tproxy", "tag": "services", "listen": "0.0.0.0", "listen_port": proxyPort}, map[string]any{"type": "mixed", "tag": "local-dns", "listen": "127.0.0.1", "listen_port": socksPort}},
-		"route":    map[string]any{"default_interface": c.WAN, "default_domain_resolver": "bootstrap", "final": "selected"},
+		"log": map[string]any{"disabled": true},
+		"dns": map[string]any{
+			"servers": []any{
+				map[string]any{
+					"type":           "udp",
+					"tag":            "bootstrap",
+					"server":         "77.88.8.8",
+					"bind_interface": c.WAN,
+					"routing_mark":   bypassMark,
+				},
+			},
+		},
+		"inbounds": []any{
+			map[string]any{
+				"type":        "tproxy",
+				"tag":         "services",
+				"listen":      "0.0.0.0",
+				"listen_port": proxyPort,
+			},
+			map[string]any{
+				"type":        "mixed",
+				"tag":         "local-dns",
+				"listen":      "127.0.0.1",
+				"listen_port": socksPort,
+			},
+		},
+		"route": map[string]any{
+			"default_interface": c.WAN,
+			"default_domain_resolver": map[string]any{
+				"server":   "bootstrap",
+				"strategy": "ipv4_only",
+			},
+			"final": "selected",
+		},
+		"outbounds": []any{node},
 	}
-	root["outbounds"] = []any{node}
 	return json.MarshalIndent(root, "", "  ")
 }
-
-type dnsProvider struct{ IP, Host, Path string }
-
-var dnsProviders = map[string]dnsProvider{
-	"cloudflare": {"1.1.1.1", "cloudflare-dns.com", "/dns-query"},
-	"google":     {"8.8.8.8", "dns.google", "/dns-query"},
-	"quad9":      {"9.9.9.9", "dns.quad9.net", "/dns-query"},
-}
-
-func jsonNative(s nativeAWGSettings) (json.RawMessage, error) { return json.Marshal(s) }

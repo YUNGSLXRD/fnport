@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/YUNGSLXRD/fnport/windows/internal/vpn"
 	"github.com/YUNGSLXRD/fnport/windows/internal/wnet"
 	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
@@ -30,6 +31,8 @@ import (
 
 type tcpRelay struct {
 	connection *connectionRouter
+	dns        *winDNSBroker
+	captureAll bool
 	stack      *stack.Stack
 	ep         *channel.Endpoint
 	ctx        context.Context
@@ -106,10 +109,40 @@ func (t *tcpRelay) inject(b []byte) {
 func (t *tcpRelay) accept(r *tcp.ForwarderRequest) {
 	id := r.ID()
 	dst := netip.AddrPortFrom(netip.AddrFrom4(id.LocalAddress.As4()), id.LocalPort)
-	if (t.connection != nil && (t.connection.settings.Enabled || t.connection.trace != nil)) || (t.warp.Load() != nil || t.warpWait.Load()) && (dst.Port() == 443 || t.epicIP(dst.Addr())) {
+	if t.dns != nil && dst == netip.AddrPortFrom(wnet.TunDNSAddr, 53) {
+		var wq waiter.Queue
+		ep, terr := r.CreateEndpoint(&wq)
+		if terr != nil {
+			r.Complete(true)
+			return
+		}
+		r.Complete(false)
+		t.dns.serveTCPConn(t.ctx, gonet.NewTCPConn(&wq, ep))
+		return
+	}
+
+	if t.connection != nil && (t.connection.settings.Enabled || t.connection.trace != nil) {
+		svc := ""
+		if t.connection.leases != nil {
+			svc = t.connection.leases.ServiceOf(dst.Addr())
+		}
+		if dst.Port() == 443 || svc != "" || t.epicIP(dst.Addr()) || t.connection.trace != nil {
+			t.acceptSplit(r, dst)
+			return
+		}
+		if t.captureAll {
+			src := netip.AddrPortFrom(netip.AddrFrom4(id.RemoteAddress.As4()), id.RemotePort)
+			owner := t.connection.owner(6, src, dst)
+			if t.connection.settings.selects(owner, "") {
+				t.acceptSplit(r, dst)
+				return
+			}
+		}
+	} else if (t.warp.Load() != nil || t.warpWait.Load()) && (dst.Port() == 443 || t.epicIP(dst.Addr())) {
 		t.acceptSplit(r, dst)
 		return
 	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	out, err := wnet.DialTCP(ctx, dst)
 	cancel()
@@ -169,103 +202,143 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort) {
 		hello = readHello(in)
 		name = sniOf(hello)
 	}
+
+	src := netip.AddrPortFrom(netip.AddrFrom4(id.RemoteAddress.As4()), id.RemotePort)
+	var owner wnet.ProcessOwner
+	isEpicConn := false
+	useNonWarpTunnel := false
+
 	if t.connection != nil && (t.connection.settings.Enabled || t.connection.trace != nil) {
-		src := netip.AddrPortFrom(netip.AddrFrom4(id.RemoteAddress.As4()), id.RemotePort)
 		t.connection.observe(6, src, dst, name, "tls_sni")
-		owner := t.connection.owner(6, src, dst)
-		if t.connection.settings.selects(owner, name) {
-			ctx, cancel := connectionContext(t.ctx)
-			out, err := t.connection.dial(ctx, dst, false)
-			cancel()
-			if err != nil {
-				t.failed.Add(1)
-				in.Close()
-				t.connection.reportFailure(false, err)
-				return
+		cs := t.connection.settings
+		if t.captureAll || t.connection.ownerLookup != nil || t.connection.trace != nil {
+			owner = t.connection.owner(6, src, dst)
+		}
+		if cs.Enabled {
+			svc := ""
+			if t.connection.leases != nil {
+				svc = t.connection.leases.ServiceOf(dst.Addr())
 			}
-			if t.connection.trace != nil {
-				var finish func()
-				out, finish = t.connection.trace.tcpConn(out, src, dst, name, t.connection.settings.Protocol, flowStarted, 0)
-				defer finish()
-			}
-			if len(hello) > 0 {
-				if _, err := out.Write(hello); err != nil {
+			isDiscord := cs.Discord && (vpn.MatchDomain(name, vpn.DiscordDomains) || (name == "" && svc == "discord") ||
+				selectedProcess(owner.Name, []string{"Discord.exe", "DiscordPTB.exe", "DiscordCanary.exe"}))
+			isExtra := vpn.MatchDomain(name, cs.Domains) || (name == "" && svc == "extra")
+			isProc := selectedProcess(owner.Name, cs.Processes)
+			isEpicConn = cs.Epic && (vpn.MatchEpic(name, nil) || (name == "" && (svc == "epic" || t.epicIP(dst.Addr()))))
+
+			if (isDiscord || isExtra || isProc) && !isEpicConn {
+				ctx, cancel := connectionContext(t.ctx)
+				out, err := t.connection.dial(ctx, dst, false)
+				cancel()
+				if err != nil {
+					t.failed.Add(1)
 					in.Close()
-					out.Close()
+					t.connection.reportFailure(false, err)
 					return
 				}
+				if t.connection.trace != nil {
+					var finish func()
+					out, finish = t.connection.trace.tcpConn(out, src, dst, name, cs.Protocol, flowStarted, 0)
+					defer finish()
+				}
+				if len(hello) > 0 {
+					if _, err := out.Write(hello); err != nil {
+						in.Close()
+						out.Close()
+						return
+					}
+				}
+				t.total.Add(1)
+				t.active.Add(1)
+				defer t.active.Add(-1)
+				splice(in, out)
+				return
 			}
-			t.total.Add(1)
-			t.active.Add(1)
-			defer t.active.Add(-1)
-			splice(in, out)
-			return
+			if isEpicConn && cs.Protocol != "warp" {
+				useNonWarpTunnel = true
+			}
 		}
 	}
+
 	shown := name
 	if shown == "" {
 		shown = dst.String()
 	}
 	var out net.Conn
-	var first []byte // the server's first answer, read while deciding
-	sent := false    // the ClientHello went out on out already
+	var first []byte
+	sent := false
 	var counted *countConn
 	var w *warpTunnel
-	listed, viaWarp := t.warpName(name) || (name == "" && t.epicIP(dst.Addr())), false
+	listed := isEpicConn || t.warpName(name) || (name == "" && t.epicIP(dst.Addr()))
 	epic := listed
-	var cut atomic.Bool // the connection was cut as frozen
+	viaTunnel := false
+	tunnelLabel := "WARP"
+	if useNonWarpTunnel {
+		tunnelLabel = vpn.ProtocolLabel(t.connection.settings.Protocol)
+	}
+	var cut atomic.Bool
 	if listed && t.warpBadRecently(shown) {
-		// it failed through a working tunnel: directly, as without WARP (with WARP on, logins
-		// failed more often than with it off)
 		listed = false
 	}
 	if listed {
-		viaWarp = t.always.Load() || t.blockedRecently(shown)
-		if !viaWarp {
+		viaTunnel = t.always.Load() || t.blockedRecently(shown)
+		if !viaTunnel {
 			if out, first = tryDirect(dst, hello); out != nil {
 				sent = len(hello) > 0
 				counted = &countConn{Conn: out, tls: len(hello) > 0}
-				counted.feed(first) // the server's first bytes came before the count
+				counted.feed(first)
 				out = counted
 			} else {
-				viaWarp = true
-				t.markBlocked(shown, "напрямую не отвечает — через WARP")
+				viaTunnel = true
+				t.markBlocked(shown, "напрямую не отвечает — через "+tunnelLabel)
 			}
 		}
-		if viaWarp {
-			w = t.waitWarp(nil, warpHold)
-		}
-		if viaWarp && w == nil {
-			if _, dup := t.seen.LoadOrStore("nowarp "+shown, true); !dup {
-				logf("WARP: %s — туннель ещё не готов, пошло напрямую", maskAddresses(shown))
-			}
-		}
-		if viaWarp && w != nil {
-			c, err := w.dial(dst)
-			if err != nil && t.always.Load() && !w.works() {
-				// directly it freezes here, and the tunnel does not answer either: a new one, and
-				// the connection waits for it rather than going the way that freezes
-				w.fails.Add(1)
-				select {
-				case t.warpStall <- struct{}{}:
-				default:
-				}
-				if nw := t.waitWarp(w, warpHold); nw != nil {
-					w = nw
-					c, err = w.dial(dst)
-				}
-			}
+		if viaTunnel && useNonWarpTunnel {
+			ctx, cancel := connectionContext(t.ctx)
+			c, err := t.connection.dial(ctx, dst, false)
+			cancel()
 			if err != nil {
-				w.fails.Add(1)
+				t.connection.reportFailure(false, err)
 				if _, dup := t.seen.LoadOrStore("fail "+shown, true); !dup {
-					logf("WARP: %s не открылось через WARP (%v), пошло напрямую", maskAddresses(shown), err)
+					logf("Подключения (%s): %s не открылось (%v), пошло напрямую", tunnelLabel, maskAddresses(shown), err)
 				}
 			} else {
 				counted = &countConn{Conn: c, tls: len(hello) > 0}
 				out = counted
-				w.conns.Add(1)
 				if _, dup := t.seen.LoadOrStore(shown, true); !dup {
-					logf("WARP: %s", maskAddresses(shown))
+					logf("Подключения (%s): %s", tunnelLabel, maskAddresses(shown))
+				}
+			}
+		} else if viaTunnel {
+			w = t.waitWarp(nil, warpHold)
+			if w == nil {
+				if _, dup := t.seen.LoadOrStore("nowarp "+shown, true); !dup {
+					logf("WARP: %s — туннель ещё не готов, пошло напрямую", maskAddresses(shown))
+				}
+			} else {
+				c, err := w.dial(dst)
+				if err != nil && t.always.Load() && !w.works() {
+					w.fails.Add(1)
+					select {
+					case t.warpStall <- struct{}{}:
+					default:
+					}
+					if nw := t.waitWarp(w, warpHold); nw != nil {
+						w = nw
+						c, err = w.dial(dst)
+					}
+				}
+				if err != nil {
+					w.fails.Add(1)
+					if _, dup := t.seen.LoadOrStore("fail "+shown, true); !dup {
+						logf("WARP: %s не открылось через WARP (%v), пошло напрямую", maskAddresses(shown), err)
+					}
+				} else {
+					counted = &countConn{Conn: c, tls: len(hello) > 0}
+					out = counted
+					w.conns.Add(1)
+					if _, dup := t.seen.LoadOrStore(shown, true); !dup {
+						logf("WARP: %s", maskAddresses(shown))
+					}
 				}
 			}
 		}
@@ -281,11 +354,15 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort) {
 		}
 		out = c
 	}
+	tunnelActive := viaTunnel && (w != nil || (useNonWarpTunnel && counted != nil))
 	if t.connection != nil && t.connection.trace != nil {
-		src := netip.AddrPortFrom(netip.AddrFrom4(id.RemoteAddress.As4()), id.RemotePort)
 		route := "direct"
-		if viaWarp && w != nil {
-			route = "warp"
+		if tunnelActive {
+			if useNonWarpTunnel {
+				route = t.connection.settings.Protocol
+			} else {
+				route = "warp"
+			}
 		}
 		var finish func()
 		out, finish = t.connection.trace.tcpConn(out, src, dst, name, route, flowStarted, len(first))
@@ -308,28 +385,32 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort) {
 	t.total.Add(1)
 	t.active.Add(1)
 	defer t.active.Add(-1)
-	if listed && viaWarp && counted != nil && counted.tls {
-		// through WARP a stop inside a record may be the tunnel frozen: the connection is cut, and
-		// the tunnel is checked and made anew if it does not answer. A request without an answer
-		// is no sign here: chat and other long connections wait on the server (they were cut, and
-		// the tunnel with everything in it rebuilt, again and again)
+	if listed && tunnelActive && counted != nil && counted.tls {
 		done := make(chan struct{})
 		defer close(done)
 		go func() {
 			tk := time.NewTicker(time.Second)
 			defer tk.Stop()
+			warnedHung := false
 			for {
 				select {
 				case <-done:
 					return
 				case <-tk.C:
-					if d, inRecord := counted.stalled(); inRecord && d > 6*time.Second {
+					d, inRecord := counted.stalled()
+					if inRecord && d > 6*time.Second {
 						cut.Store(true)
 						in.Close()
 						out.Close()
-						if w.works() {
+						healthy := false
+						if useNonWarpTunnel {
+							healthy = t.connection.works()
+						} else if w != nil {
+							healthy = w.works()
+						}
+						if healthy {
 							t.markWarpBad(shown, "встало посреди ответа")
-						} else {
+						} else if !useNonWarpTunnel {
 							select {
 							case t.warpStall <- struct{}{}:
 							default:
@@ -337,33 +418,42 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort) {
 						}
 						return
 					}
+					if !inRecord && d > 6*time.Second && !warnedHung {
+						warnedHung = true
+						if _, dup := t.seen.LoadOrStore("hung "+shown, true); !dup {
+							logf("%s: запрос к %s ждёт ответа дольше 10 с", tunnelLabel, maskAddresses(shown))
+						}
+					}
 				}
 			}
 		}()
 	}
-	if listed && !viaWarp && counted != nil && counted.tls {
-		// directly: the TSPU's freeze of foreign HTTPS stops the server's data in the middle of
-		// a TLS record, which no server does by itself (an idle connection waits on a record's
-		// end). Six seconds so: the connection is cut, the client asks again, and the site goes
-		// through WARP from now on. A request left without an answer is no sign: chat, the
-		// waiting room and other long requests wait on the server by design
+	if listed && !viaTunnel && counted != nil && counted.tls {
 		done := make(chan struct{})
 		defer close(done)
 		go func() {
 			tk := time.NewTicker(time.Second)
 			defer tk.Stop()
+			warnedHung := false
 			for {
 				select {
 				case <-done:
 					return
 				case <-tk.C:
-					if d, inRecord := counted.stalled(); inRecord && d > 6*time.Second {
+					d, inRecord := counted.stalled()
+					if inRecord && d > 6*time.Second {
 						cut.Store(true)
-						t.markBlocked(shown, fmt.Sprintf("напрямую замёрзло (получено %d КБ) — дальше через WARP",
-							counted.n.Load()>>10))
+						t.markBlocked(shown, fmt.Sprintf("напрямую замёрзло (получено %d КБ) — дальше через %s",
+							counted.n.Load()>>10, tunnelLabel))
 						in.Close()
 						out.Close()
 						return
+					}
+					if !inRecord && d > 6*time.Second && !warnedHung {
+						warnedHung = true
+						if _, dup := t.seen.LoadOrStore("hung-direct "+shown, true); !dup {
+							logf("Epic напрямую: запрос к %s ждёт ответа дольше 10 с", maskAddresses(shown))
+						}
 					}
 				}
 			}
@@ -371,17 +461,19 @@ func (t *tcpRelay) acceptSplit(r *tcp.ForwarderRequest, dst netip.AddrPort) {
 	}
 	splice(in, out)
 	if epic {
-		var got int64 = -1 // not counted: directly without the TLS watch
+		var got int64 = -1
 		if counted != nil {
 			got = counted.n.Load()
 		}
-		t.note(shown, viaWarp && w != nil, got, cut.Load())
+		t.note(shown, tunnelActive, got, cut.Load())
 	}
-	if listed && !viaWarp {
+	if listed && !viaTunnel {
 		return
 	}
-	if counted != nil && counted.n.Load() == 0 && w != nil {
-		w.fails.Add(1)
+	if counted != nil && counted.n.Load() == 0 && tunnelActive {
+		if w != nil {
+			w.fails.Add(1)
+		}
 		t.markWarpBad(shown, "ничего не вернул")
 	}
 }
@@ -491,6 +583,9 @@ func (t *tcpRelay) markBlocked(name, why string) {
 	n := 0
 	t.blocked.Range(func(_, _ any) bool { n++; return true })
 	if !t.always.Swap(true) {
+		if t.connection != nil {
+			t.connection.always.Store(true)
+		}
 		logf("WARP: сервисы Epic напрямую замерзают — всё из списка теперь через WARP")
 	}
 	if n >= 2 && !t.remembered.Swap(true) {

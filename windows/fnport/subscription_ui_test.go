@@ -16,7 +16,7 @@ import (
 	"gioui.org/op"
 )
 
-func TestSubscriptionServerMenuScrollAndSelect(t *testing.T) {
+func TestSubscriptionInlineServerListScrollAndSelect(t *testing.T) {
 	var lines []string
 	for i := 0; i < 40; i++ {
 		lines = append(lines, fmt.Sprintf("vless://00000000-0000-4000-8000-%012d@server.example:443?security=tls#Server%%20%02d", i+1, i+1))
@@ -27,8 +27,7 @@ func TestSubscriptionServerMenuScrollAndSelect(t *testing.T) {
 	}
 	v := newView(newController(defaultSettings()), &pinger{}, &checker{}, nil, func() {})
 	v.connections.load(defaultSettings())
-	v.connections.protocol = "vless"
-	v.connections.enabled.Value = true
+	v.connections.setMode("vpn", time.Now())
 	v.connections.config.SetText("https://sub.example/token")
 	v.connections.loadSubscriptionView(&connectionSubscription{URL: "https://sub.example/token", Nodes: nodes, Selected: nodes[0].ID})
 	router := new(input.Router)
@@ -40,19 +39,17 @@ func TestSubscriptionServerMenuScrollAndSelect(t *testing.T) {
 		now = now.Add(16 * time.Millisecond)
 		gtx.Constraints = layout.Exact(image.Pt(600, 320))
 		v.updateConnectionImports(gtx)
-		v.subscriptionServerDropdown(gtx)
+		v.subscriptionServerList(gtx)
 		router.Frame(ops)
 	}
 	click := func(x, y float32) {
 		at := f32.Pt(x, y)
-		router.Queue(pointer.Event{Kind: pointer.Press, Source: pointer.Mouse, Buttons: pointer.ButtonPrimary, Position: at}, pointer.Event{Kind: pointer.Release, Source: pointer.Mouse, Position: at})
+		router.Queue(
+			pointer.Event{Kind: pointer.Press, Source: pointer.Mouse, Buttons: pointer.ButtonPrimary, Position: at},
+			pointer.Event{Kind: pointer.Release, Source: pointer.Mouse, Position: at},
+		)
 	}
 	frame()
-	click(30, 15)
-	frame()
-	if !v.connections.imports.serverOpen {
-		t.Fatal("server menu did not open")
-	}
 	router.Queue(pointer.Event{Kind: pointer.Scroll, Source: pointer.Mouse, Position: f32.Pt(70, 90), Scroll: f32.Pt(0, 180)})
 	for i := 0; i < 40; i++ {
 		frame()
@@ -60,34 +57,34 @@ func TestSubscriptionServerMenuScrollAndSelect(t *testing.T) {
 	click(60, 65)
 	frame()
 	sub := v.connections.imports.subscription
-	if sub.Selected == nodes[0].ID || sub.node() == nil || v.connections.imports.serverOpen {
-		t.Fatal("scrolled server cannot be selected")
+	if sub.Selected == nodes[0].ID || sub.ActiveNode() == nil {
+		t.Fatal("scrolled server could not be selected")
 	}
 	conn, _, err := v.connections.draft()
-	if err != nil || string(conn.Config) != string(sub.node().Config) {
+	if err != nil || string(conn.Config) != string(sub.ActiveNode().Config) {
 		t.Fatal("selection is not the applied config", err)
 	}
 }
 
 func TestAWGFileButtonLoadsContentOnlyForAmnezia(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.conf")
-	if os.WriteFile(path, []byte(sampleAWGConf), 0600) != nil {
+	cfgFile := filepath.Join(t.TempDir(), "config.conf")
+	if os.WriteFile(cfgFile, []byte(sampleAWGConf), 0o600) != nil {
 		t.Fatal("write fixture")
 	}
 	v := newView(newController(defaultSettings()), &pinger{}, &checker{}, nil, func() {})
 	v.connections.load(defaultSettings())
-	v.connections.protocol = "vless"
+	v.connections.setMode("vpn", time.Now())
 	picked := make(chan struct{}, 1)
-	v.pickAWGFile = func() (string, error) { picked <- struct{}{}; return path, nil }
+	v.pickAWGFile = func() (string, error) { picked <- struct{}{}; return cfgFile, nil }
 	gtx := connectionTestContext(new(input.Router), new(op.Ops))
 	v.connections.imports.importFile.Click()
 	v.updateConnectionImports(gtx)
 	select {
 	case <-picked:
-		t.Fatal("file import exposed for non-AWG protocol")
+		t.Fatal("file import exposed for non-AWG mode")
 	default:
 	}
-	v.connections.protocol = "amneziawg"
+	v.connections.setMode("amneziawg", time.Now())
 	v.connections.imports.importFile.Click()
 	v.updateConnectionImports(gtx)
 	deadline := time.Now().Add(2 * time.Second)
@@ -113,8 +110,7 @@ func TestSubscriptionSelectionPersistsOnApply(t *testing.T) {
 	ctl.persist = func(s settings) error { saved <- s; return nil }
 	v := newView(ctl, &pinger{}, &checker{}, nil, func() {})
 	v.connections.load(s)
-	v.connections.protocol = "vless"
-	v.connections.enabled.Value = true
+	v.connections.setMode("vpn", time.Now())
 	v.connections.config.SetText("https://sub.example/token")
 	nodes, _, _ := parseSubscription([]byte(testSubLinks))
 	v.connections.loadSubscriptionView(&connectionSubscription{URL: "https://sub.example/token", Nodes: nodes, Selected: nodes[0].ID})

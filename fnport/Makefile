@@ -11,7 +11,7 @@ define Package/fnport
   SECTION:=net
   CATEGORY:=Network
   TITLE:=Pick DPI-passing source ports for game UDP (Fortnite)
-  DEPENDS:=+ucode +ucode-mod-socket +ucode-mod-uci +ucode-mod-fs +ucode-mod-math +conntrack +nftables +kmod-nft-nat +kmod-nft-tproxy +kmod-tun +ip-full +ca-bundle
+  DEPENDS:=+ucode +ucode-mod-socket +ucode-mod-uci +ucode-mod-fs +ucode-mod-math +conntrack +nftables +kmod-nft-nat
   PKGARCH:=all
 endef
 

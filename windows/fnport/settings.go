@@ -11,29 +11,31 @@ import (
 	"time"
 
 	"github.com/YUNGSLXRD/fnport/windows/internal/fakes"
+	"github.com/YUNGSLXRD/fnport/windows/internal/vpn"
 )
 
-// Settings live in fnport.json next to the program, the fakes in the "fakes" folder there.
-// Anything missing from the file takes its default.
+// Settings live in fnport.json next to the program, with an automatic backup in
+// %LOCALAPPDATA%\fnport\settings-backup.json so keys and subscriptions survive
+// updates extracted into a new folder.
 
 type settings struct {
-	Adapter     string               `json:"adapter"`  // network adapter by name; "" = the one Windows uses toward AWS
-	Fake        string               `json:"fake"`     // file in the fakes folder; "" = no fake
-	FakeTTL     int                  `json:"fake_ttl"` // hops from this PC: past the ISP's DPI, before the server
-	Routes      []string             `json:"routes"`   // networks sent through fnport
+	Adapter     string               `json:"adapter"`
+	Fake        string               `json:"fake"`
+	FakeTTL     int                  `json:"fake_ttl"`
+	Routes      []string             `json:"routes"`
 	GamePorts   []string             `json:"game_ports"`
-	PairFrom    string               `json:"pair_from"`   // control ports whose match port is probed ahead
-	PairOffset  int                  `json:"pair_offset"` // 15062 -> 9062
+	PairFrom    string               `json:"pair_from"`
+	PairOffset  int                  `json:"pair_offset"`
 	QoSPort     int                  `json:"qos_port"`
-	ProbeBatch  int                  `json:"probe_batch"`  // ports probed at once
-	MaxRounds   int                  `json:"max_rounds"`   // rounds per flow
-	ProbeBudget int                  `json:"probe_budget"` // probe sockets per minute, all servers together
-	VerdictTTL  int                  `json:"verdict_ttl"`  // seconds a good port is trusted
-	Passthrough bool                 `json:"passthrough"`  // no probes, no fake: fnport on the router does the work
-	Theme       string               `json:"theme"`        // "system", "dark", "light"
+	ProbeBatch  int                  `json:"probe_batch"`
+	MaxRounds   int                  `json:"max_rounds"`
+	ProbeBudget int                  `json:"probe_budget"`
+	VerdictTTL  int                  `json:"verdict_ttl"`
+	Passthrough bool                 `json:"passthrough"`
+	Theme       string               `json:"theme"`
 	Connection  connectionSettings   `json:"connection"`
 	Trace       networkTraceSettings `json:"network_trace"`
-	Warp        warpSettings         `json:"warp"` // Epic's services through WARP
+	Warp        warpSettings         `json:"warp"`
 }
 
 func defaultSettings() settings {
@@ -66,23 +68,77 @@ func appDir() string {
 func settingsPath() string { return filepath.Join(appDir(), "fnport.json") }
 func fakesDir() string     { return filepath.Join(appDir(), "fakes") }
 
-// loadSettings reads the file over the defaults; a broken file is reported and ignored
-func loadSettings() settings {
-	s := defaultSettings()
-	b, err := os.ReadFile(settingsPath())
+// settingsBackupPath points to %LOCALAPPDATA%\fnport\settings-backup.json; overridden in tests.
+var settingsBackupPath = func() string {
+	dir, err := os.UserCacheDir()
 	if err != nil {
-		return s
+		return ""
+	}
+	return filepath.Join(dir, "fnport", "settings-backup.json")
+}
+
+// loadSettings reads local fnport.json over defaults, falling back to %LOCALAPPDATA% backup
+// when starting in a freshly extracted release folder without a local fnport.json.
+func loadSettings() settings {
+	return loadSettingsFrom(settingsPath(), settingsBackupPath())
+}
+
+func loadSettingsFrom(localFile, backupFile string) settings {
+	s := defaultSettings()
+	b, err := os.ReadFile(localFile)
+	restoredFromBackup := false
+	if err != nil {
+		if !os.IsNotExist(err) || backupFile == "" {
+			return s
+		}
+		b, err = os.ReadFile(backupFile)
+		if err != nil {
+			return s
+		}
+		restoredFromBackup = true
 	}
 	if err := json.Unmarshal(b, &s); err != nil {
+		if restoredFromBackup {
+			return defaultSettings()
+		}
 		logf("fnport.json не прочитан (%v), настройки по умолчанию", err)
 		return defaultSettings()
 	}
 	s.Routes = upgradeDefaultGameRoutes(s.Routes)
+	migrateLegacyWarp(&s)
+	if restoredFromBackup {
+		if writeErr := writeSettingsAtomic(localFile, s); writeErr == nil {
+			logf("настройки восстановлены из сохранённой копии профиля")
+		}
+	}
 	return s
 }
 
-// Only the former complete default list follows this addition automatically.
-// An edited list (including an intentionally empty one) remains under user control.
+// migrateLegacyWarp folds 0.6.x s.Warp flags into the unified s.Connection model.
+func migrateLegacyWarp(s *settings) {
+	if s.Warp.Jc == 0 && s.Warp.Jmin == 0 && s.Warp.Jmax == 0 {
+		s.Warp.Jc, s.Warp.Jmin, s.Warp.Jmax = 4, 40, 70
+	}
+	if !s.Connection.Enabled && s.Warp.Enabled {
+		s.Connection.Enabled = true
+		s.Connection.Protocol = "warp"
+		s.Connection.Epic = true
+		s.Connection.EpicAlways = s.Warp.Always
+		if len(s.Warp.Domains) > 0 && len(s.Connection.Domains) == 0 {
+			var extra []string
+			for _, d := range s.Warp.Domains {
+				d = vpn.CleanDomain(d)
+				if d != "" && !vpn.MatchEpic(d, nil) {
+					extra = append(extra, d)
+				}
+			}
+			s.Connection.Domains = extra
+		}
+	}
+	s.Warp.Enabled = false
+}
+
+// upgradeDefaultGameRoutes adds 51.44.0.0/16 (AWS Paris) only when the exact 6-prefix legacy default is intact.
 func upgradeDefaultGameRoutes(routes []string) []string {
 	legacy := map[string]bool{
 		"3.0.0.0/8": true, "13.32.0.0/11": true, "15.0.0.0/8": true,
@@ -101,16 +157,29 @@ func upgradeDefaultGameRoutes(routes []string) []string {
 	return append(append([]string(nil), routes...), "51.44.0.0/16")
 }
 
-func (s settings) save() error {
+func writeSettingsAtomic(filePath string, s settings) error {
 	b, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := settingsPath() + ".tmp"
+	if err := os.MkdirAll(filepath.Dir(filePath), 0o700); err != nil {
+		return err
+	}
+	tmp := filePath + ".tmp"
 	if err := os.WriteFile(tmp, append(b, '\n'), 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, settingsPath())
+	return os.Rename(tmp, filePath)
+}
+
+func (s settings) save() error {
+	if err := writeSettingsAtomic(settingsPath(), s); err != nil {
+		return err
+	}
+	if backup := settingsBackupPath(); backup != "" {
+		_ = writeSettingsAtomic(backup, s)
+	}
+	return nil
 }
 
 func parseRange(r string) ([2]uint16, error) {
@@ -127,10 +196,10 @@ func parseRange(r string) ([2]uint16, error) {
 	return [2]uint16{uint16(a), uint16(b)}, nil
 }
 
-// config checks the settings and turns them into what the engine runs with
+// config checks the settings and turns them into what the engine runs with.
 func (s settings) config() (*config, error) {
 	if s.Connection.Enabled && s.Connection.Protocol == "amneziawg" && s.Warp.Enabled {
-		return nil, fmt.Errorf("для AmneziaWG отключите WARP для Epic: одновременная работа пока не поддерживается")
+		return nil, fmt.Errorf("для AmneziaWG отключите одновременный режим WARP")
 	}
 	if err := s.Connection.validate(); err != nil {
 		return nil, err
@@ -143,8 +212,12 @@ func (s settings) config() (*config, error) {
 		return nil
 	}
 	for _, e := range []error{
-		in(s.FakeTTL, 1, 32, "TTL фейка"), in(s.QoSPort, 1, 65535, "порт эха"), in(s.ProbeBatch, 1, 12, "портов за раунд"),
-		in(s.MaxRounds, 1, 16, "раундов"), in(s.ProbeBudget, 4, 120, "проверок в минуту"), in(s.VerdictTTL, 10, 900, "время доверия порту"),
+		in(s.FakeTTL, 1, 32, "TTL фейка"),
+		in(s.QoSPort, 1, 65535, "порт эха"),
+		in(s.ProbeBatch, 1, 12, "портов за раунд"),
+		in(s.MaxRounds, 1, 16, "раундов"),
+		in(s.ProbeBudget, 4, 120, "проверок в минуту"),
+		in(s.VerdictTTL, 10, 900, "время доверия порту"),
 		in(s.PairOffset, -65535, 65535, "сдвиг порта матча"),
 	} {
 		if e != nil {
@@ -185,7 +258,6 @@ func (s settings) config() (*config, error) {
 	} else {
 		cfg.pairOffset = 0
 	}
-	// the chosen fake first, the other files of the folder as spares
 	if s.Fake != "" {
 		all := fakes.List(fakesDir())
 		for _, f := range all {

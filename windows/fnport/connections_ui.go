@@ -4,12 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"image"
+	"image/color"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
-	"gioui.org/f32"
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/op/clip"
@@ -18,37 +18,72 @@ import (
 	"gioui.org/widget"
 	"gioui.org/widget/material"
 
+	"github.com/YUNGSLXRD/fnport/windows/internal/fonts"
+	"github.com/YUNGSLXRD/fnport/windows/internal/vpn"
 	"github.com/YUNGSLXRD/fnport/windows/internal/wnet"
 )
 
-// connectionView is owned exclusively by the UI goroutine. Workers receive values
-// and buffered result channels, never editors or pointers to this state.
-// The parent owns connectionSettings, networkTraceSettings and the WARP card.
-type connectionView struct {
-	imports                                   connectionImportView
-	registering                               bool
-	loaded                                    bool
-	enabled, epic, discord, trace, showConfig widget.Bool
-	advanced, traceOpen                       widget.Clickable
-	advancedOpen, traceExpanded               bool
-	protocol                                  string
-	protocolOpen                              bool
-	protocolButton                            widget.Clickable
-	protocolChoices                           []widget.Clickable
-	protocolList                              widget.List
-	config, processes, traceProcesses         widget.Editor
-	final                                     widget.Editor
-	picker, tracePicker                       connectionProcessPicker
-	save, saveTop, reset, openTrace           widget.Clickable
-	applyDone                                 chan error
-	message                                   string
-	failed                                    bool
+var connectionModes = []struct {
+	id    string
+	label string
+}{
+	{"off", "Выключено"},
+	{"warp", "WARP"},
+	{"amneziawg", "AmneziaWG"},
+	{"vpn", "VPN и подписки"},
 }
 
-// Use backend IDs so new sing-box protocols appear without duplicating the
-// transport catalog. Native WARP and AmneziaWG are separate parent transports.
 var connectionUIProtocols = []struct{ id, label string }{
-	{"off", "Выключено"}, {"warp", "WARP"}, {"vless", "VLESS"}, {"amneziawg", "AmneziaWG"}, {"hysteria2", "Hysteria 2"}, {"trojan", "Trojan"}, {"shadowsocks", "Shadowsocks"}, {"vmess", "VMess"}, {"tuic", "TUIC"}, {"anytls", "AnyTLS"}, {"wireguard", "WireGuard"}, {"socks", "SOCKS5"}, {"http", "HTTP"},
+	{"off", "Выключено"},
+	{"warp", "WARP"},
+	{"amneziawg", "AmneziaWG / WireGuard"},
+	{"vless", "VLESS"},
+	{"hysteria2", "Hysteria 2"},
+	{"shadowsocks", "Shadowsocks"},
+	{"trojan", "Trojan"},
+	{"socks", "SOCKS5"},
+}
+
+func modeOfProtocol(proto string, enabled bool) string {
+	if !enabled || proto == "" || proto == "off" {
+		return "off"
+	}
+	switch proto {
+	case "warp":
+		return "warp"
+	case "amneziawg", "wireguard":
+		return "amneziawg"
+	default:
+		return "vpn"
+	}
+}
+
+func modeIndex(mode string) int {
+	for i, m := range connectionModes {
+		if m.id == mode {
+			return i
+		}
+	}
+	return 0
+}
+
+func connectionProtocolLabel(protocol string) string {
+	return vpn.ProtocolLabel(protocol)
+}
+
+func connectionConfigJSON(text string, required bool) (json.RawMessage, error) {
+	text = strings.TrimSpace(text)
+	if text == "" || text == "null" {
+		if required {
+			return nil, fmt.Errorf("вставьте конфигурацию JSON")
+		}
+		return nil, nil
+	}
+	var object map[string]json.RawMessage
+	if json.Unmarshal([]byte(text), &object) != nil || object == nil {
+		return nil, fmt.Errorf("конфигурация должна быть объектом JSON")
+	}
+	return json.RawMessage(text), nil
 }
 
 type connectionProcessChoice struct {
@@ -74,6 +109,53 @@ type connectionProcessPicker struct {
 	errorMessage string
 }
 
+// connectionView holds UI-thread-only state for the «Подключения» tab.
+type connectionView struct {
+	imports       connectionImportView
+	loaded        bool
+	registering   bool
+	speedRunning  bool
+	speedDone     chan string
+	warpConfOpen  bool
+	warpConfBtn   widget.Clickable
+	warpApplyConf widget.Clickable
+	warpImportBtn widget.Clickable
+	warpConf      widget.Editor
+
+	mode          string
+	prevMode      string
+	modeSince     time.Time
+	modeButtons   [4]widget.Clickable
+	enabled       widget.Bool
+	protocol      string
+	epic          widget.Bool
+	epicRouting   widget.Enum // "auto" or "always"
+	discord       widget.Bool
+	showConfig    widget.Bool
+	trace         widget.Bool
+	traceOpen     widget.Clickable
+	traceExpanded bool
+
+	config         widget.Editor
+	awgSavedText   string
+	vpnSavedText   string
+	domains        widget.Editor
+	processes      widget.Editor
+	traceProcesses widget.Editor
+	final          widget.Editor
+
+	picker      connectionProcessPicker
+	tracePicker connectionProcessPicker
+	save        widget.Clickable
+	saveTop     widget.Clickable
+	reset       widget.Clickable
+	openTrace   widget.Clickable
+
+	applyDone chan error
+	message   string
+	failed    bool
+}
+
 func connectionProcessLines(text string) []string {
 	var names []string
 	seen := make(map[string]bool)
@@ -88,111 +170,252 @@ func connectionProcessLines(text string) []string {
 	return names
 }
 
-func connectionProtocolLabel(protocol string) string {
-	for _, p := range connectionUIProtocols {
-		if p.id == protocol {
-			return p.label
-		}
+func (cv *connectionView) setMode(next string, now time.Time) {
+	if cv.mode == next {
+		return
 	}
-	// Do not silently replace a saved protocol unknown to this version of the UI.
-	return protocol
-}
+	switch cv.mode {
+	case "amneziawg":
+		cv.awgSavedText = cv.config.Text()
+	case "vpn":
+		cv.vpnSavedText = cv.config.Text()
+	}
+	cv.prevMode = cv.mode
+	cv.mode = next
+	cv.modeSince = now
+	cv.enabled.Value = next != "off"
 
-// Keep raw sing-box JSON intact. Detailed schema and protocol validation belongs
-// to Connection.validate in the backend; parsing here only rejects non-objects.
-func connectionConfigJSON(text string, required bool) (json.RawMessage, error) {
-	text = strings.TrimSpace(text)
-	if text == "" || text == "null" {
-		if required {
-			return nil, fmt.Errorf("вставьте конфигурацию JSON")
+	switch next {
+	case "off":
+		cv.protocol = "off"
+	case "warp":
+		cv.protocol = "warp"
+	case "amneziawg":
+		cv.protocol = "amneziawg"
+		cv.config.SingleLine = false
+		cv.config.SetText(cv.awgSavedText)
+	case "vpn":
+		if cv.protocol == "" || cv.protocol == "off" || cv.protocol == "warp" || cv.protocol == "amneziawg" {
+			if sub := cv.imports.subscription; sub != nil && sub.ActiveNode() != nil {
+				cv.protocol = sub.ActiveNode().Protocol
+			} else {
+				cv.protocol = "vless"
+			}
 		}
-		return nil, nil
+		cv.config.SingleLine = true
+		cv.config.SetText(cv.vpnSavedText)
 	}
-	var object map[string]json.RawMessage
-	if json.Unmarshal([]byte(text), &object) != nil || object == nil {
-		// Do not echo JSON parser errors: they can contain credential fragments.
-		return nil, fmt.Errorf("конфигурация должна быть объектом JSON")
-	}
-	return json.RawMessage(text), nil
 }
 
 func (cv *connectionView) load(s settings) {
+	migrateLegacyWarp(&s)
 	cv.enabled.Value = s.Connection.Enabled
-	cv.discord.Value = s.Connection.Discord
 	cv.epic.Value = s.Connection.Epic
-	if !s.Connection.Enabled && s.Warp.Enabled {
-		cv.enabled.Value = true
-		cv.epic.Value = true
-		s.Connection.Protocol = "warp"
+	if s.Connection.EpicAlways {
+		cv.epicRouting.Value = "always"
+	} else {
+		cv.epicRouting.Value = "auto"
 	}
-	cv.protocol = s.Connection.Protocol
-	if cv.protocol == "" {
-		cv.protocol = "warp"
+	cv.discord.Value = s.Connection.Discord
+
+	proto := s.Connection.Protocol
+	if proto == "" {
+		proto = "warp"
 	}
+	cv.protocol = proto
 	if !cv.enabled.Value {
 		cv.protocol = "off"
 	}
-	cv.config.SingleLine = cv.protocol != "amneziawg"
-	cv.config.SetText(string(s.Connection.Config))
-	cv.loadSubscriptionView(s.Connection.Subscription)
-	if sub := cv.imports.subscription; sub != nil && sub.node() != nil {
-		cv.config.SetText(sub.URL)
+	cv.mode = modeOfProtocol(proto, cv.enabled.Value)
+	cv.prevMode = cv.mode
+	cv.modeSince = time.Time{}
+
+	cv.awgSavedText = ""
+	cv.vpnSavedText = ""
+	rawStr := strings.TrimSpace(string(s.Connection.Config))
+	if rawStr == "null" {
+		rawStr = ""
 	}
+	displayText := s.Connection.SourceText
+	if displayText == "" {
+		if proto == "amneziawg" && rawStr != "" {
+			if cfg, err := vpn.ParseAWGJSON(s.Connection.Config); err == nil {
+				displayText = vpn.FormatWGConf(cfg)
+			} else {
+				displayText = rawStr
+			}
+		} else {
+			displayText = rawStr
+		}
+	}
+
+	cv.loadSubscriptionView(s.Connection.Subscription)
+	if sub := cv.imports.subscription; sub != nil && sub.URL != "" {
+		cv.vpnSavedText = sub.URL
+		if proto != "amneziawg" {
+			displayText = sub.URL
+		}
+	}
+	if proto == "amneziawg" {
+		cv.awgSavedText = displayText
+	} else if proto != "warp" && proto != "off" {
+		cv.vpnSavedText = displayText
+	}
+
+	cv.config.SingleLine = cv.mode != "amneziawg"
+	cv.config.SetText(displayText)
 	cv.config.Mask = '•'
 	cv.showConfig.Value = false
+
+	cv.warpConf.SingleLine = false
+	cv.domains.SingleLine = false
+	cv.domains.SetText(strings.Join(s.Connection.Domains, "\n"))
 	cv.processes.SetText(strings.Join(s.Connection.Processes, "\n"))
 	cv.final.SingleLine = true
 	cv.final.SetText(s.Connection.Final)
 	cv.trace.Value = s.Trace.Enabled
 	cv.traceProcesses.SetText(strings.Join(s.Trace.Processes, "\n"))
-	cv.protocolOpen, cv.picker.open, cv.tracePicker.open = false, false, false
-	cv.protocolList.Axis = layout.Vertical
+	cv.picker.open, cv.tracePicker.open = false, false
 	cv.picker.list.Axis, cv.tracePicker.list.Axis = layout.Vertical, layout.Vertical
-	cv.protocolChoices = make([]widget.Clickable, len(connectionUIProtocols))
 	cv.loaded = true
 }
 
+func (cv *connectionView) syncLegacyModeFromProtocol() {
+	if !cv.enabled.Value || cv.protocol == "off" {
+		cv.mode = "off"
+	} else {
+		cv.mode = modeOfProtocol(cv.protocol, true)
+	}
+}
+
 func (cv *connectionView) draft() (connectionSettings, networkTraceSettings, error) {
+	cv.syncLegacyModeFromProtocol()
 	var raw json.RawMessage
 	var subscription *connectionSubscription
 	protocol := cv.protocol
-	final := cv.final.Text()
+	sourceText := ""
+	final := strings.TrimSpace(cv.final.Text())
 	text := strings.TrimSpace(cv.config.Text())
-	if cv.protocol == "warp" {
-		subscription = cloneSubscription(cv.imports.subscription)
-		if n := subscription.node(); n != nil {
-			raw = n.Config
-		} else {
-			raw, _, _ = importConnection(cv.config.Text(), false)
-		}
-	} else if subscriptionURL(text) && cv.protocol != "amneziawg" {
-		sub := cv.imports.subscription
-		if sub == nil || sub.URL != text || sub.node() == nil {
-			if cv.enabled.Value {
-				return connectionSettings{}, networkTraceSettings{}, fmt.Errorf("сначала загрузите подписку и выберите сервер")
-			}
-		} else {
-			n := sub.node()
-			raw, protocol = n.Config, n.Protocol
-			subscription = cloneSubscription(sub)
-			final = ""
-		}
-	} else {
-		var detected string
-		var err error
-		raw, detected, err = importConnection(cv.config.Text(), cv.enabled.Value && cv.protocol != "warp")
-		if err != nil {
-			return connectionSettings{}, networkTraceSettings{}, err
-		}
-		if detected != "" {
-			protocol = detected
+
+	domains := vpn.ParseDomainList(cv.domains.Text())
+	rawDomainLines := strings.Split(cv.domains.Text(), "\n")
+	for _, dl := range rawDomainLines {
+		dl, _, _ = strings.Cut(dl, "#")
+		dl = strings.TrimSpace(dl)
+		if dl != "" && vpn.CleanDomain(dl) == "" {
+			return connectionSettings{}, networkTraceSettings{}, fmt.Errorf("некорректный домен «%s»", dl)
 		}
 	}
-	return connectionSettings{
-		Enabled: cv.enabled.Value, Protocol: protocol, Config: raw, Epic: cv.epic.Value,
-		Processes: connectionProcessLines(cv.processes.Text()), Discord: cv.discord.Value,
-		Final: strings.TrimSpace(final), Subscription: subscription,
-	}, networkTraceSettings{Enabled: cv.trace.Value, Processes: connectionProcessLines(cv.traceProcesses.Text())}, nil
+
+	switch cv.mode {
+	case "off":
+		subscription = cloneSubscription(cv.imports.subscription)
+		if protocol == "off" || protocol == "" {
+			protocol = "warp"
+		}
+		if text != "" && text != "null" && !subscriptionURL(text) {
+			if b, det, _, err := vpn.ImportProfile(text, false); err == nil && b != nil {
+				raw = b
+				if det != "" {
+					protocol = det
+				}
+			}
+		} else if n := subscription.ActiveNode(); n != nil {
+			raw = n.Config
+		}
+	case "warp":
+		protocol = "warp"
+		subscription = cloneSubscription(cv.imports.subscription)
+		if n := subscription.ActiveNode(); n != nil {
+			raw = n.Config
+		}
+	case "amneziawg":
+		protocol = "amneziawg"
+		subscription = cloneSubscription(cv.imports.subscription)
+		if text == "" || text == "null" {
+			if cv.enabled.Value {
+				return connectionSettings{}, networkTraceSettings{}, fmt.Errorf("вставьте конфигурацию .conf или импортируйте файл")
+			}
+		} else if looksLikeAWGConf(text) {
+			_, b, err := vpn.ImportAWG(text)
+			if err != nil {
+				return connectionSettings{}, networkTraceSettings{}, err
+			}
+			raw = b
+			sourceText = text
+		} else {
+			b, err := connectionConfigJSON(text, cv.enabled.Value)
+			if err != nil {
+				return connectionSettings{}, networkTraceSettings{}, err
+			}
+			raw = b
+		}
+	default: // "vpn"
+		if subscriptionURL(text) {
+			sub := cv.imports.subscription
+			if sub == nil || sub.URL != text || sub.ActiveNode() == nil {
+				if cv.enabled.Value {
+					return connectionSettings{}, networkTraceSettings{}, fmt.Errorf("сначала нажмите «Загрузить» и выберите сервер подписки")
+				}
+			} else {
+				n := sub.ActiveNode()
+				raw, protocol = n.Config, n.Protocol
+				subscription = cloneSubscription(sub)
+				sourceText = text
+				final = ""
+			}
+		} else if strings.Contains(text, "://") {
+			b, detected, _, err := vpn.ImportProfile(text, cv.enabled.Value)
+			if err != nil {
+				return connectionSettings{}, networkTraceSettings{}, err
+			}
+			raw = b
+			if detected != "" {
+				protocol = detected
+			}
+			sourceText = text
+			final = ""
+		} else {
+			b, err := connectionConfigJSON(text, cv.enabled.Value)
+			if err != nil {
+				return connectionSettings{}, networkTraceSettings{}, err
+			}
+			raw = b
+			if b != nil {
+				var obj map[string]any
+				if json.Unmarshal(b, &obj) == nil {
+					if typ, ok := obj["type"].(string); ok && vpn.CoreOutbounds[typ] {
+						protocol = typ
+					} else if _, hasOut := obj["outbounds"]; hasOut || obj["endpoints"] != nil {
+						protocol = "custom"
+					} else if protocol == "vless" || protocol == "warp" || protocol == "off" {
+						if typ, ok := obj["type"].(string); ok && typ != "" {
+							protocol = "custom"
+						}
+					}
+				}
+			}
+		}
+	}
+
+	cs := connectionSettings{
+		Enabled:      cv.enabled.Value,
+		Protocol:     protocol,
+		Config:       raw,
+		SourceText:   sourceText,
+		Epic:         cv.epic.Value,
+		EpicAlways:   cv.epicRouting.Value == "always",
+		Discord:      cv.discord.Value,
+		Domains:      domains,
+		Processes:    connectionProcessLines(cv.processes.Text()),
+		Final:        final,
+		Subscription: subscription,
+	}
+	ts := networkTraceSettings{
+		Enabled:   cv.trace.Value,
+		Processes: connectionProcessLines(cv.traceProcesses.Text()),
+	}
+	return cs, ts, nil
 }
 
 func (p *connectionProcessPicker) fetch() {
@@ -217,8 +440,7 @@ func (p *connectionProcessPicker) receive(editor *widget.Editor) {
 	case result := <-p.done:
 		p.done = nil
 		if result.err != nil {
-			// OS errors have no configuration content and are safe to show.
-			p.errorMessage = "Не получить процессы: " + result.err.Error()
+			p.errorMessage = "Не удалось получить список процессов: " + result.err.Error()
 			return
 		}
 		names := connectionProcessLines(strings.Join(result.names, "\n"))
@@ -246,8 +468,6 @@ func (p *connectionProcessPicker) receive(editor *widget.Editor) {
 	}
 }
 
-// Only names represented by the picker are changed. Manually entered names of
-// processes which are not running stay in the editor when a checkbox changes.
 func (p *connectionProcessPicker) merge(editor *widget.Editor) {
 	known := make(map[string]bool)
 	for _, row := range p.rows {
@@ -275,16 +495,125 @@ func (p *connectionProcessPicker) merge(editor *widget.Editor) {
 
 func (v *view) connectionCheck(gtx C, state *widget.Bool, label string) D {
 	cb := material.CheckBox(v.th, state, label)
-	cb.Color, cb.IconColor, cb.Size = colText, colGreen, unit.Dp(20)
+	cb.Color, cb.IconColor, cb.Size = colText, colGreen, unit.Dp(18)
+	cb.TextSize = unit.Sp(13)
 	return cb.Layout(gtx)
 }
 
-func (v *view) connectionToggle(gtx C, state *widget.Bool, label string) D {
-	return v.switchRow(gtx, state, label, "")
+func (v *view) compactButton(gtx C, b *widget.Clickable, label string, primary, enabled bool) D {
+	gtx.Constraints.Min.X = 0
+	return v.button(gtx, b, label, primary, enabled)
+}
+
+func (v *view) smallButton(gtx C, c *widget.Clickable, s string, enabled bool) D {
+	gtx.Constraints.Min.X = 0
+	bg, fg := colLine, colText
+	if !enabled {
+		gtx = gtx.Disabled()
+		bg, fg = colLine, colGray
+	} else if c.Hovered() {
+		bg = colBtnHover
+	}
+	return c.Layout(gtx, func(gtx C) D {
+		return layout.Background{}.Layout(gtx,
+			func(gtx C) D { return fill(gtx, bg, gtx.Dp(7)) },
+			func(gtx C) D {
+				return layout.Inset{Top: 6, Bottom: 6, Left: 12, Right: 12}.Layout(gtx, bold(v.label(12, fg, s)).Layout)
+			})
+	})
+}
+
+func (v *view) divider(gtx C) D {
+	h := max(1, gtx.Dp(1))
+	sz := image.Pt(gtx.Constraints.Max.X, h)
+	paint.FillShape(gtx.Ops, colLine, clip.Rect{Max: sz}.Op())
+	return D{Size: sz}
+}
+
+// connectionModeSelector renders a 4-way segmented pill selector matching Opus's sliding sidebar nav.
+func (v *view) connectionModeSelector(gtx C) D {
+	cv := &v.connections
+	cv.syncLegacyModeFromProtocol()
+	for i, m := range connectionModes {
+		if cv.modeButtons[i].Clicked(gtx) {
+			cv.setMode(m.id, gtx.Now)
+		}
+	}
+
+	pad := gtx.Dp(4)
+	totalW := gtx.Constraints.Max.X
+	itemH := gtx.Dp(36)
+	totalH := itemH + pad*2
+	innerW := max(0, totalW-pad*2)
+	segW := innerW / len(connectionModes)
+
+	paint.FillShape(gtx.Ops, colField, clip.UniformRRect(image.Rect(0, 0, totalW, totalH), gtx.Dp(10)).Op(gtx.Ops))
+
+	fromIdx := modeIndex(cv.prevMode)
+	toIdx := modeIndex(cv.mode)
+	t := 1.0
+	if !cv.modeSince.IsZero() {
+		t = easeOut(float64(gtx.Now.Sub(cv.modeSince)) / float64(tabAnim))
+		if t < 1 {
+			v.animating = true
+		}
+	}
+	pillX := pad + int(float64(fromIdx*segW)*(1-t)+float64(toIdx*segW)*t)
+	pillW := segW
+	if toIdx == len(connectionModes)-1 && t == 1 {
+		pillW = totalW - pad - pillX
+	}
+	pillRect := image.Rect(pillX, pad, pillX+pillW, pad+itemH)
+	pillRRect := clip.UniformRRect(pillRect, gtx.Dp(8))
+	paint.FillShape(gtx.Ops, colCard, pillRRect.Op(gtx.Ops))
+	paint.FillShape(gtx.Ops, colLine, clip.Stroke{Path: pillRRect.Path(gtx.Ops), Width: 1}.Op())
+
+	off := pushOffset(gtx, pad, pad)
+	var kids []layout.FlexChild
+	for i, m := range connectionModes {
+		i, m := i, m
+		kids = append(kids, layout.Flexed(1, func(gtx C) D {
+			active := cv.mode == m.id
+			gtx.Constraints = layout.Exact(image.Pt(gtx.Constraints.Max.X, itemH))
+			return cv.modeButtons[i].Layout(gtx, func(gtx C) D {
+				return layout.Stack{Alignment: layout.Center}.Layout(gtx,
+					layout.Expanded(func(gtx C) D {
+						if cv.modeButtons[i].Hovered() && !active {
+							return fill(gtx, colHover, gtx.Dp(8))
+						}
+						return D{Size: gtx.Constraints.Min}
+					}),
+					layout.Stacked(func(gtx C) D {
+						fg := colMuted
+						if active {
+							fg = colText
+						}
+						lbl := v.label(13, fg, m.label)
+						if active {
+							lbl = bold(lbl)
+						}
+						lbl.MaxLines = 1
+						if active && m.id != "off" {
+							return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+								layout.Rigid(func(gtx C) D { return dot(gtx, colGreen, 6) }),
+								hspace(6),
+								layout.Rigid(lbl.Layout))
+						}
+						return lbl.Layout(gtx)
+					}),
+				)
+			})
+		}))
+	}
+	innerGtx := gtx
+	innerGtx.Constraints = layout.Exact(image.Pt(innerW, itemH))
+	layout.Flex{}.Layout(innerGtx, kids...)
+	off.Pop()
+
+	return D{Size: image.Pt(totalW, totalH)}
 }
 
 func (v *view) connectionProcessEditor(gtx C, editor *widget.Editor, p *connectionProcessPicker) D {
-	// Consume events on the previous snapshot before a refresh can remove rows.
 	changed := false
 	for _, row := range p.rows {
 		if row.checked.Update(gtx) {
@@ -311,7 +640,6 @@ func (v *view) connectionProcessEditor(gtx C, editor *widget.Editor, p *connecti
 	for _, row := range p.rows {
 		row.checked.Value = selected[strings.ToLower(row.name)]
 	}
-
 	if p.manual.Clicked(gtx) {
 		p.manualOpen = !p.manualOpen
 	}
@@ -319,10 +647,24 @@ func (v *view) connectionProcessEditor(gtx C, editor *widget.Editor, p *connecti
 
 	selectedNames := connectionProcessLines(editor.Text())
 	if !p.open {
-		return layout.Flex{Alignment: layout.Middle}.Layout(gtx, layout.Flexed(1, v.label(12, colMuted, fmt.Sprintf("Выбрано приложений: %d", len(selectedNames))).Layout), layout.Rigid(func(gtx C) D {
-			return v.compactButton(gtx, &p.button, "Выбрать приложения", false, true)
-		}))
+		summary := "Не выбраны: остальные программы идут напрямую мимо адаптера"
+		summaryColor := colMuted
+		if len(selectedNames) > 0 {
+			summary = fmt.Sprintf("Выбрано (%d): %s", len(selectedNames), strings.Join(selectedNames, ", "))
+			summaryColor = colGreen
+		}
+		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+			layout.Flexed(1, func(gtx C) D {
+				l := v.label(12, summaryColor, summary)
+				l.MaxLines = 2
+				return l.Layout(gtx)
+			}),
+			hspace(12),
+			layout.Rigid(func(gtx C) D {
+				return v.smallButton(gtx, &p.button, "Выбрать .exe", true)
+			}))
 	}
+
 	query := strings.ToLower(strings.TrimSpace(p.search.Text()))
 	var rows []*connectionProcessChoice
 	for _, row := range p.rows {
@@ -330,105 +672,60 @@ func (v *view) connectionProcessEditor(gtx C, editor *widget.Editor, p *connecti
 			rows = append(rows, row)
 		}
 	}
-	kids := []layout.FlexChild{layout.Rigid(func(gtx C) D {
-		return layout.Flex{Alignment: layout.Middle}.Layout(gtx, layout.Flexed(1, v.label(12, colMuted, fmt.Sprintf("Выбрано: %d", len(selectedNames))).Layout), layout.Rigid(func(gtx C) D { return v.compactButton(gtx, &p.button, "Свернуть", false, true) }), hspace(8), layout.Rigid(func(gtx C) D { return v.compactButton(gtx, &p.refresh, "Обновить", false, p.done == nil) }))
-	}), vspace(8), layout.Rigid(func(gtx C) D { return v.field(gtx, &p.search, "Поиск приложения", 1) }), vspace(8)}
+
+	kids := []layout.FlexChild{
+		layout.Rigid(func(gtx C) D {
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Flexed(1, v.label(12, colMuted, fmt.Sprintf("Выбрано приложений: %d (включает перехват IPv4)", len(selectedNames))).Layout),
+				layout.Rigid(func(gtx C) D { return v.smallButton(gtx, &p.refresh, "Обновить", p.done == nil) }),
+				hspace(8),
+				layout.Rigid(func(gtx C) D { return v.smallButton(gtx, &p.button, "Свернуть", true) }))
+		}),
+		vspace(8),
+		layout.Rigid(func(gtx C) D {
+			return v.field(gtx, &p.search, "Поиск запущенного процесса…", 1)
+		}),
+		vspace(8),
+	}
 	if len(selectedNames) > 0 {
 		kids = append(kids, layout.Rigid(v.label(12, colGreen, strings.Join(selectedNames, ", ")).Layout), vspace(8))
 	}
-	kids = append(kids, layout.Rigid(func(gtx C) D {
-		gtx.Constraints.Min.Y = 0
-		gtx.Constraints.Max.Y = min(gtx.Constraints.Max.Y, gtx.Dp(220))
-		return v.list(gtx, &p.list, len(rows), func(gtx C, i int) D {
-			return layout.Inset{Top: 5, Bottom: 5, Left: 4, Right: 4}.Layout(gtx, func(gtx C) D { return v.connectionCheck(gtx, &rows[i].checked, rows[i].name) })
-		})
-	}), vspace(8), layout.Rigid(func(gtx C) D { return v.compactButton(gtx, &p.manual, "Добавить вручную", false, true) }))
-	if p.manualOpen {
-		kids = append(kids, vspace(8), layout.Rigid(func(gtx C) D {
-			return v.field(gtx, editor, "Приложение.exe · по одному в строке", 2)
-		}))
-	}
-	if p.errorMessage != "" {
-		kids = append(kids, layout.Rigid(v.label(12, colRed, p.errorMessage).Layout))
-	}
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
-}
-
-func (v *view) connectionProtocolDropdown(gtx C) D {
-	cv := &v.connections
-	if cv.protocolButton.Clicked(gtx) {
-		cv.protocolOpen = !cv.protocolOpen
-		cv.imports.serverOpen = false
-	}
-	for i := range cv.protocolChoices {
-		if cv.protocolChoices[i].Clicked(gtx) {
-			cv.protocol, cv.protocolOpen = connectionUIProtocols[i].id, false
-			cv.enabled.Value = cv.protocol != "off"
-		}
-	}
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+	kids = append(kids,
 		layout.Rigid(func(gtx C) D {
-			return layout.Stack{Alignment: layout.E}.Layout(gtx,
-				layout.Stacked(func(gtx C) D {
-					gtx.Constraints.Min.X = gtx.Constraints.Max.X
-					return v.button(gtx, &cv.protocolButton, connectionProtocolLabel(cv.protocol), false, true)
-				}),
-				layout.Stacked(func(gtx C) D {
-					return layout.Inset{Right: 16}.Layout(gtx, func(gtx C) D {
-						size := gtx.Dp(16)
-						var p clip.Path
-						p.Begin(gtx.Ops)
-						a, b := float32(size)*0.3, float32(size)*0.65
-						if cv.protocolOpen {
-							a, b = b, a
+			return layout.Background{}.Layout(gtx,
+				func(gtx C) D { return fill(gtx, colField, gtx.Dp(8)) },
+				func(gtx C) D {
+					return layout.UniformInset(unit.Dp(6)).Layout(gtx, func(gtx C) D {
+						gtx.Constraints.Min.Y = 0
+						gtx.Constraints.Max.Y = min(gtx.Constraints.Max.Y, gtx.Dp(190))
+						if len(rows) == 0 {
+							msg := "Загружаю процессы…"
+							if p.done == nil {
+								msg = "Процессы не найдены"
+							}
+							return layout.UniformInset(unit.Dp(8)).Layout(gtx, v.label(12, colMuted, msg).Layout)
 						}
-						p.MoveTo(f32.Pt(0, a))
-						p.LineTo(f32.Pt(float32(size)/2, b))
-						p.LineTo(f32.Pt(float32(size), a))
-						paint.FillShape(gtx.Ops, colText, clip.Stroke{Path: p.End(), Width: 1.5}.Op())
-						return D{Size: image.Pt(size, size)}
-					})
-				}))
-		}),
-		layout.Rigid(func(gtx C) D {
-			if !cv.protocolOpen {
-				return D{}
-			}
-			gtx.Constraints.Min.Y = 0
-			gtx.Constraints.Max.Y = gtx.Dp(240)
-			rec := op.Record(gtx.Ops)
-			menuBG := mix(colLine, colBg, 0.18)
-			offset := op.Offset(image.Pt(0, gtx.Dp(5))).Push(gtx.Ops)
-			inner := op.Record(gtx.Ops)
-			d := func(gtx C) D {
-				return v.list(gtx, &cv.protocolList, len(connectionUIProtocols), func(gtx C, i int) D {
-					p := connectionUIProtocols[i]
-					return cv.protocolChoices[i].Layout(gtx, func(gtx C) D {
-						bg := menuBG
-						fg := colText
-						if p.id == cv.protocol {
-							bg = mix(menuBG, colGreen, 0.10)
-							fg = colGreen
-						} else if cv.protocolChoices[i].Hovered() {
-							bg = mix(menuBG, colText, 0.05)
-						}
-						return layout.Background{}.Layout(gtx, func(gtx C) D { return fill(gtx, bg, 0) }, func(gtx C) D {
-							return layout.Inset{Top: 10, Bottom: 10, Left: 16, Right: 16}.Layout(gtx, v.label(14, fg, p.label).Layout)
+						return v.list(gtx, &p.list, len(rows), func(gtx C, i int) D {
+							return layout.Inset{Top: 4, Bottom: 4, Left: 6, Right: 6}.Layout(gtx, func(gtx C) D {
+								return v.connectionCheck(gtx, &rows[i].checked, rows[i].name)
+							})
 						})
 					})
 				})
-			}(gtx)
-			contents := inner.Stop()
-			rounded := clip.UniformRRect(image.Rectangle{Max: d.Size}, gtx.Dp(8)).Push(gtx.Ops)
-			paint.Fill(gtx.Ops, menuBG)
-			contents.Add(gtx.Ops)
-			rounded.Pop()
-			offset.Pop()
-
-			call := rec.Stop()
-			op.Defer(gtx.Ops, call)
-			return D{}
+		}),
+		vspace(8),
+		layout.Rigid(func(gtx C) D {
+			return v.smallButton(gtx, &p.manual, "Вписать имена .exe вручную", true)
 		}))
+	if p.manualOpen {
+		kids = append(kids, vspace(8), layout.Rigid(func(gtx C) D {
+			return v.field(gtx, editor, "browser.exe (по одному имени файла в строке)", 2)
+		}))
+	}
+	if p.errorMessage != "" {
+		kids = append(kids, vspace(6), layout.Rigid(v.label(12, colRed, p.errorMessage).Layout))
+	}
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
 }
 
 func (v *view) updateConnections(gtx C) {
@@ -437,6 +734,18 @@ func (v *view) updateConnections(gtx C) {
 		cv.load(v.ctl.settings())
 	}
 	v.updateConnectionImports(gtx)
+
+	if cv.speedDone != nil {
+		select {
+		case res := <-cv.speedDone:
+			cv.speedDone = nil
+			cv.speedRunning = false
+			cv.failed = false
+			cv.message = "Скорость: " + res
+		default:
+		}
+	}
+
 	if cv.applyDone != nil {
 		select {
 		case err := <-cv.applyDone:
@@ -444,27 +753,98 @@ func (v *view) updateConnections(gtx C) {
 			cv.failed = err != nil
 			if err != nil {
 				cv.message = "Не применено: " + err.Error()
+			} else if cv.registering {
+				cv.message = "Ключ WARP получен и сохранён. Нажмите «Применить», чтобы включить."
 			} else {
-				if cv.registering {
-					cv.message = "Ключ получен. Нажми «Применить»."
-				} else {
-					cv.message = "Настройки применены"
-					cv.loaded = false
-				}
-				cv.registering = false
-				v.draftFor = 0
+				cv.message = "Настройки сохранены."
+				cv.loaded = false
 			}
+			cv.registering = false
+			v.draftFor = 0
 		default:
 		}
 	}
-	if cv.reset.Clicked(gtx) && cv.applyDone == nil && !cv.importing() {
+
+	busy := cv.applyDone != nil || cv.importing() || cv.speedRunning
+	if cv.reset.Clicked(gtx) && !busy {
 		cv.load(v.ctl.settings())
 		cv.message, cv.failed = "", false
 	}
 	if cv.openTrace.Clicked(gtx) && v.open != nil {
 		v.open(filepath.Join(appDir(), "network-trace"))
 	}
-	if (cv.save.Clicked(gtx) || cv.saveTop.Clicked(gtx)) && cv.applyDone == nil && !cv.importing() {
+	if cv.traceOpen.Clicked(gtx) {
+		cv.traceExpanded = !cv.traceExpanded
+	}
+	if cv.warpConfBtn.Clicked(gtx) {
+		cv.warpConfOpen = !cv.warpConfOpen
+	}
+
+	if v.warpReg.Clicked(gtx) && !busy {
+		cv.registering = true
+		cv.failed = false
+		cv.message = "Получаю ключ WARP у Cloudflare…"
+		cv.applyDone = make(chan error, 1)
+		done, ctl := cv.applyDone, v.ctl
+		go func() {
+			old := ctl.settings()
+			ws, err := registerWarp(old.Warp)
+			if err == nil {
+				err = ctl.update(func(s *settings) error {
+					s.Warp = ws
+					s.Warp.Enabled = false
+					return nil
+				})
+			}
+			done <- err
+			changes.Add(1)
+		}()
+	}
+
+	if v.warpSpeed.Clicked(gtx) && !busy && !v.ctl.nativeAWGActive() {
+		cv.speedRunning = true
+		cv.failed = false
+		cv.message = "Проверяю скорость напрямую и через WARP (~15–30 с)…"
+		done := make(chan string, 1)
+		cv.speedDone = done
+		ctl := v.ctl
+		go func() {
+			s := ctl.settings()
+			done <- speedTest(ctl.warpTunnel(), s.Warp.withFake(s))
+			changes.Add(1)
+		}()
+	}
+
+	if cv.warpApplyConf.Clicked(gtx) && !busy {
+		confText := strings.TrimSpace(cv.warpConf.Text())
+		if confText == "" {
+			cv.failed = true
+			cv.message = "Вставьте содержимое конфига WARP (.conf) или импортируйте файл."
+		} else {
+			cv.registering = true
+			cv.failed = false
+			cv.message = "Проверяю и сохраняю конфиг WARP…"
+			cv.applyDone = make(chan error, 1)
+			done, ctl := cv.applyDone, v.ctl
+			go func() {
+				old := ctl.settings()
+				ws, err := parseWarpConf(confText, old.Warp)
+				if err == nil {
+					err = ctl.update(func(s *settings) error {
+						s.Warp = ws
+						s.Warp.Enabled = false
+						return nil
+					})
+				}
+				done <- err
+				changes.Add(1)
+			}()
+			cv.warpConf.SetText("")
+			cv.warpConfOpen = false
+		}
+	}
+
+	if (cv.save.Clicked(gtx) || cv.saveTop.Clicked(gtx)) && !busy {
 		connection, trace, err := cv.draft()
 		cv.failed = err != nil
 		if err != nil {
@@ -483,176 +863,373 @@ func (v *view) updateConnections(gtx C) {
 			}()
 		}
 	}
-	if cv.applyDone != nil || cv.picker.done != nil || cv.tracePicker.done != nil {
+
+	if cv.applyDone != nil || cv.speedDone != nil || cv.picker.done != nil || cv.tracePicker.done != nil {
 		gtx.Execute(op.InvalidateCmd{At: gtx.Now.Add(100 * time.Millisecond)})
 	}
-
-	if cv.advanced.Clicked(gtx) {
-		cv.advancedOpen = !cv.advancedOpen
-	}
-	if cv.traceOpen.Clicked(gtx) {
-		cv.traceExpanded = !cv.traceExpanded
-	}
-	if v.warpReg.Clicked(gtx) && cv.applyDone == nil {
-		cv.registering = true
-		cv.applyDone = make(chan error, 1)
-		done := cv.applyDone
-		ctl := v.ctl
-		go func() {
-			old := ctl.settings()
-			ws, err := registerWarp(old.Warp)
-			if err == nil {
-				err = ctl.update(func(s *settings) error {
-					s.Warp = ws
-					s.Warp.Enabled = false
-
-					return nil
-				})
-			}
-			done <- err
-			changes.Add(1)
-		}()
-	}
-
 }
 
-func (v *view) connectionsCard(gtx C) D { v.updateConnections(gtx); return v.connectionsBody(gtx) }
+func (v *view) connectionsCard(gtx C) D {
+	v.updateConnections(gtx)
+	return v.connectionsBody(gtx)
+}
+
+func (v *view) statusBanner(gtx C, dotColor color.NRGBA, headline string, exit *vpn.ExitReport) D {
+	return layout.Background{}.Layout(gtx,
+		func(gtx C) D { return fill(gtx, colField, gtx.Dp(8)) },
+		func(gtx C) D {
+			return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx C) D {
+				kids := []layout.FlexChild{
+					layout.Rigid(func(gtx C) D {
+						return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+							layout.Rigid(func(gtx C) D { return dot(gtx, dotColor, 8) }),
+							hspace(10),
+							layout.Flexed(1, v.label(13, colText, headline).Layout))
+					}),
+				}
+				if exit != nil && exit.Colo != "" {
+					city := vpn.ExitName(exit.Colo)
+					cc := exit.Country
+					if cc == "" {
+						cc = vpn.ColoCountry[exit.Colo]
+					}
+					kids = append(kids, vspace(8), layout.Rigid(func(gtx C) D {
+						return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+							hspace(18),
+							layout.Rigid(v.label(12, colMuted, "Выход:").Layout),
+							hspace(7),
+							layout.Rigid(func(gtx C) D { return drawFlag(gtx, cc, 12) }),
+							hspace(7),
+							layout.Rigid(v.label(12, colText, city).Layout),
+							hspace(8),
+							layout.Rigid(mono(v.label(12, colMuted, exit.Address)).Layout))
+					}))
+				}
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
+			})
+		})
+}
+
+func (v *view) warpModePanel(gtx C) D {
+	cv := &v.connections
+	s := v.ctl.settings()
+	st, _ := v.ctl.state()
+
+	dotColor := colMuted
+	headline := "Ключ WARP ещё не получен: нажмите «Получить ключ WARP»."
+	if s.Warp.ready() {
+		headline = "Ключ WARP сохранён. Туннель подключится, когда вы включите fnport."
+	}
+	if st == stateOn {
+		if ws := v.ctl.warpStatus(false); ws != "" {
+			headline = "WARP " + ws
+			if v.ctl.warpTunnel() != nil {
+				dotColor = colGreen
+			} else if strings.HasPrefix(ws, "не подключился") {
+				dotColor = colRed
+			} else {
+				dotColor = colYellow
+			}
+		}
+	}
+
+	keyLabel := "Получить ключ WARP"
+	if s.Warp.ready() {
+		keyLabel = "Обновить ключ"
+	}
+	confBtnLabel := "Свой .conf"
+	if cv.warpConfOpen {
+		confBtnLabel = "Скрыть .conf"
+	}
+
+	kids := []layout.FlexChild{
+		layout.Rigid(func(gtx C) D {
+			return v.statusBanner(gtx, dotColor, headline, v.ctl.connectionExit())
+		}),
+		vspace(12),
+		layout.Rigid(func(gtx C) D {
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(func(gtx C) D {
+					return v.compactButton(gtx, &v.warpReg, keyLabel, !s.Warp.ready(), cv.applyDone == nil && !cv.speedRunning)
+				}),
+				hspace(10),
+				layout.Rigid(func(gtx C) D {
+					return v.compactButton(gtx, &v.warpSpeed, "Проверить скорость", false, !cv.speedRunning && cv.applyDone == nil && !v.ctl.nativeAWGActive())
+				}),
+				hspace(10),
+				layout.Rigid(func(gtx C) D {
+					return v.compactButton(gtx, &cv.warpConfBtn, confBtnLabel, false, true)
+				}))
+		}),
+	}
+
+	if cv.warpConfOpen {
+		kids = append(kids,
+			vspace(12),
+			layout.Rigid(func(gtx C) D {
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+					layout.Flexed(1, v.label(12, colMuted, "Если провайдер блокирует регистрацию WARP, импортируйте или вставьте готовый .conf:").Layout),
+					hspace(8),
+					layout.Rigid(func(gtx C) D {
+						if v.pickAWGFile == nil {
+							return D{}
+						}
+						return v.smallButton(gtx, &cv.warpImportBtn, "Выбрать .conf", !cv.importing())
+					}))
+			}),
+			vspace(6),
+			layout.Rigid(func(gtx C) D {
+				return v.field(gtx, &cv.warpConf, "[Interface]\nPrivateKey = …", 3)
+			}),
+			vspace(8),
+			layout.Rigid(func(gtx C) D {
+				return v.compactButton(gtx, &cv.warpApplyConf, "Сохранить конфиг WARP", false, cv.applyDone == nil)
+			}))
+	}
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
+}
+
+func (v *view) awgModePanel(gtx C) D {
+	cv := &v.connections
+	cv.config.SingleLine = false
+	cv.config.Mask = '•'
+	if cv.showConfig.Value {
+		cv.config.Mask = 0
+	}
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(func(gtx C) D {
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Flexed(1, v.label(12, colMuted, "Конфигурация AmneziaWG 1.5 или обычного WireGuard (.conf)").Layout),
+				layout.Rigid(func(gtx C) D { return v.connectionCheck(gtx, &cv.showConfig, "Показать") }),
+				hspace(10),
+				layout.Rigid(func(gtx C) D {
+					return v.smallButton(gtx, &cv.imports.importFile, "Импорт .conf", v.pickAWGFile != nil && !cv.importing())
+				}))
+		}),
+		vspace(6),
+		layout.Rigid(func(gtx C) D {
+			gtx.Constraints.Max.Y = gtx.Dp(120)
+			return v.field(gtx, &cv.config, "[Interface]\nPrivateKey = …\nAddress = …\n\n[Peer]\nPublicKey = …\nEndpoint = …", 4)
+		}),
+	)
+}
+
+func (v *view) vpnModePanel(gtx C) D {
+	cv := &v.connections
+	cv.config.SingleLine = true
+	cv.config.Mask = '•'
+	if cv.showConfig.Value {
+		cv.config.Mask = 0
+	}
+	text := strings.TrimSpace(cv.config.Text())
+	kind := vpn.DetectInputKind(text)
+	headerLabel := "Ссылка vless://, hy2://, ss://, trojan://, socks5:// или подписка https://"
+	switch kind {
+	case "subscription":
+		headerLabel = "Ссылка подписки"
+	case "vless", "hysteria2", "shadowsocks", "trojan", "socks":
+		headerLabel = "Профиль · " + vpn.ProtocolLabel(kind)
+	case "json":
+		headerLabel = "Профиль sing-box JSON"
+	case "amneziawg":
+		headerLabel = "Конфигурация WireGuard / AmneziaWG (переключите вкладку выше)"
+	}
+
+	isSub := subscriptionURL(text)
+	fetchLabel := "Загрузить"
+	if sub := cv.imports.subscription; sub != nil && sub.URL == text && len(sub.Nodes) > 0 {
+		fetchLabel = "Обновить"
+	}
+
+	kids := []layout.FlexChild{
+		layout.Rigid(func(gtx C) D {
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Flexed(1, v.label(12, colMuted, headerLabel).Layout),
+				layout.Rigid(func(gtx C) D { return v.connectionCheck(gtx, &cv.showConfig, "Показать") }),
+				layout.Rigid(func(gtx C) D {
+					if !isSub {
+						return D{}
+					}
+					return layout.Inset{Left: 10}.Layout(gtx, func(gtx C) D {
+						return v.smallButton(gtx, &cv.imports.fetch, fetchLabel, !cv.importing())
+					})
+				}))
+		}),
+		vspace(6),
+		layout.Rigid(func(gtx C) D {
+			return v.field(gtx, &cv.config, "https://… или vless://… , hy2://… , ss://… , trojan://… , socks5://…", 1)
+		}),
+	}
+
+	if sub := cv.imports.subscription; sub != nil && sub.URL == text && len(sub.Nodes) > 0 {
+		title := sub.Title
+		if title == "" {
+			title = "Подписка"
+		}
+		kids = append(kids,
+			vspace(12),
+			layout.Rigid(func(gtx C) D {
+				activeBadge := ""
+				if n := sub.ActiveNode(); n != nil {
+					activeBadge = vpn.ProtocolLabel(n.Protocol)
+				}
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+					layout.Flexed(1, v.label(12, colMuted, fmt.Sprintf("%s · серверов: %d", title, len(sub.Nodes))).Layout),
+					layout.Rigid(mono(v.label(11, colGreen, activeBadge)).Layout))
+			}),
+			vspace(6),
+			layout.Rigid(v.subscriptionServerList))
+	}
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
+}
 
 func (v *view) connectionsBody(gtx C) D {
 	cv := &v.connections
 	if !cv.loaded {
 		cv.load(v.ctl.settings())
 	}
+	cv.syncLegacyModeFromProtocol()
+	disabled := cv.applyDone != nil || cv.importing() || cv.speedRunning
 
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-		layout.Rigid(func(gtx C) D {
-			return v.card(gtx, func(gtx C) D {
-				if cv.applyDone != nil || cv.importing() {
-					gtx = gtx.Disabled()
-				}
-				kids := []layout.FlexChild{layout.Rigid(func(gtx C) D { return bold(v.label(15, colText, "Подключение")).Layout(gtx) }), vspace(12), layout.Rigid(v.connectionProtocolDropdown), vspace(12)}
-				if cv.protocol == "warp" {
-					info, label := "Ключ не получен", "Получить ключ"
-					if v.ctl.settings().Warp.ready() {
-						info, label = "Ключ сохранён", "Обновить ключ"
-					}
-					if status := v.ctl.warpStatus(false); status != "" {
-						info = status
-					}
-					kids = append(kids, layout.Rigid(func(gtx C) D {
-						return layout.Flex{Alignment: layout.Middle}.Layout(gtx, layout.Flexed(1, v.label(13, colMuted, info).Layout), hspace(12), layout.Rigid(func(gtx C) D { return v.compactButton(gtx, &v.warpReg, label, false, cv.applyDone == nil) }))
-					}))
-				} else {
-					cv.config.SingleLine = cv.protocol != "amneziawg"
-					cv.config.Mask = '•'
-					if cv.showConfig.Value {
-						cv.config.Mask = 0
-					}
-					hint := "vless://… или https://…"
-					if cv.protocol == "amneziawg" {
-						hint = "Содержимое файла .conf или JSON"
-					}
-					fieldLabel := "Ссылка подключения или подписка"
-					lines := 1
-					if cv.protocol == "amneziawg" {
-						fieldLabel = "Конфигурация"
-						lines = 4
-					}
-					kids = append(kids, layout.Rigid(func(gtx C) D {
-						return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-							layout.Flexed(1, v.label(12, colMuted, fieldLabel).Layout),
-							layout.Rigid(func(gtx C) D {
-								if cv.protocol == "amneziawg" {
-									return v.compactButton(gtx, &cv.imports.importFile, "Импорт .conf", false, v.pickAWGFile != nil)
-								}
-								if subscriptionURL(cv.config.Text()) {
-									label := "Загрузить"
-									if sub := cv.imports.subscription; sub != nil && sub.URL == strings.TrimSpace(cv.config.Text()) {
-										label = "Обновить"
-									}
-									return v.compactButton(gtx, &cv.imports.fetch, label, false, true)
-								}
-								return D{}
-							}),
-						)
-					}), vspace(6), layout.Rigid(func(gtx C) D {
-						if cv.protocol == "amneziawg" {
-							gtx.Constraints.Max.Y = gtx.Dp(100)
-						}
-						return v.field(gtx, &cv.config, hint, lines)
-					}), vspace(4), layout.Rigid(func(gtx C) D { return v.connectionCheck(gtx, &cv.showConfig, "Показать") }))
-					if sub := cv.imports.subscription; sub != nil && sub.URL == strings.TrimSpace(cv.config.Text()) && len(sub.Nodes) > 0 {
-						kids = append(kids, vspace(8), layout.Rigid(v.label(12, colMuted, fmt.Sprintf("Сервер · %d в подписке", len(sub.Nodes))).Layout), vspace(6), layout.Rigid(v.subscriptionServerDropdown))
-					}
-				}
-				return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
-			})
-		}), vspace(12),
-		layout.Rigid(func(gtx C) D {
-			return v.card(gtx, func(gtx C) D {
-				if cv.applyDone != nil || cv.importing() {
-					gtx = gtx.Disabled()
-				}
-				kids := v.sectionTitle("Через подключение", "")
+	card1 := func(gtx C) D {
+		return v.card(gtx, func(gtx C) D {
+			if disabled {
+				gtx = gtx.Disabled()
+			}
+			kids := v.sectionTitle("Подключение", "Обход замедления и блокировок для сервисов Epic, Discord и выбранных сайтов. Игра идёт напрямую.")
+			kids = append(kids, layout.Rigid(v.connectionModeSelector), vspace(14))
+			switch cv.mode {
+			case "off":
 				kids = append(kids, layout.Rigid(func(gtx C) D {
-					return v.switchRow(gtx, &cv.epic, "Сервисы Epic", "Вход, магазин и загрузки")
-				}), layout.Rigid(func(gtx C) D {
-					return v.switchRowWithInset(gtx, &cv.discord, "Discord", "", layout.Inset{Top: 9})
-				}), layout.Rigid(v.label(12, colMuted, "Матчи Fortnite идут напрямую через fnport.").Layout))
-				return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
-			})
-		}), vspace(12), layout.Rigid(func(gtx C) D {
-			return layout.Flex{Alignment: layout.Middle}.Layout(gtx, layout.Rigid(func(gtx C) D { return v.compactButton(gtx, &cv.advanced, "Дополнительно", false, true) }), hspace(8), layout.Rigid(func(gtx C) D {
-				if !traceAvailable() {
-					return D{}
-				}
-				return v.compactButton(gtx, &cv.traceOpen, "Диагностика", false, true)
+					return v.statusBanner(gtx, colMuted, "Подключение выключено: сервисы Epic и Discord идут напрямую через ваш интернет.", nil)
+				}))
+			case "warp":
+				kids = append(kids, layout.Rigid(v.warpModePanel))
+			case "amneziawg":
+				kids = append(kids, layout.Rigid(v.awgModePanel))
+			default:
+				kids = append(kids, layout.Rigid(v.vpnModePanel))
+			}
+			return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
+		})
+	}
+
+	card2 := func(gtx C) D {
+		return v.card(gtx, func(gtx C) D {
+			if disabled {
+				gtx = gtx.Disabled()
+			}
+			kids := v.sectionTitle("Что направлять через подключение", "Матчи Fortnite всегда идут напрямую через fnport без лишнего пинга.")
+			kids = append(kids, layout.Rigid(func(gtx C) D {
+				return v.switchRow(gtx, &cv.epic, "Сервисы Epic", "Вход в аккаунт, магазин, обновления и голосовой чат пати")
 			}))
-		}),
-		layout.Rigid(func(gtx C) D {
-			if !cv.advancedOpen {
-				return D{}
+			if cv.epic.Value {
+				kids = append(kids, vspace(6), layout.Rigid(func(gtx C) D {
+					return layout.Inset{Left: 4}.Layout(gtx, func(gtx C) D {
+						return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+							v.radio("auto", "Только если напрямую не открывается или замерзает (рекомендуется)", &cv.epicRouting),
+							v.radio("always", "Всегда через подключение", &cv.epicRouting))
+					})
+				}))
 			}
-			return layout.Inset{Top: 12}.Layout(gtx, func(gtx C) D {
-				return v.card(gtx, func(gtx C) D {
-					return layout.Flex{Axis: layout.Vertical}.Layout(gtx, layout.Rigid(v.label(13, colMuted, "Другие приложения").Layout), vspace(8), layout.Rigid(func(gtx C) D { return v.connectionProcessEditor(gtx, &cv.processes, &cv.picker) }), vspace(12), layout.Rigid(v.label(12, colMuted, "Тег выхода · только для JSON с несколькими выходами").Layout), vspace(6), layout.Rigid(func(gtx C) D { return v.field(gtx, &cv.final, "Необязательно", 1) }))
-				})
-			})
-		}),
-		layout.Rigid(func(gtx C) D {
-			if !traceAvailable() || !cv.traceExpanded {
-				return D{}
+			kids = append(kids,
+				vspace(10),
+				layout.Rigid(v.divider),
+				vspace(10),
+				layout.Rigid(func(gtx C) D {
+					return v.switchRow(gtx, &cv.discord, "Discord", "Сообщения, медиафайлы, стримы и голосовые каналы")
+				}))
+			return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
+		})
+	}
+
+	card3 := func(gtx C) D {
+		return v.card(gtx, func(gtx C) D {
+			if disabled {
+				gtx = gtx.Disabled()
 			}
-			return layout.Inset{Top: 12}.Layout(gtx, func(gtx C) D {
-				return v.card(gtx, func(gtx C) D {
-					return layout.Flex{Axis: layout.Vertical}.Layout(gtx, layout.Rigid(func(gtx C) D {
-						return v.switchRow(gtx, &cv.trace, "Записывать сетевой след", "")
-					}), vspace(8), layout.Rigid(func(gtx C) D { return v.connectionProcessEditor(gtx, &cv.traceProcesses, &cv.tracePicker) }), vspace(8), layout.Rigid(func(gtx C) D {
-						return v.compactButton(gtx, &cv.openTrace, "Открыть логи", false, v.open != nil)
+			kids := v.sectionTitle("Свои домены и приложения", "Необязательно. По одному домену в строке (покрывает сам домен и его поддомены).")
+			kids = append(kids,
+				layout.Rigid(func(gtx C) D {
+					return v.field(gtx, &cv.domains, "youtube.com\ngooglevideo.com", 3)
+				}),
+				vspace(12),
+				layout.Rigid(v.divider),
+				vspace(10),
+				layout.Rigid(v.label(13, colText, "Приложения целиком (.exe)").Layout),
+				vspace(4),
+				layout.Rigid(func(gtx C) D {
+					return v.connectionProcessEditor(gtx, &cv.processes, &cv.picker)
+				}))
+			if traceAvailable() {
+				kids = append(kids, vspace(10), layout.Rigid(func(gtx C) D {
+					return v.smallButton(gtx, &cv.traceOpen, "Диагностика (devtrace)", true)
+				}))
+			}
+			return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
+		})
+	}
+
+	children := []layout.FlexChild{
+		layout.Rigid(card1),
+		vspace(12),
+		layout.Rigid(card2),
+		vspace(12),
+		layout.Rigid(card3),
+	}
+	if traceAvailable() && cv.traceExpanded {
+		children = append(children, vspace(12), layout.Rigid(func(gtx C) D {
+			return v.card(gtx, func(gtx C) D {
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					layout.Rigid(func(gtx C) D {
+						return v.switchRow(gtx, &cv.trace, "Записывать сетевой след", "Только для локальной отладки соединений")
+					}),
+					vspace(8),
+					layout.Rigid(func(gtx C) D {
+						return v.connectionProcessEditor(gtx, &cv.traceProcesses, &cv.tracePicker)
+					}),
+					vspace(8),
+					layout.Rigid(func(gtx C) D {
+						return v.compactButton(gtx, &cv.openTrace, "Открыть папку логов", false, v.open != nil)
 					}))
-				})
 			})
 		}))
-}
+	}
 
-func (v *view) compactButton(gtx C, b *widget.Clickable, label string, primary, enabled bool) D {
-	gtx.Constraints.Min.X = 0
-	return v.button(gtx, b, label, primary, enabled)
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
 }
 
 func (v *view) warpTab(gtx C) D {
 	v.updateConnections(gtx)
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, v.title("Подключения"), layout.Flexed(1, func(gtx C) D {
-		return v.list(gtx, &v.warpPage, 1, func(gtx C, _ int) D { return layout.Inset{Right: 10, Bottom: 12}.Layout(gtx, v.connectionsBody) })
-	}), vspace(12), layout.Rigid(func(gtx C) D {
-		return layout.Flex{Alignment: layout.Middle}.Layout(gtx, layout.Rigid(func(gtx C) D {
-			return v.compactButton(gtx, &v.connections.saveTop, "Применить", true, v.connections.applyDone == nil && !v.connections.importing())
-		}), hspace(14), layout.Flexed(1, func(gtx C) D {
-			c := colMuted
-			if v.connections.failed {
-				c = colRed
-			}
-			return v.label(12, c, v.connections.message).Layout(gtx)
+	busy := v.connections.applyDone != nil || v.connections.importing() || v.connections.speedRunning
+	msgColor := colGreen
+	if v.connections.failed {
+		msgColor = colRed
+	} else if busy {
+		msgColor = colMuted
+	}
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		v.title("Подключения"),
+		layout.Flexed(1, func(gtx C) D {
+			return v.list(gtx, &v.warpPage, 1, func(gtx C, _ int) D {
+				return layout.Inset{Right: 10, Bottom: 12}.Layout(gtx, v.connectionsBody)
+			})
+		}),
+		vspace(10),
+		layout.Rigid(func(gtx C) D {
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(func(gtx C) D {
+					return v.button(gtx, &v.connections.saveTop, "Применить", true, !busy)
+				}),
+				hspace(10),
+				layout.Rigid(func(gtx C) D {
+					return v.button(gtx, &v.connections.reset, "Отменить изменения", false, !busy)
+				}),
+				hspace(14),
+				layout.Flexed(1, func(gtx C) D {
+					l := v.label(13, msgColor, v.connections.message)
+					l.Font.Typeface = fonts.UI
+					return l.Layout(gtx)
+				}))
 		}))
-	}), vspace(6))
 }

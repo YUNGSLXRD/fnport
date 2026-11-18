@@ -45,9 +45,9 @@ type epicResult struct {
 // would send the request through the router's VPN and hide what the ISP does
 func publicLookup(host string) netip.Addr {
 	for _, server := range []string{"77.88.8.8:53", "8.8.8.8:53"} {
+		ap := netip.MustParseAddrPort(server)
 		r := &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			var d net.Dialer
-			return d.DialContext(ctx, "udp", server)
+			return wnet.DialUDP(ctx, ap)
 		}}
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		ips, _ := r.LookupNetIP(ctx, "ip4", host)

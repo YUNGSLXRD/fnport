@@ -153,7 +153,8 @@ function renderNow(running, stats) {
 			: _('active: probing ports for new connections') ]);
 		rows.push([ _('Whitelist fake'), !n.fake ? _('off')
 			: (n.fake_off_until ? _('%s, off until %s: it breaks connections on this network').format(n.fake, clock(n.fake_off_until))
-				: (n.standby ? _('%s, not needed while standing by').format(n.fake) : n.fake)) ]);
+				: (n.standby ? _('%s, not needed while standing by').format(n.fake)
+					: (n.ttl ? '%s (TTL %d)'.format(n.fake, n.ttl) : n.fake))) ]);
 		if (n.probe_off_until)
 			rows.push([ _('Handshake probes'), _('paused until %s: the server limits replies to this address').format(clock(n.probe_off_until)) ]);
 		rows.push([ _('Version'), '%s, %s %s'.format(n.version, _('started at'), clock(n.started)) ]);

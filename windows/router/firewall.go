@@ -31,8 +31,8 @@ func firewallRules(c routerConfig, voice []string) (string, error) {
 	fmt.Fprintf(&b, `table inet fnport_connections {
  comment "fnport-connections/v1";
  set lan { type ifname; elements = { %s }; }
- set clients4 { type ipv4_addr; flags interval,timeout; auto-merge; timeout 5s; }
- set clients_mac { type ether_addr; flags timeout; timeout 5s; }
+ set clients4 { type ipv4_addr; flags interval,timeout; auto-merge; timeout 6s; }
+ set clients_mac { type ether_addr; flags timeout; timeout 6s; }
  set services4 { type ipv4_addr; flags timeout; }
  set discord4 { type ipv4_addr; flags timeout; }
  set voice4 { type ipv4_addr; flags interval; auto-merge; }

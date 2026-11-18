@@ -74,8 +74,9 @@ func (win *window) run() {
 			n++
 			st, _ := win.g.ctl.state()
 			running, _, _, wait := win.g.check.state()
-			if c := changes.Load(); c != last || (st == stateOn && win.v.tab == tabSummary && n%2 == 0) ||
-				(win.v.tab == tabMain && (running || wait > 0) && n%2 == 0) {
+			if c := changes.Load(); c != last ||
+				(st == stateOn && (win.v.tab == tabSummary || win.v.tab == tabWarp) && n%2 == 0) ||
+				(win.v.tab == tabSettings && (running || wait > 0) && n%2 == 0) {
 				last = c
 				win.w.Invalidate()
 			}

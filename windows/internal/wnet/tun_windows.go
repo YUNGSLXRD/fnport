@@ -15,6 +15,9 @@ import (
 // the adapter's own address; Windows uses it as the source of what it routes into the adapter
 var tunAddr = netip.MustParsePrefix("10.254.77.2/24")
 
+// TunDNSAddr is the on-link IPv4 address on the Wintun subnet used by fnport's in-process DNS broker.
+var TunDNSAddr = netip.MustParseAddr("10.254.77.1")
+
 type wintunDev struct {
 	nt    *tun.NativeTun
 	luid  winipcfg.LUID
@@ -46,8 +49,14 @@ func (d *wintunDev) AddRoute(p netip.Prefix) error {
 }
 
 // OpenTun creates the adapter (removed again on Close, or when this process ends) and routes
-// the given networks into it
+// the given networks into it.
 func OpenTun(name string, routes []netip.Prefix) (Dev, netip.Addr, error) {
+	return OpenTunWithDNS(name, routes, nil)
+}
+
+// OpenTunWithDNS creates the adapter, optionally configures interface DNS servers on it,
+// and installs the initial IPv4 routes.
+func OpenTunWithDNS(name string, routes []netip.Prefix, dns []netip.Addr) (Dev, netip.Addr, error) {
 	if p := WintunMissing(); p != "" {
 		return nil, netip.Addr{}, errors.New(p)
 	}
@@ -75,8 +84,17 @@ func OpenTun(name string, routes []netip.Prefix) (Dev, netip.Addr, error) {
 	ipif.ManagedAddressConfigurationSupported = false
 	ipif.OtherStatefulConfigurationSupported = false
 	ipif.NLMTU = 1420
+	if len(dns) > 0 {
+		ipif.UseAutomaticMetric = false
+		ipif.Metric = 5
+	}
 	if err := ipif.Set(); err != nil {
 		return fail("настройки адаптера", err)
+	}
+	if len(dns) > 0 {
+		if err := luid.SetDNS(windows.AF_INET, dns, nil); err != nil {
+			return fail("DNS адаптера", err)
+		}
 	}
 	for _, r := range routes {
 		if err := luid.AddRoute(r, netip.IPv4Unspecified(), 0); err != nil {

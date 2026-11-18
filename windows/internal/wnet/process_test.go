@@ -112,7 +112,7 @@ func TestMatchProcessOwner(t *testing.T) {
 		{"UDP duplicates same owner", 17, []processRow{udp(src.String(), 42), udp(src.String(), 42)}, 42, nil},
 		{"UDP unknown PID veto", 17, []processRow{udp(src.String(), 42), udp("0.0.0.0:54321", 0)}, 0, ErrOwnerAmbiguous},
 		{"UDP possible dual stack competitor", 17, []processRow{udp(src.String(), 42), udp("[::]:54321", 43)}, 0, ErrOwnerAmbiguous},
-		{"UDP IPv6 wildcard alone cannot prove IPv4", 17, []processRow{udp("[::]:54321", 42)}, 0, ErrOwnerNotFound},
+		{"UDP dual stack sole owner", 17, []processRow{udp("[::]:54321", 42)}, 42, nil},
 		{"UDP mapped IPv4", 17, []processRow{udp("[::ffff:192.0.2.1]:54321", 42)}, 42, nil},
 	}
 	for _, tt := range tests {

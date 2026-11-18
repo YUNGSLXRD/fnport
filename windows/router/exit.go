@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/YUNGSLXRD/fnport/windows/internal/vpn"
 )
 
 type exitReport struct {
@@ -14,19 +16,16 @@ type exitReport struct {
 	Bytes   int64
 }
 
-var preferredColos = map[string]string{"HEL": "FI", "TKU": "FI", "TMP": "FI", "ARN": "SE", "GOT": "SE", "WAW": "PL", "KRK": "PL", "GDN": "PL", "WRO": "PL", "POZ": "PL", "RIX": "LV", "TLL": "EE", "TAY": "EE", "FRA": "DE", "MUC": "DE", "BER": "DE", "TXL": "DE", "HAM": "DE", "DUS": "DE", "STR": "DE"}
-
 func exitTier(colo string) int {
-	switch preferredColos[colo] {
-	case "FI", "SE", "PL", "LV", "EE":
-		return 0
-	case "DE":
-		return 1
-	default:
-		return -1
-	}
+	return vpn.WarpExitTier(colo)
 }
-func chooseExit(ctx context.Context, endpoints []string, window time.Duration, probe func(context.Context, string) (exitReport, error)) (string, exitReport, error) {
+
+func chooseExit(
+	ctx context.Context,
+	endpoints []string,
+	window time.Duration,
+	probe func(context.Context, string) (exitReport, error),
+) (string, exitReport, error) {
 	var best exitReport
 	chosen := ""
 	attemptCtx := ctx
@@ -39,7 +38,9 @@ func chooseExit(ctx context.Context, endpoints []string, window time.Duration, p
 		if err != nil || attemptCtx.Err() != nil || report.Bytes < 1<<20 || report.RTT <= 0 || exitTier(report.Colo) < 0 {
 			continue
 		}
-		report.Country = preferredColos[report.Colo]
+		if c := vpn.ColoCountry[report.Colo]; c != "" {
+			report.Country = c
+		}
 		if exitTier(report.Colo) == 0 {
 			preferred++
 			if preferred == 1 {
@@ -48,7 +49,7 @@ func chooseExit(ctx context.Context, endpoints []string, window time.Duration, p
 				attemptCtx = bounded
 			}
 		}
-		if chosen == "" || exitTier(report.Colo) < exitTier(best.Colo) || exitTier(report.Colo) == exitTier(best.Colo) && report.RTT < best.RTT {
+		if chosen == "" || vpn.BetterWarpExit(report.Colo, report.RTT, best.Colo, best.RTT) {
 			chosen, best = endpoint, report
 		}
 	}
