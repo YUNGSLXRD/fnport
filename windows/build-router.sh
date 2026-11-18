@@ -4,12 +4,13 @@ cd "$(dirname "$0")"
 version=${1:-dev}
 case "$version" in *[!A-Za-z0-9._-]*|'') echo 'Invalid version' >&2; exit 1;; esac
 export CGO_ENABLED=0 GOTOOLCHAIN=local
+cp ../fnport/files/quic_initial_*.bin internal/fakes/
 mkdir -p dist/router-build/tmp dist/router-build/gocache
 export TMPDIR="$PWD/dist/router-build/tmp" GOCACHE="$PWD/dist/router-build/gocache"
 work=$(mktemp -d "$PWD/dist/router-build/bundle.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 printf '%s\n' 'fnport router connection helper, source: https://github.com/YUNGSLXRD/fnport' "Version: $version" 'Native AmneziaWG: github.com/amnezia-vpn/amneziawg-go/v3 v3.1.20261116' 'WARP registration/TLS fingerprint: wgcf, ViRb3 (MIT)' > "$work/SOURCES.txt"
-cat ../LICENSE third_party/wgcf-LICENSE.txt > "$work/LICENSES.txt"
+cat ../LICENSE third_party/wgcf-LICENSE.txt ../fnport/files/quic_initial_vk_com.bin.LICENSE > "$work/LICENSES.txt"
 go_license="$(go env GOROOT)/LICENSE"
 [ -f "$go_license" ] || go_license="$(go env GOROOT)/../LICENSE"
 cat "$go_license" >> "$work/LICENSES.txt"
