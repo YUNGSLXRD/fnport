@@ -831,3 +831,86 @@ func parseSOCKSURI(text string) (json.RawMessage, string, string, error) {
 	}
 	return b, "socks", unescapeFragment(u.Fragment), nil
 }
+
+// ExtractServerEndpoint extracts the remote server host, port, and whether the outbound
+// uses UDP-only transport (Hysteria 2, QUIC, WireGuard/AmneziaWG) from a JSON profile.
+func ExtractServerEndpoint(protocol string, raw json.RawMessage, final string) (host string, port uint16, udpOnly bool, ok bool) {
+	if len(raw) == 0 {
+		return "", 0, false, false
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var obj map[string]any
+	if dec.Decode(&obj) != nil || obj == nil {
+		return "", 0, false, false
+	}
+
+	if ep, hasEP := obj["endpoint"].(string); hasEP && ep != "" {
+		h, pStr, err := net.SplitHostPort(strings.TrimSpace(ep))
+		if err != nil || h == "" {
+			return "", 0, false, false
+		}
+		p, err := strconv.ParseUint(pStr, 10, 16)
+		if err != nil || p == 0 {
+			return "", 0, false, false
+		}
+		return h, uint16(p), true, true
+	}
+
+	target := obj
+	if outs, hasOut := obj["outbounds"].([]any); hasOut {
+		target = nil
+		for _, item := range outs {
+			m, isMap := item.(map[string]any)
+			if !isMap {
+				continue
+			}
+			tag, _ := m["tag"].(string)
+			if final != "" && tag == final {
+				target = m
+				break
+			}
+			if target == nil && m["server"] != nil {
+				target = m
+			}
+		}
+		if target == nil {
+			return "", 0, false, false
+		}
+	}
+
+	srv, _ := target["server"].(string)
+	srv = strings.TrimSpace(srv)
+	if srv == "" {
+		return "", 0, false, false
+	}
+	var portNum int
+	switch pv := target["server_port"].(type) {
+	case json.Number:
+		n, err := pv.Int64()
+		if err == nil {
+			portNum = int(n)
+		}
+	case float64:
+		portNum = int(pv)
+	case string:
+		n, err := strconv.Atoi(pv)
+		if err == nil {
+			portNum = n
+		}
+	}
+	if portNum < 1 || portNum > 65535 {
+		return "", 0, false, false
+	}
+	typ, _ := target["type"].(string)
+	if typ == "" {
+		typ = protocol
+	}
+	isUDP := typ == "hysteria2" || typ == "wireguard" || typ == "amneziawg"
+	if tr, isMap := target["transport"].(map[string]any); isMap {
+		if trType, _ := tr["type"].(string); trType == "quic" {
+			isUDP = true
+		}
+	}
+	return srv, uint16(portNum), isUDP, true
+}

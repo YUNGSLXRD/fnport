@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/YUNGSLXRD/fnport/windows/internal/awgnet"
-	"github.com/amnezia-vpn/amneziawg-go/device"
+	"github.com/amnezia-vpn/amneziawg-go/v3/device"
 	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"

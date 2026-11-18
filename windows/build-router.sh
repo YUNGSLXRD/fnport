@@ -8,7 +8,7 @@ mkdir -p dist/router-build/tmp dist/router-build/gocache
 export TMPDIR="$PWD/dist/router-build/tmp" GOCACHE="$PWD/dist/router-build/gocache"
 work=$(mktemp -d "$PWD/dist/router-build/bundle.XXXXXX")
 trap 'rm -rf "$work"' EXIT
-printf '%s\n' 'fnport router connection helper, source: https://github.com/YUNGSLXRD/fnport' "Version: $version" 'Native AmneziaWG: github.com/amnezia-vpn/amneziawg-go v1.0.4' 'WARP registration/TLS fingerprint: wgcf, ViRb3 (MIT)' > "$work/SOURCES.txt"
+printf '%s\n' 'fnport router connection helper, source: https://github.com/YUNGSLXRD/fnport' "Version: $version" 'Native AmneziaWG: github.com/amnezia-vpn/amneziawg-go/v3 v3.1.20261116' 'WARP registration/TLS fingerprint: wgcf, ViRb3 (MIT)' > "$work/SOURCES.txt"
 cat ../LICENSE third_party/wgcf-LICENSE.txt > "$work/LICENSES.txt"
 go_license="$(go env GOROOT)/LICENSE"
 [ -f "$go_license" ] || go_license="$(go env GOROOT)/../LICENSE"

@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"image"
+	"image/color"
 	"strings"
+	"sync"
 	"time"
 
 	"gioui.org/layout"
@@ -28,15 +31,26 @@ type configFileResult struct {
 	err     error
 }
 
+type profilePingState struct {
+	RTT     time.Duration
+	Checked bool
+	OK      bool
+}
+
 type connectionImportView struct {
-	subscription  *connectionSubscription
-	fetch         widget.Clickable
-	importFile    widget.Clickable
-	serverList    widget.List
-	serverChoices []widget.Clickable
-	fetchDone     chan subscriptionResult
-	fileDone      chan configFileResult
-	cancel        context.CancelFunc
+	subscription       *connectionSubscription
+	fetch              widget.Clickable
+	pingBtn            widget.Clickable
+	importFile         widget.Clickable
+	serverList         widget.List
+	serverChoices      []widget.Clickable
+	fetchDone          chan subscriptionResult
+	fileDone           chan configFileResult
+	pingDone           chan map[string]profilePingState
+	nodePings          map[string]profilePingState
+	pinging            bool
+	initialPingPending bool
+	cancel             context.CancelFunc
 }
 
 func (cv *connectionView) importing() bool {
@@ -59,6 +73,98 @@ func (cv *connectionView) loadSubscriptionView(s *connectionSubscription) {
 	}
 }
 
+func profilePingLook(st profilePingState, pinging bool) (color.NRGBA, string) {
+	if !st.Checked {
+		if pinging {
+			return colGray, "…"
+		}
+		return colGray, ""
+	}
+	if !st.OK || st.RTT <= 0 {
+		return colGray, "—"
+	}
+	return vpnPingColor(st.RTT)
+}
+
+func (cv *connectionView) startProfilePings() {
+	i := &cv.imports
+	if i.pinging {
+		return
+	}
+	text := strings.TrimSpace(cv.config.Text())
+
+	if cv.mode == "vpn" && subscriptionURL(text) {
+		if i.subscription == nil || i.subscription.URL != text || len(i.subscription.Nodes) == 0 {
+			return
+		}
+		nodes := append([]subscriptionNode(nil), i.subscription.Nodes...)
+		i.pinging = true
+		done := make(chan map[string]profilePingState, 1)
+		i.pingDone = done
+		go func() {
+			sem := make(chan struct{}, 6)
+			var wg sync.WaitGroup
+			var mu sync.Mutex
+			out := make(map[string]profilePingState, len(nodes))
+			for _, node := range nodes {
+				node := node
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					sem <- struct{}{}
+					defer func() { <-sem }()
+					ctx, cancel := context.WithTimeout(context.Background(), 2600*time.Millisecond)
+					defer cancel()
+					d, err := measureProfilePingFunc(ctx, node.Protocol, node.Config, "")
+					mu.Lock()
+					out[node.ID] = profilePingState{RTT: d, Checked: true, OK: err == nil && d > 0}
+					mu.Unlock()
+				}()
+			}
+			wg.Wait()
+			done <- out
+			changes.Add(1)
+		}()
+		return
+	}
+
+	if cv.mode != "vpn" || text == "" || text == "null" {
+		return
+	}
+	var raw json.RawMessage
+	proto := cv.protocol
+	if strings.Contains(text, "://") {
+		b, det, _, err := vpn.ImportProfile(text, false)
+		if err != nil || len(b) == 0 {
+			return
+		}
+		raw = b
+		if det != "" {
+			proto = det
+		}
+	} else {
+		b, err := connectionConfigJSON(text, false)
+		if err != nil || len(b) == 0 {
+			return
+		}
+		raw = b
+	}
+	finalTag := strings.TrimSpace(cv.final.Text())
+	key := "single:" + text
+	i.pinging = true
+	done := make(chan map[string]profilePingState, 1)
+	i.pingDone = done
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2600*time.Millisecond)
+		defer cancel()
+		d, err := measureProfilePingFunc(ctx, proto, raw, finalTag)
+		done <- map[string]profilePingState{
+			key: {RTT: d, Checked: true, OK: err == nil && d > 0},
+		}
+		changes.Add(1)
+	}()
+}
+
 func (v *view) updateConnectionImports(gtx C) {
 	cv := &v.connections
 	i := &cv.imports
@@ -68,6 +174,21 @@ func (v *view) updateConnectionImports(gtx C) {
 			i.subscription.Selected = i.subscription.Nodes[n].ID
 			cv.protocol = i.subscription.Nodes[n].Protocol
 			cv.final.SetText("")
+		}
+	}
+
+	if i.pingDone != nil {
+		select {
+		case res := <-i.pingDone:
+			i.pingDone = nil
+			i.pinging = false
+			if i.nodePings == nil {
+				i.nodePings = make(map[string]profilePingState, len(res))
+			}
+			for k, val := range res {
+				i.nodePings[k] = val
+			}
+		default:
 		}
 	}
 
@@ -92,6 +213,9 @@ func (v *view) updateConnectionImports(gtx C) {
 				if result.subscription.Skipped > 0 {
 					cv.message = fmt.Sprintf("Доступно серверов: %d (пропущено неподдерживаемых: %d). Выберите сервер и нажмите «Применить».",
 						len(result.subscription.Nodes), result.subscription.Skipped)
+				}
+				if v.open != nil || v.autoPingConnections {
+					cv.startProfilePings()
 				}
 			}
 		default:
@@ -122,6 +246,17 @@ func (v *view) updateConnectionImports(gtx C) {
 			}
 		default:
 		}
+	}
+
+	if i.initialPingPending {
+		i.initialPingPending = false
+		if v.open != nil || v.autoPingConnections {
+			cv.startProfilePings()
+		}
+	}
+
+	if i.pingBtn.Clicked(gtx) && !i.pinging && !cv.importing() {
+		cv.startProfilePings()
 	}
 
 	if i.fetch.Clicked(gtx) && !cv.importing() && cv.applyDone == nil {
@@ -167,13 +302,13 @@ func (v *view) updateConnectionImports(gtx C) {
 		startFilePick(true)
 	}
 
-	if cv.importing() {
+	if cv.importing() || i.pinging {
 		gtx.Execute(op.InvalidateCmd{At: gtx.Now.Add(100 * time.Millisecond)})
 	}
 }
 
 // subscriptionServerList renders an inline Opus-styled server list inside a rounded container
-// with country flags and protocol badges (zero floating popup overlap).
+// with country flags, server ping, and protocol badges (zero floating popup overlap).
 func (v *view) subscriptionServerList(gtx C) D {
 	cv := &v.connections
 	i := &cv.imports
@@ -193,6 +328,7 @@ func (v *view) subscriptionServerList(gtx C) D {
 					active := node.ID == s.Selected
 					cleanTitle, country := vpn.DisplayNodeName(node.Name)
 					badge := vpn.ProtocolShortBadge(node.Protocol)
+					pCol, pTxt := profilePingLook(i.nodePings[node.ID], i.pinging)
 
 					return layout.Inset{Bottom: 2}.Layout(gtx, func(gtx C) D {
 						return i.serverChoices[idx].Layout(gtx, func(gtx C) D {
@@ -234,6 +370,12 @@ func (v *view) subscriptionServerList(gtx C) D {
 												}
 												lbl.MaxLines = 1
 												return lbl.Layout(gtx)
+											}),
+											layout.Rigid(func(gtx C) D {
+												if pTxt == "" {
+													return D{}
+												}
+												return layout.Inset{Left: 8}.Layout(gtx, bold(v.label(12, pCol, pTxt)).Layout)
 											}),
 											hspace(8),
 											layout.Rigid(func(gtx C) D {

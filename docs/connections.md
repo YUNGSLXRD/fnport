@@ -8,7 +8,7 @@
 
 - **Нативно внутри fnport** (без внешнего процесса на Windows, через собственный TUN на OpenWrt):
   - **WARP** — получение ключа в один клик или импорт готового `.conf`;
-  - **AmneziaWG / WireGuard** — импорт стандартного `.conf` WireGuard или `.conf` AmneziaWG 1.5 (параметры `Jc`, `Jmin`, `Jmax`, `S1`, `S2`, `H1–H4`, `I1–I5`).
+  - **AmneziaWG / WireGuard** — импорт стандартного `.conf` WireGuard или `.conf` AmneziaWG 1.5 / 2.0 / 3.0 (параметры `Jc`, `Jmin`, `Jmax`, `S1–S4`, числа и диапазоны `H1–H4`, `I1–I5`, `HeaderProtectionKey`, `ContentPaddingAddition`, `RandomTrailers`, `DisableCookies`).
 - **Через минимальное статическое ядро `sing-box 1.14.4`** (без `libcronet.dll`):
   - **VLESS** (`vless://` — Reality, TLS, XTLS Vision, WebSocket `?ed=`, HTTPUpgrade, HTTP/2, gRPC, QUIC);
   - **Hysteria 2** (`hy2://`, `hysteria2://` — Salamander, port hopping `mport`);

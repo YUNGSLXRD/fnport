@@ -111,28 +111,30 @@ type view struct {
 
 	onTheme func(dark bool) // the window repaints its title bar
 
-	th         *material.Theme
-	logo       paint.ImageOp
-	tab        tab
-	prevTab    tab
-	tabSince   time.Time
-	tabs       [5]widget.Clickable
-	navItemH   int
-	animating  bool // a transition is running: ask for the next frame
-	dark       bool
-	themed     bool
-	sysLight   bool
-	sysChecked time.Time
-	ringAnim   colorAnim
-	glyphAnim  colorAnim
-	fillAnim   colorAnim
-	titleAnim  colorAnim
-	pingNow    widget.Clickable
-	copyReport widget.Clickable
-	openIssue  widget.Clickable
-	reportMsg  string
-	scrolls    map[*widget.List]*smoothScroll
-	theme      widget.Enum
+	th                  *material.Theme
+	logo                paint.ImageOp
+	tab                 tab
+	prevTab             tab
+	tabSince            time.Time
+	tabs                [5]widget.Clickable
+	navItemH            int
+	animating           bool // a transition is running: ask for the next frame
+	dark                bool
+	themed              bool
+	sysLight            bool
+	sysChecked          time.Time
+	ringAnim            colorAnim
+	glyphAnim           colorAnim
+	fillAnim            colorAnim
+	titleAnim           colorAnim
+	pingNow             widget.Clickable
+	connProbe           widget.Clickable
+	autoPingConnections bool
+	copyReport          widget.Clickable
+	openIssue           widget.Clickable
+	reportMsg           string
+	scrolls             map[*widget.List]*smoothScroll
+	theme               widget.Enum
 
 	power      widget.Clickable
 	flowList   widget.List
@@ -624,10 +626,34 @@ func exitName(colo string) string {
 	return vpn.ExitName(colo)
 }
 
+func vpnPingColor(d time.Duration) (color.NRGBA, string) {
+	if d <= 0 {
+		return colGray, "—"
+	}
+	ms := max(int64(1), d.Milliseconds())
+	switch {
+	case d < 90*time.Millisecond:
+		return colGreen, fmt.Sprintf("%d мс", ms)
+	case d < 160*time.Millisecond:
+		return colYellow, fmt.Sprintf("%d мс", ms)
+	default:
+		return colRed, fmt.Sprintf("%d мс", ms)
+	}
+}
+
 func (v *view) connectionMainCard(gtx C) D {
 	s := v.ctl.settings()
 	migrateLegacyWarp(&s)
 	cs := s.Connection
+	probing := v.ctl.connectionProbing()
+	if v.connProbe.Clicked(gtx) && !probing {
+		v.ctl.probeConnectionNow()
+		probing = true
+	}
+	if probing {
+		gtx.Execute(op.InvalidateCmd{At: gtx.Now.Add(120 * time.Millisecond)})
+	}
+
 	title := vpn.ProtocolLabel(cs.Protocol)
 	if cs.Subscription != nil {
 		if n := cs.Subscription.ActiveNode(); n != nil {
@@ -640,21 +666,31 @@ func (v *view) connectionMainCard(gtx C) D {
 
 	dotC := colYellow
 	status := v.ctl.connectionStatus()
+	canProbe := true
 	if cs.Protocol == "warp" {
 		if w := v.ctl.warpTunnel(); w != nil {
 			dotC = colGreen
 			status = fmt.Sprintf("подключён, открыто соединений: %d", w.conns.Load())
-		} else if strings.HasPrefix(status, "не подключился") {
-			dotC = colRed
-		} else if status == "" {
-			status = "ищет выход…"
+		} else {
+			canProbe = false
+			if strings.HasPrefix(status, "не подключился") {
+				dotC = colRed
+			} else if status == "" {
+				status = "ищет выход…"
+			}
 		}
 	} else {
 		if strings.HasPrefix(status, "ядро завершилось") {
 			dotC = colRed
+			canProbe = false
 		} else {
 			dotC = colGreen
 		}
+	}
+
+	probeLabel := "Проверить"
+	if probing {
+		probeLabel = "Проверяю…"
 	}
 
 	exit := v.ctl.connectionExit()
@@ -664,20 +700,52 @@ func (v *view) connectionMainCard(gtx C) D {
 				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 					layout.Rigid(func(gtx C) D { return dot(gtx, dotC, 10) }), hspace(10),
 					layout.Rigid(bold(v.label(14, colText, title)).Layout), hspace(10),
-					layout.Flexed(1, v.label(13, colMuted, status).Layout))
+					layout.Flexed(1, v.label(13, colMuted, status).Layout),
+					layout.Rigid(func(gtx C) D {
+						if !canProbe {
+							return D{}
+						}
+						return v.smallButton(gtx, &v.connProbe, probeLabel, !probing)
+					}))
 			}),
 		}
-		if exit != nil && exit.Colo != "" {
+
+		if exit != nil {
+			isWARP := cs.Protocol == "warp"
+			loc := vpn.FormatExitLocation(*exit, isWARP)
 			cc := exit.Country
-			if cc == "" {
+			if cc == "" && exit.Colo != "" {
 				cc = vpn.ColoCountry[exit.Colo]
 			}
-			kids = append(kids, vspace(8), layout.Rigid(func(gtx C) D {
-				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-					layout.Rigid(v.label(13, colMuted, "Выход:").Layout), hspace(8),
-					layout.Rigid(func(gtx C) D { return drawFlag(gtx, cc, 13) }), hspace(7),
-					layout.Rigid(v.label(13, colText, exitName(exit.Colo)).Layout))
-			}))
+			pingDur := exit.ServerPing
+			if pingDur <= 0 && (isWARP || cs.Protocol == "amneziawg") {
+				pingDur = exit.RTT
+			}
+			if loc != "" || pingDur > 0 {
+				kids = append(kids, vspace(8), layout.Rigid(func(gtx C) D {
+					row := []layout.FlexChild{
+						layout.Rigid(v.label(13, colMuted, "Выход:").Layout),
+						hspace(8),
+					}
+					if cc != "" {
+						row = append(row,
+							layout.Rigid(func(gtx C) D { return drawFlag(gtx, cc, 13) }),
+							hspace(7),
+						)
+					}
+					if loc == "" {
+						loc = "локация уточняется"
+					}
+					row = append(row, layout.Flexed(1, v.label(13, colText, loc).Layout))
+					if pingDur > 0 {
+						pCol, pTxt := vpnPingColor(pingDur)
+						row = append(row, hspace(10), layout.Rigid(bold(v.label(13, pCol, pTxt)).Layout))
+					}
+					return layout.Flex{Alignment: layout.Middle}.Layout(gtx, row...)
+				}))
+			}
+		} else if probing && cs.Protocol != "warp" {
+			kids = append(kids, vspace(8), layout.Rigid(v.label(12, colMuted, "Определяю страну, город и пинг до сервера…").Layout))
 		}
 		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
 	})

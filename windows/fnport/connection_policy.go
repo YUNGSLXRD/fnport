@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -62,6 +63,7 @@ type connectionRouter struct {
 	always      atomic.Bool
 	conns       atomic.Int64
 	fails       atomic.Int64
+	probing     atomic.Bool
 	exitReport  atomic.Pointer[vpn.ExitReport]
 	ownerLookup func(uint8, netip.AddrPort, netip.AddrPort) (wnet.ProcessOwner, error)
 }
@@ -152,23 +154,91 @@ func (r *connectionRouter) works() bool {
 	return false
 }
 
-// probeExit resolves exit location via Cloudflare's trace endpoint for non-WARP tunnels.
+var measureProfilePingFunc = measureProfilePing
+
+func measureProfilePing(ctx context.Context, protocol string, raw json.RawMessage, final string) (time.Duration, error) {
+	host, port, udpOnly, ok := vpn.ExtractServerEndpoint(protocol, raw, final)
+	if !ok {
+		return 0, errors.New("no_endpoint")
+	}
+	var ip netip.Addr
+	if parsed, err := netip.ParseAddr(host); err == nil && parsed.Is4() {
+		ip = parsed
+	} else {
+		ips := lookupAllContext(ctx, host)
+		if len(ips) == 0 {
+			return 0, errors.New("dns_failed")
+		}
+		ip = ips[0]
+	}
+	return vpn.PingEndpoint(
+		ctx,
+		netip.AddrPortFrom(ip, port),
+		udpOnly,
+		wnet.DialTCP,
+		func(cctx context.Context, ap netip.AddrPort) (net.Conn, error) {
+			return wnet.DialUDP(cctx, ap)
+		},
+	)
+}
+
+// probeExit resolves exit country/city via GeoIP and measures one-shot server ping for non-WARP tunnels.
 func (r *connectionRouter) probeExit(ctx context.Context) {
 	if r == nil || r.settings.Protocol == "warp" {
 		return
 	}
-	tctx, cancel := context.WithTimeout(ctx, 8*time.Second)
-	defer cancel()
-	rep, err := vpn.TraceExit(tctx, func(cctx context.Context, addr string) (net.Conn, error) {
-		ap, e := netip.ParseAddrPort(addr)
-		if e != nil {
-			return nil, e
-		}
-		return r.dial(cctx, ap, false)
-	})
-	if err == nil {
-		r.exitReport.Store(&rep)
+	if !r.probing.CompareAndSwap(false, true) {
+		return
+	}
+	changes.Add(1)
+	defer func() {
+		r.probing.Store(false)
 		changes.Add(1)
+	}()
+
+	tctx, cancel := context.WithTimeout(ctx, 9*time.Second)
+	defer cancel()
+
+	var (
+		wg        sync.WaitGroup
+		geoRep    vpn.ExitReport
+		geoErr    error
+		srvPing   time.Duration
+		srvPingOK bool
+	)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		if d, err := measureProfilePingFunc(tctx, r.settings.Protocol, r.settings.Config, r.settings.Final); err == nil && d > 0 {
+			srvPing, srvPingOK = d, true
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		geoRep, geoErr = vpn.ProbeVPNExit(tctx, func(cctx context.Context, host string, port uint16) (net.Conn, error) {
+			var ip netip.Addr
+			if parsed, e := netip.ParseAddr(host); e == nil && parsed.Is4() {
+				ip = parsed
+			} else {
+				ips := lookupAllContext(cctx, host)
+				if len(ips) == 0 {
+					return nil, errors.New("geoip_dns_failed")
+				}
+				ip = ips[0]
+			}
+			return r.dial(cctx, netip.AddrPortFrom(ip, port), false)
+		})
+	}()
+	wg.Wait()
+
+	if geoErr == nil || srvPingOK {
+		if prev := r.exitReport.Load(); geoErr != nil && prev != nil {
+			geoRep = *prev
+		}
+		if srvPingOK {
+			geoRep.ServerPing = srvPing
+		}
+		r.exitReport.Store(&geoRep)
 	}
 }
 
@@ -231,8 +301,12 @@ func connectionContext(parent context.Context) (context.Context, context.CancelF
 func (c *controller) connectionStatus() string {
 	c.mu.Lock()
 	t := c.tcp
+	ext := c.extExit
 	c.mu.Unlock()
 	if t == nil || t.connection == nil {
+		if ext != nil {
+			return "готово к работе"
+		}
 		return "Подключение выключено."
 	}
 	r := t.connection
@@ -253,11 +327,8 @@ func (c *controller) connectionStatus() string {
 		}
 	}
 	n := r.conns.Load()
-	if rep := r.exitReport.Load(); rep != nil && rep.Colo != "" {
-		return fmt.Sprintf("подключено (%s), соединений: %d", vpn.ExitName(rep.Colo), n)
-	}
 	if n > 0 {
-		return fmt.Sprintf("активно, соединений: %d", n)
+		return fmt.Sprintf("подключено, соединений: %d", n)
 	}
 	return "готово к работе"
 }
@@ -265,7 +336,11 @@ func (c *controller) connectionStatus() string {
 func (c *controller) connectionExit() *vpn.ExitReport {
 	c.mu.Lock()
 	t := c.tcp
+	ext := c.extExit
 	c.mu.Unlock()
+	if ext != nil {
+		return ext
+	}
 	if t == nil || t.connection == nil {
 		return nil
 	}
@@ -277,12 +352,66 @@ func (c *controller) connectionExit() *vpn.ExitReport {
 				if country == "" {
 					country = loc
 				}
-				return &vpn.ExitReport{Colo: colo, Country: country, Address: ip}
+				return &vpn.ExitReport{
+					Colo:    colo,
+					Country: country,
+					Address: ip,
+					RTT:     time.Duration(w.lastRTT.Load()),
+				}
 			}
 		}
 		return nil
 	}
 	return t.connection.exitReport.Load()
+}
+
+func (c *controller) connectionProbing() bool {
+	c.mu.Lock()
+	t := c.tcp
+	c.mu.Unlock()
+	if t == nil || t.connection == nil {
+		return false
+	}
+	if t.connection.settings.Protocol == "warp" {
+		if w := t.warp.Load(); w != nil {
+			return w.probing.Load()
+		}
+		return false
+	}
+	return t.connection.probing.Load()
+}
+
+func (c *controller) probeConnectionNow() {
+	c.mu.Lock()
+	t := c.tcp
+	c.mu.Unlock()
+	if t == nil || t.connection == nil {
+		return
+	}
+	r := t.connection
+	if r.settings.Protocol == "warp" {
+		w := t.warp.Load()
+		if w == nil || !w.probing.CompareAndSwap(false, true) {
+			return
+		}
+		changes.Add(1)
+		go func() {
+			defer func() {
+				w.probing.Store(false)
+				changes.Add(1)
+			}()
+			ctx, cancel := context.WithTimeout(t.ctx, 6*time.Second)
+			defer cancel()
+			t0 := time.Now()
+			if conn, err := w.dialContext(ctx, netip.MustParseAddrPort("1.1.1.1:443")); err == nil {
+				w.lastRTT.Store(int64(time.Since(t0)))
+				_ = conn.Close()
+			}
+			_ = w.exitContext(ctx)
+		}()
+		return
+	}
+	go r.probeExit(t.ctx)
 }
 
 func (c *controller) nativeAWGActive() bool {

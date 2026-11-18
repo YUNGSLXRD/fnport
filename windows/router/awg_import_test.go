@@ -38,7 +38,7 @@ func TestImportAmneziaWGConf(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Address != "10.9.0.2" || s.Endpoint != "vpn.example.org:51820" || s.MTU != 1420 || s.H1 != 123456789 || s.S1 != 15 || s.Keepalive == nil || *s.Keepalive != 0 || s.PresharedKey == "" || s.I1 != "<b 0x0102>" {
+	if s.Address != "10.9.0.2" || s.Endpoint != "vpn.example.org:51820" || s.MTU != 1420 || s.H1 != "123456789" || s.S1 != 15 || s.Keepalive == nil || *s.Keepalive != 0 || s.PresharedKey == "" || s.I1 != "<b 0x0102>" {
 		t.Fatal("import lost protocol parameters")
 	}
 }
@@ -46,7 +46,7 @@ func TestImportAmneziaWGConf(t *testing.T) {
 func TestImportAmneziaWGConfRejectsUnsupportedWithoutLeaks(t *testing.T) {
 	for _, replace := range []struct{ old, new string }{
 		{"Jc = 4", "Jc = private-secret"}, {"[Peer]", "[Peer]\nPostUp = private-secret"},
-		{"H1 = 123456789", "H1 = 123-456-private-secret"}, {"S1 = 15", "S3 = 30"},
+		{"H1 = 123456789", "H1 = 123-456-private-secret"}, {"S1 = 15", "S3 = 2000"},
 		{"Endpoint = vpn.example.org:51820", "Endpoint = private-secret:bad"},
 		{"[Peer]", "[Peer]\n[Peer]"}, {"MTU = 1420", "MTU = 1500"},
 	} {
@@ -58,12 +58,12 @@ func TestImportAmneziaWGConfRejectsUnsupportedWithoutLeaks(t *testing.T) {
 }
 
 func TestRouterPacketTemplatesAreBoundedBeforeNativeParser(t *testing.T) {
-	for _, input := range []string{"<r -1>", "<r 1001>", "<>", "<1>", "<b 0xzz>", "<c><c>", "<wt -1><r 4>", "<wt 4000><wt 4000><r 1>", "<r 1000><r 1000>", "prefix<r 1>"} {
+	for _, input := range []string{"<r -1>", "<r 1001>", "<rc 1001>", "<rd -1>", "<>", "<1>", "<b 0xzz>", "<c><c>", "<wt -1><r 4>", "<wt 4000><wt 4000><r 1>", "<r 1000><r 1000>", "prefix<r 1>"} {
 		if validPacketTemplate(input) {
 			t.Fatal("unsafe template accepted")
 		}
 	}
-	for _, input := range []string{"<b 0x1234><r 100><c><t>", "<r 1>", "<wt 15><b 0xF>"} {
+	for _, input := range []string{"<b 0x1234><r 100><c><t>", "<r 1>", "<rc 16><rd 8>", "<wt 15><b 0xF>"} {
 		if !validPacketTemplate(input) {
 			t.Fatal("valid template rejected")
 		}

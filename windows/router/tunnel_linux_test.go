@@ -17,8 +17,8 @@ import (
 	"time"
 
 	"github.com/YUNGSLXRD/fnport/windows/internal/awgnet"
-	"github.com/amnezia-vpn/amneziawg-go/conn"
-	"github.com/amnezia-vpn/amneziawg-go/device"
+	"github.com/amnezia-vpn/amneziawg-go/v3/conn"
+	"github.com/amnezia-vpn/amneziawg-go/v3/device"
 )
 
 func TestLinuxKernelTunnelRoundTrip(t *testing.T) {
@@ -65,7 +65,7 @@ func TestLinuxKernelTunnelRoundTrip(t *testing.T) {
 	}()
 	c := routerTestConfig()
 	c.Protocol, c.WAN = "amneziawg", "lo"
-	c.Native = nativeAWGSettings{PrivateKey: base64.StdEncoding.EncodeToString(clientKey.Bytes()), PeerKey: base64.StdEncoding.EncodeToString(serverKey.PublicKey().Bytes()), Address: "10.77.0.2", Endpoint: "127.0.0.1:34789", H1: 1, H2: 2, H3: 3, H4: 4}
+	c.Native = nativeAWGSettings{PrivateKey: base64.StdEncoding.EncodeToString(clientKey.Bytes()), PeerKey: base64.StdEncoding.EncodeToString(serverKey.PublicKey().Bytes()), Address: "10.77.0.2", Endpoint: "127.0.0.1:34789", H1: "1", H2: "2", H3: "3", H4: "4"}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	client, err := newNativeTunnel(ctx, c)

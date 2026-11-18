@@ -196,10 +196,10 @@ func RegisterWARP(
 		Jc:         4,
 		Jmin:       40,
 		Jmax:       70,
-		H1:         1,
-		H2:         2,
-		H3:         3,
-		H4:         4,
+		H1:         "1",
+		H2:         "2",
+		H3:         "3",
+		H4:         "4",
 	}
 	return cfg, nil
 }

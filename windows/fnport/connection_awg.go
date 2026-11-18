@@ -3,10 +3,8 @@ package main
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net"
 	"net/netip"
-	"strconv"
 
 	"github.com/YUNGSLXRD/fnport/windows/internal/vpn"
 )
@@ -36,8 +34,7 @@ func nativeAWGConfig(raw json.RawMessage, set settings, ttlNow func() int) (*war
 	if err != nil {
 		return nil, err
 	}
-	customHeaders := s.S1 != 0 || s.S2 != 0 || s.H1 != 1 || s.H2 != 2 || s.H3 != 3 || s.H4 != 4 ||
-		s.I2 != "" || s.I3 != "" || s.I4 != "" || s.I5 != ""
+	customHeaders := s.HasCustomParameters()
 	ws := warpSettings{
 		exclusive:  customHeaders,
 		PrivateKey: s.PrivateKey,
@@ -56,15 +53,9 @@ func nativeAWGConfig(raw json.RawMessage, set settings, ttlNow func() int) (*war
 		return nil, errors.New("не удалось создать устройство WireGuard / AmneziaWG")
 	}
 	if customHeaders {
-		cfg := fmt.Sprintf("s1=%d\ns2=%d\nh1=%d\nh2=%d\nh3=%d\nh4=%d\n", s.S1, s.S2, s.H1, s.H2, s.H3, s.H4)
-		for i, v := range []string{s.I1, s.I2, s.I3, s.I4, s.I5} {
-			if v != "" {
-				cfg += fmt.Sprintf("i%d=%s\n", i+1, v)
-			}
-		}
-		if err := w.dev.IpcSet(cfg); err != nil {
+		if err := w.dev.IpcSet(s.DeviceIPC("")); err != nil {
 			w.close()
-			return nil, errors.New("не приняты параметры AmneziaWG 1.5")
+			return nil, errors.New("не приняты параметры AmneziaWG")
 		}
 	}
 
@@ -78,17 +69,7 @@ func nativeAWGConfig(raw json.RawMessage, set settings, ttlNow func() int) (*war
 		}
 		endpoint = net.JoinHostPort(ips[0].String(), port)
 	}
-	keepalive := 15
-	if s.Keepalive != nil {
-		keepalive = *s.Keepalive
-	}
-	peerCfg := "replace_peers=true\npublic_key=" + w.peer + "\nendpoint=" + endpoint +
-		"\nallowed_ip=0.0.0.0/0\npersistent_keepalive_interval=" + strconv.Itoa(keepalive) + "\n"
-	if s.PresharedKey != "" {
-		key, _ := b64hex(s.PresharedKey)
-		peerCfg += "preshared_key=" + key + "\n"
-	}
-	if err := w.dev.IpcSet(peerCfg); err != nil {
+	if err := w.dev.IpcSet(s.PeerIPC(w.peer, endpoint, 15)); err != nil {
 		w.close()
 		return nil, errors.New("не приняты параметры пира WireGuard / AmneziaWG")
 	}

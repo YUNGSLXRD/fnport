@@ -1,8 +1,10 @@
 package vpn
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"net"
 	"net/netip"
 	"testing"
 	"time"
@@ -39,7 +41,7 @@ PersistentKeepalive = 25
 	if cfg.Address != "10.66.66.2" || cfg.Endpoint != "vpn.example.com:51820" || cfg.Jc != 0 {
 		t.Fatalf("unexpected plain WG config: %+v", cfg)
 	}
-	if cfg.H1 != 1 || cfg.H2 != 2 || cfg.H3 != 3 || cfg.H4 != 4 {
+	if cfg.H1 != "1" || cfg.H2 != "2" || cfg.H3 != "3" || cfg.H4 != "4" {
 		t.Fatalf("unexpected default H1..H4: %+v", cfg)
 	}
 
@@ -73,6 +75,61 @@ AllowedIPs = 0.0.0.0/0
 	}
 	if awg.Jc != 4 || awg.I1 != "<b 0xc700000001>" || awg.I2 != "" {
 		t.Fatalf("unexpected AWG config: %+v", awg)
+	}
+
+	// AmneziaWG 2.0 / 3.0 config with S3, S4, H1..H4 ranges, <rc>/<rd>, HeaderProtectionKey, ContentPaddingAddition
+	awg3Conf := `[Interface]
+PrivateKey = ` + testPrivKey + `
+Address = 10.8.1.2/32
+Jc = 5
+Jmin = 64
+Jmax = 256
+S1 = 24
+S2 = 32
+S3 = 16
+S4 = 20
+H1 = 100000-199999
+H2 = 200000-299999
+H3 = 300000-399999
+H4 = 400000-499999
+HeaderProtectionKey = ` + testPrivKey + `
+ContentPaddingAddition = 0-64
+RandomTrailers = true
+DisableCookies = true
+I1 = <b 0xc000000001><rc 12><rd 8><t>
+
+[Peer]
+PublicKey = ` + testPubKey + `
+Endpoint = 198.51.100.20:443
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 15-25
+`
+	awg3, err := ParseWGConf(awg3Conf)
+	if err != nil {
+		t.Fatalf("ParseWGConf AWG 2.0/3.0 failed: %v", err)
+	}
+	if awg3.S3 != 16 || awg3.S4 != 20 || awg3.H1 != "100000-199999" || !awg3.RandomTrailers || !awg3.DisableCookies || awg3.KeepaliveRange != "15-25" {
+		t.Fatalf("unexpected AWG 2.0/3.0 parsed fields: %+v", awg3)
+	}
+	rawAWG3, err := json.Marshal(awg3)
+	if err != nil {
+		t.Fatalf("Marshal AWG 2.0/3.0 failed: %v", err)
+	}
+	roundtripAWG3, err := ParseAWGJSON(rawAWG3)
+	if err != nil || roundtripAWG3.H2 != "200000-299999" || roundtripAWG3.ContentPaddingAddition != "0-64" {
+		t.Fatalf("AWG 2.0/3.0 JSON roundtrip failed: %v %+v", err, roundtripAWG3)
+	}
+	// Overlapping H1/H2 ranges must be rejected
+	badOverlap := roundtripAWG3
+	badOverlap.H2 = "150000-250000"
+	if badOverlap.Validate(true) == nil {
+		t.Fatal("overlapping H1/H2 ranges were accepted")
+	}
+	// HeaderProtectionKey requires S1..S4 >= 12
+	badPadding := roundtripAWG3
+	badPadding.S3 = 8
+	if badPadding.Validate(true) == nil {
+		t.Fatal("HeaderProtectionKey with S3 < 12 was accepted")
 	}
 
 	// WARP config fills default Jc/Jmin/Jmax and clears engage.cloudflareclient.com
@@ -233,5 +290,54 @@ func TestBeaconExclusionAndLeaseCache(t *testing.T) {
 	}
 	if got := cache.ServiceOf(netip.MustParseAddr("162.159.135.232")); got != "discord" {
 		t.Fatalf("ServiceOf = %q, want discord", got)
+	}
+}
+
+func TestExtractEndpointAndExitFormatting(t *testing.T) {
+	vlessRaw, proto, _, err := ImportProfile("vless://11111111-2222-3333-4444-555555555555@nl.example.com:8443?security=reality&pbk=test&sni=www.microsoft.com#NL", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, port, udpOnly, ok := ExtractServerEndpoint(proto, vlessRaw, "")
+	if !ok || host != "nl.example.com" || port != 8443 || udpOnly {
+		t.Fatalf("ExtractServerEndpoint VLESS: ok=%v host=%q port=%d udpOnly=%v", ok, host, port, udpOnly)
+	}
+
+	hy2Raw, hyProto, _, err := ImportProfile("hy2://secret@de.example.com:443?sni=de.example.com#DE", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host2, port2, udpOnly2, ok2 := ExtractServerEndpoint(hyProto, hy2Raw, "")
+	if !ok2 || host2 != "de.example.com" || port2 != 443 || !udpOnly2 {
+		t.Fatalf("ExtractServerEndpoint HY2: ok=%v host=%q port=%d udpOnly=%v", ok2, host2, port2, udpOnly2)
+	}
+
+	loc := FormatExitLocation(ExitReport{Country: "NL", City: "Amsterdam"}, false)
+	if loc != "Амстердам, Нидерланды" {
+		t.Fatalf("FormatExitLocation = %q, want 'Амстердам, Нидерланды'", loc)
+	}
+	locSG := FormatExitLocation(ExitReport{Country: "SG", City: "Singapore"}, false)
+	if locSG != "Сингапур" {
+		t.Fatalf("FormatExitLocation SG = %q, want 'Сингапур'", locSG)
+	}
+	locWARP := FormatExitLocation(ExitReport{Colo: "RIX", Country: "LV"}, true)
+	if locWARP != "Рига (RIX), Латвия" {
+		t.Fatalf("FormatExitLocation WARP = %q, want 'Рига (RIX), Латвия'", locWARP)
+	}
+
+	rtt, err := PingEndpoint(
+		context.Background(),
+		netip.MustParseAddrPort("198.51.100.10:443"),
+		false,
+		func(ctx context.Context, ap netip.AddrPort) (net.Conn, error) {
+			time.Sleep(3 * time.Millisecond)
+			c1, c2 := net.Pipe()
+			_ = c2.Close()
+			return c1, nil
+		},
+		nil,
+	)
+	if err != nil || rtt < time.Millisecond {
+		t.Fatalf("PingEndpoint failed: rtt=%v err=%v", rtt, err)
 	}
 }

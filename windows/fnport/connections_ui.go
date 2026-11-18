@@ -277,6 +277,7 @@ func (cv *connectionView) load(s settings) {
 	cv.traceProcesses.SetText(strings.Join(s.Trace.Processes, "\n"))
 	cv.picker.open, cv.tracePicker.open = false, false
 	cv.picker.list.Axis, cv.tracePicker.list.Axis = layout.Vertical, layout.Vertical
+	cv.imports.initialPingPending = true
 	cv.loaded = true
 }
 
@@ -887,23 +888,25 @@ func (v *view) statusBanner(gtx C, dotColor color.NRGBA, headline string, exit *
 							layout.Flexed(1, v.label(13, colText, headline).Layout))
 					}),
 				}
-				if exit != nil && exit.Colo != "" {
-					city := vpn.ExitName(exit.Colo)
+				if exit != nil {
+					loc := vpn.FormatExitLocation(*exit, v.connections.mode == "warp")
 					cc := exit.Country
-					if cc == "" {
+					if cc == "" && exit.Colo != "" {
 						cc = vpn.ColoCountry[exit.Colo]
 					}
-					kids = append(kids, vspace(8), layout.Rigid(func(gtx C) D {
-						return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-							hspace(18),
-							layout.Rigid(v.label(12, colMuted, "Выход:").Layout),
-							hspace(7),
-							layout.Rigid(func(gtx C) D { return drawFlag(gtx, cc, 12) }),
-							hspace(7),
-							layout.Rigid(v.label(12, colText, city).Layout),
-							hspace(8),
-							layout.Rigid(mono(v.label(12, colMuted, exit.Address)).Layout))
-					}))
+					if loc != "" {
+						kids = append(kids, vspace(8), layout.Rigid(func(gtx C) D {
+							return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+								hspace(18),
+								layout.Rigid(v.label(12, colMuted, "Выход:").Layout),
+								hspace(7),
+								layout.Rigid(func(gtx C) D { return drawFlag(gtx, cc, 12) }),
+								hspace(7),
+								layout.Rigid(v.label(12, colText, loc).Layout),
+								hspace(8),
+								layout.Rigid(mono(v.label(12, colMuted, exit.Address)).Layout))
+						}))
+					}
 				}
 				return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
 			})
@@ -999,7 +1002,7 @@ func (v *view) awgModePanel(gtx C) D {
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(func(gtx C) D {
 			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-				layout.Flexed(1, v.label(12, colMuted, "Конфигурация AmneziaWG 1.5 или обычного WireGuard (.conf)").Layout),
+				layout.Flexed(1, v.label(12, colMuted, "Конфигурация AmneziaWG или WireGuard (.conf)").Layout),
 				layout.Rigid(func(gtx C) D { return v.connectionCheck(gtx, &cv.showConfig, "Показать") }),
 				hspace(10),
 				layout.Rigid(func(gtx C) D {
@@ -1024,13 +1027,16 @@ func (v *view) vpnModePanel(gtx C) D {
 	text := strings.TrimSpace(cv.config.Text())
 	kind := vpn.DetectInputKind(text)
 	headerLabel := "Ссылка vless://, hy2://, ss://, trojan://, socks5:// или подписка https://"
+	canSinglePing := false
 	switch kind {
 	case "subscription":
 		headerLabel = "Ссылка подписки"
 	case "vless", "hysteria2", "shadowsocks", "trojan", "socks":
 		headerLabel = "Профиль · " + vpn.ProtocolLabel(kind)
+		canSinglePing = true
 	case "json":
 		headerLabel = "Профиль sing-box JSON"
+		canSinglePing = true
 	case "amneziawg":
 		headerLabel = "Конфигурация WireGuard / AmneziaWG (переключите вкладку выше)"
 	}
@@ -1040,19 +1046,37 @@ func (v *view) vpnModePanel(gtx C) D {
 	if sub := cv.imports.subscription; sub != nil && sub.URL == text && len(sub.Nodes) > 0 {
 		fetchLabel = "Обновить"
 	}
+	pingLabel := "Пинг"
+	if cv.imports.pinging {
+		pingLabel = "Пингую…"
+	}
+	singlePingCol, singlePingTxt := profilePingLook(cv.imports.nodePings["single:"+text], cv.imports.pinging)
 
 	kids := []layout.FlexChild{
 		layout.Rigid(func(gtx C) D {
 			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-				layout.Flexed(1, v.label(12, colMuted, headerLabel).Layout),
+				layout.Flexed(1, func(gtx C) D {
+					if canSinglePing && singlePingTxt != "" {
+						return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+							layout.Rigid(v.label(12, colMuted, headerLabel).Layout),
+							hspace(8),
+							layout.Rigid(bold(v.label(12, singlePingCol, singlePingTxt)).Layout))
+					}
+					return v.label(12, colMuted, headerLabel).Layout(gtx)
+				}),
 				layout.Rigid(func(gtx C) D { return v.connectionCheck(gtx, &cv.showConfig, "Показать") }),
 				layout.Rigid(func(gtx C) D {
-					if !isSub {
-						return D{}
+					if isSub {
+						return layout.Inset{Left: 10}.Layout(gtx, func(gtx C) D {
+							return v.smallButton(gtx, &cv.imports.fetch, fetchLabel, !cv.importing())
+						})
 					}
-					return layout.Inset{Left: 10}.Layout(gtx, func(gtx C) D {
-						return v.smallButton(gtx, &cv.imports.fetch, fetchLabel, !cv.importing())
-					})
+					if canSinglePing {
+						return layout.Inset{Left: 10}.Layout(gtx, func(gtx C) D {
+							return v.smallButton(gtx, &cv.imports.pingBtn, pingLabel, !cv.imports.pinging && !cv.importing())
+						})
+					}
+					return D{}
 				}))
 		}),
 		vspace(6),
@@ -1069,13 +1093,11 @@ func (v *view) vpnModePanel(gtx C) D {
 		kids = append(kids,
 			vspace(12),
 			layout.Rigid(func(gtx C) D {
-				activeBadge := ""
-				if n := sub.ActiveNode(); n != nil {
-					activeBadge = vpn.ProtocolLabel(n.Protocol)
-				}
 				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 					layout.Flexed(1, v.label(12, colMuted, fmt.Sprintf("%s · серверов: %d", title, len(sub.Nodes))).Layout),
-					layout.Rigid(mono(v.label(11, colGreen, activeBadge)).Layout))
+					layout.Rigid(func(gtx C) D {
+						return v.smallButton(gtx, &cv.imports.pingBtn, pingLabel, !cv.imports.pinging && !cv.importing())
+					}))
 			}),
 			vspace(6),
 			layout.Rigid(v.subscriptionServerList))

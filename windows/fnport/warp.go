@@ -23,8 +23,8 @@ import (
 	"github.com/YUNGSLXRD/fnport/windows/internal/fakes"
 	"github.com/YUNGSLXRD/fnport/windows/internal/vpn"
 	"github.com/YUNGSLXRD/fnport/windows/internal/wnet"
-	"github.com/amnezia-vpn/amneziawg-go/conn"
-	"github.com/amnezia-vpn/amneziawg-go/device"
+	"github.com/amnezia-vpn/amneziawg-go/v3/conn"
+	"github.com/amnezia-vpn/amneziawg-go/v3/device"
 )
 
 // WARP for Epic's services: login, store, downloads go through Cloudflare WARP when the ISP
@@ -293,6 +293,8 @@ type warpTunnel struct {
 	endpoint  atomic.Value
 	exitInfo  atomic.Value // string from exit()
 	exitKV    atomic.Value // [3]string: colo, loc, ip
+	lastRTT   atomic.Int64
+	probing   atomic.Bool
 	bind      *physBind
 	conns     atomic.Int64
 	fails     atomic.Int64
@@ -361,8 +363,8 @@ func newWarpDev(ws warpSettings) (*warpTunnel, error) {
 	bind := &physBind{fake: ws.fake, ttl: ws.fakeTTL, ttlNow: ws.ttlNow}
 	dev := device.NewDevice(tdev, bind, device.NewLogger(device.LogLevelSilent, ""))
 	cfg := fmt.Sprintf("private_key=%s\njc=%d\njmin=%d\njmax=%d\n", priv, ws.Jc, ws.Jmin, ws.Jmax)
-	if ws.I1 != "" {
-		cfg += "i1=" + ws.I1 + "\n"
+	if norm := vpn.NormalizePacketTemplateForV3(ws.I1); norm != "" {
+		cfg += "i1=" + norm + "\n"
 	}
 	if err := dev.IpcSet(cfg); err != nil {
 		dev.Close()
@@ -657,6 +659,7 @@ func selectWarpExit(ctx context.Context, endpoints []string, window time.Duratio
 	if warpExitTier(bestColo) == 1 {
 		logf("WARP: подходящий выход в приоритетных странах не найден, использую Германию")
 	}
+	best.lastRTT.Store(int64(bestRTT))
 	logf("WARP: выбран %s (%s), %d мс, контрольная загрузка %.1f Мбит/с", coloCity[bestColo], bestColo, bestRTT.Milliseconds(), best.download.mbps())
 	return best, nil
 }

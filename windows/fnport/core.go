@@ -103,6 +103,7 @@ type controller struct {
 	dev     wnet.Dev
 	tcp     *tcpRelay
 	eng     *engine
+	extExit *vpn.ExitReport
 	stats   statSnapshot // of the engines that ran before, added up
 	history []flowInfo   // game flows that ended, newest last
 	since   time.Time
@@ -412,9 +413,6 @@ func (c *controller) start() {
 					}
 					if tcp.dns != nil {
 						tcp.dns.refreshServiceRoutes(tcp.ctx, true)
-					}
-					if router.exitReport.Load() == nil {
-						router.probeExit(tcp.ctx)
 					}
 				}
 			}

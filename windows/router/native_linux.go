@@ -5,7 +5,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/netip"
@@ -18,9 +17,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/amnezia-vpn/amneziawg-go/conn"
-	"github.com/amnezia-vpn/amneziawg-go/device"
-	"github.com/amnezia-vpn/amneziawg-go/tun"
+	"github.com/YUNGSLXRD/fnport/windows/internal/vpn"
+	"github.com/amnezia-vpn/amneziawg-go/v3/conn"
+	"github.com/amnezia-vpn/amneziawg-go/v3/device"
+	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
 	"golang.org/x/sys/unix"
 )
 
@@ -265,18 +265,7 @@ func newNativeTunnel(ctx context.Context, c routerConfig) (*nativeTunnel, error)
 		}
 	}()
 	private, _ := b64hex(profile.PrivateKey)
-	ipc := fmt.Sprintf(
-		"private_key=%s\njc=%d\njmin=%d\njmax=%d\ns1=%d\ns2=%d\nh1=%d\nh2=%d\nh3=%d\nh4=%d\n",
-		private, profile.Jc, profile.Jmin, profile.Jmax,
-		profile.S1, profile.S2,
-		profile.H1, profile.H2, profile.H3, profile.H4,
-	)
-	for i, v := range []string{profile.I1, profile.I2, profile.I3, profile.I4, profile.I5} {
-		if v != "" {
-			ipc += fmt.Sprintf("i%d=%s\n", i+1, v)
-		}
-	}
-	if d.IpcSet(ipc) != nil {
+	if d.IpcSet(profile.DeviceIPC(private)) != nil {
 		return nil, errors.New("native_settings_rejected")
 	}
 	setupCmds := [][]string{
@@ -317,7 +306,7 @@ func (t *nativeTunnel) setDecoyI1(i1 string) error {
 	if !validPacketTemplate(i1) {
 		return errors.New("invalid_decoy_template")
 	}
-	if err := t.dev.IpcSet("i1=" + i1 + "\n"); err != nil {
+	if err := t.dev.IpcSet("i1=" + vpn.NormalizePacketTemplateForV3(i1) + "\n"); err != nil {
 		return errors.New("native_settings_rejected")
 	}
 	t.profile.I1 = i1
@@ -330,19 +319,7 @@ func (t *nativeTunnel) setEndpoint(endpoint string) error {
 		return errors.New("invalid_native_endpoint")
 	}
 	peer, _ := b64hex(t.profile.PeerKey)
-	keepalive := 15
-	if t.profile.Keepalive != nil {
-		keepalive = *t.profile.Keepalive
-	}
-	ipc := fmt.Sprintf(
-		"replace_peers=true\npublic_key=%s\nendpoint=%s\nallowed_ip=0.0.0.0/0\npersistent_keepalive_interval=%d\n",
-		peer, a.String(), keepalive,
-	)
-	if t.profile.PresharedKey != "" {
-		key, _ := b64hex(t.profile.PresharedKey)
-		ipc += "preshared_key=" + key + "\n"
-	}
-	if t.dev.IpcSet(ipc) != nil {
+	if t.dev.IpcSet(t.profile.PeerIPC(peer, a.String(), 15)) != nil {
 		return errors.New("native_peer_settings_rejected")
 	}
 	return nil

@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"image"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -124,5 +127,76 @@ func TestSubscriptionSelectionPersistsOnApply(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("subscription selection not saved")
+	}
+}
+
+func TestSubscriptionPingRunsOnceOnLoadAndByButton(t *testing.T) {
+	var calls atomic.Int32
+	oldFn := measureProfilePingFunc
+	measureProfilePingFunc = func(_ context.Context, _ string, _ json.RawMessage, _ string) (time.Duration, error) {
+		calls.Add(1)
+		return 37 * time.Millisecond, nil
+	}
+	defer func() { measureProfilePingFunc = oldFn }()
+
+	nodes, _, err := parseSubscription([]byte(testSubLinks))
+	if err != nil || len(nodes) == 0 {
+		t.Fatalf("parseSubscription: %v", err)
+	}
+	s := defaultSettings()
+	s.Connection.Enabled = true
+	s.Connection.Protocol = nodes[0].Protocol
+	s.Connection.Subscription = &connectionSubscription{
+		URL:      "https://sub.example/token",
+		Nodes:    nodes,
+		Selected: nodes[0].ID,
+	}
+
+	v := newView(newController(s), &pinger{}, &checker{}, nil, func() {})
+	v.autoPingConnections = true
+	v.connections.load(s)
+
+	router := new(input.Router)
+	frame := func() {
+		ops := new(op.Ops)
+		gtx := connectionTestContext(router, ops)
+		v.updateConnectionImports(gtx)
+		v.vpnModePanel(gtx)
+		router.Frame(ops)
+	}
+
+	// Initial frame triggers auto-ping once for all nodes in the subscription.
+	frame()
+	deadline := time.Now().Add(time.Second)
+	for v.connections.imports.pinging && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+		frame()
+	}
+	wantFirst := int32(len(nodes))
+	if got := calls.Load(); got != wantFirst {
+		t.Fatalf("initial auto-ping calls = %d, want %d", got, wantFirst)
+	}
+	if st := v.connections.imports.nodePings[nodes[0].ID]; !st.Checked || !st.OK || st.RTT != 37*time.Millisecond {
+		t.Fatalf("unexpected stored node ping: %+v", st)
+	}
+
+	// Subsequent frames must NOT re-trigger background pings.
+	for i := 0; i < 10; i++ {
+		frame()
+	}
+	if got := calls.Load(); got != wantFirst {
+		t.Fatalf("idle frames triggered extra pings: got %d, want %d", got, wantFirst)
+	}
+
+	// Clicking «Пинг» button triggers exactly one more round.
+	v.connections.imports.pingBtn.Click()
+	frame()
+	deadline = time.Now().Add(time.Second)
+	for v.connections.imports.pinging && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+		frame()
+	}
+	if got := calls.Load(); got != wantFirst*2 {
+		t.Fatalf("button ping calls = %d, want %d", got, wantFirst*2)
 	}
 }

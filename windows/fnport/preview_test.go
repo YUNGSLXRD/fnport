@@ -22,6 +22,7 @@ import (
 	"gioui.org/unit"
 	"gioui.org/widget"
 	"github.com/YUNGSLXRD/fnport/windows/internal/fakes"
+	"github.com/YUNGSLXRD/fnport/windows/internal/vpn"
 )
 
 func TestPreview(t *testing.T) {
@@ -92,7 +93,7 @@ func TestPreview(t *testing.T) {
 		tab   tab
 		st    state
 		theme string
-	}{{"main-on", tabMain, stateOn, "dark"}, {"main-off", tabMain, stateOff, "dark"}, {"summary", tabSummary, stateOn, "dark"},
+	}{{"main-on", tabMain, stateOn, "dark"}, {"main-vless", tabMain, stateOn, "dark"}, {"main-off", tabMain, stateOff, "dark"}, {"summary", tabSummary, stateOn, "dark"},
 		{"log", tabLog, stateOn, "dark"}, {"warp", tabWarp, stateOff, "dark"}, {"connections-warp", tabWarp, stateOn, "dark"},
 		{"connections-vless", tabWarp, stateOff, "dark"}, {"connections-awg", tabWarp, stateOff, "dark"},
 		{"connections-subscription", tabWarp, stateOff, "dark"}, {"connections-light", tabWarp, stateOff, "light"},
@@ -104,6 +105,26 @@ func TestPreview(t *testing.T) {
 		{"check-on", tabSettings, stateOn, "dark"},
 		{"readme", tabMain, stateOn, "dark"}} {
 		ctl.set = defaultSettings()
+		ctl.extExit = nil
+		ping.list = []beacon{
+			{City: "Франкфурт", Addr: netip.MustParseAddr("3.66.90.173"), RTT: 61 * time.Millisecond, Checked: true},
+			{City: "Лондон", Addr: netip.MustParseAddr("18.133.162.202"), RTT: 112 * time.Millisecond, Checked: true},
+			{City: "Париж", Addr: netip.MustParseAddr("13.37.148.3"), Checked: true},
+		}
+		if tc.name == "main-vless" {
+			ping.list = []beacon{
+				{City: "Франкфурт", Addr: netip.MustParseAddr("3.66.90.173"), RTT: 61 * time.Millisecond, Checked: true},
+				{City: "Лондон", Addr: netip.MustParseAddr("18.133.162.202"), RTT: 78 * time.Millisecond, Checked: true},
+				{City: "Европа", Addr: netip.MustParseAddr("51.44.10.20"), RTT: 69 * time.Millisecond, Checked: true},
+			}
+			ctl.set.Connection.Enabled = true
+			ctl.set.Connection.Protocol = "vless"
+			ctl.extExit = &vpn.ExitReport{
+				Country:    "NL",
+				City:       "Амстердам",
+				ServerPing: 38 * time.Millisecond,
+			}
+		}
 		if tc.name == "readme" {
 			// the README's picture: a calm evening, no freezes left in the last minutes
 			for i := range ctl.history {
@@ -131,8 +152,12 @@ func TestPreview(t *testing.T) {
 				ctl.set = s
 				v.connections.load(s)
 			case "connections-vless":
+				vlessLink := "vless://00000000-0000-4000-8000-000000000001@nl.example.org:443?security=reality&pbk=test&sni=www.microsoft.com#NL"
 				v.connections.setMode("vpn", time.Time{})
-				v.connections.config.SetText("vless://00000000-0000-4000-8000-000000000001@nl.example.org:443?security=reality&pbk=test&sni=www.microsoft.com#NL")
+				v.connections.config.SetText(vlessLink)
+				v.connections.imports.nodePings = map[string]profilePingState{
+					"single:" + vlessLink: {RTT: 38 * time.Millisecond, Checked: true, OK: true},
+				}
 				v.connections.discord.Value = true
 			case "connections-subscription", "connections-light":
 				richSub := "vless://00000000-0000-4000-8000-000000000001@de.example:443?security=tls#\U0001F1E9\U0001F1EA%20%D0%93%D0%B5%D1%80%D0%BC%D0%B0%D0%BD%D0%B8%D1%8F%20%C2%B7%20Frankfurt\n" +
@@ -143,6 +168,12 @@ func TestPreview(t *testing.T) {
 				v.connections.setMode("vpn", time.Time{})
 				v.connections.config.SetText("https://subscription.example/profile")
 				v.connections.loadSubscriptionView(&connectionSubscription{URL: "https://subscription.example/profile", Title: "Европа", Nodes: nodes, Selected: nodes[0].ID})
+				v.connections.imports.nodePings = map[string]profilePingState{
+					nodes[0].ID: {RTT: 41 * time.Millisecond, Checked: true, OK: true},
+					nodes[1].ID: {RTT: 38 * time.Millisecond, Checked: true, OK: true},
+					nodes[2].ID: {RTT: 29 * time.Millisecond, Checked: true, OK: true},
+					nodes[3].ID: {RTT: 47 * time.Millisecond, Checked: true, OK: true},
+				}
 				v.connections.discord.Value = true
 			case "connections-awg":
 				v.connections.setMode("amneziawg", time.Time{})

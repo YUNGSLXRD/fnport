@@ -13,7 +13,7 @@ import (
 
 	"github.com/YUNGSLXRD/fnport/windows/internal/awgnet"
 	"github.com/YUNGSLXRD/fnport/windows/internal/fakes"
-	"github.com/amnezia-vpn/amneziawg-go/device"
+	"github.com/amnezia-vpn/amneziawg-go/v3/device"
 )
 
 // our tunnel (junk packets, the physical bind, our stack) against a plain WireGuard peer on
@@ -126,5 +126,96 @@ func warpLoopback(t *testing.T, i1 string) {
 	back := make([]byte, len(out))
 	if _, err := io.ReadFull(c, back); err != nil || string(back) != string(out) {
 		t.Fatalf("echo of 1 MB: %v", err)
+	}
+}
+
+func TestAmneziaWG2And3TunnelLoopback(t *testing.T) {
+	key := func() (*ecdh.PrivateKey, string, string) {
+		k, _ := ecdh.X25519().GenerateKey(rand.Reader)
+		return k, base64.StdEncoding.EncodeToString(k.Bytes()), hex.EncodeToString(k.Bytes())
+	}
+	srvKey, _, srvHex := key()
+	cliKey, cliB64, _ := key()
+	_, hpB64, hpHex := key()
+	port := 52045
+
+	sdev, snet, err := awgnet.New(netip.MustParseAddr("10.9.1.1"), 1280)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := device.NewDevice(sdev, &physBind{}, device.NewLogger(device.LogLevelSilent, ""))
+	defer srv.Close()
+	srvIPC := fmt.Sprintf("private_key=%s\nlisten_port=%d\ns1=24\ns2=28\ns3=16\ns4=20\nh1=100000-199999\nh2=200000-299999\nh3=300000-399999\nh4=400000-499999\nheader_protection_key=%s\ncontent_padding_addition=0-32\nrandom_trailers=true\ndisable_cookies=true\npublic_key=%s\nallowed_ip=10.9.1.2/32\n",
+		srvHex, port, hpHex, hex.EncodeToString(cliKey.PublicKey().Bytes()))
+	if err := srv.IpcSet(srvIPC); err != nil {
+		t.Fatalf("srv IpcSet: %v", err)
+	}
+	if err := srv.Up(); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := snet.ListenTCP(443)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() { io.Copy(c, c); c.Close() }()
+		}
+	}()
+
+	conf := fmt.Sprintf(`[Interface]
+PrivateKey = %s
+Address = 10.9.1.2/32
+Jc = 3
+Jmin = 40
+Jmax = 90
+S1 = 24
+S2 = 28
+S3 = 16
+S4 = 20
+H1 = 100000-199999
+H2 = 200000-299999
+H3 = 300000-399999
+H4 = 400000-499999
+HeaderProtectionKey = %s
+ContentPaddingAddition = 0-32
+RandomTrailers = true
+DisableCookies = true
+I1 = <b 0xc000000001><rc 8><rd 4><t>
+
+[Peer]
+PublicKey = %s
+Endpoint = 127.0.0.1:%d
+AllowedIPs = 0.0.0.0/0
+`, cliB64, hpB64, base64.StdEncoding.EncodeToString(srvKey.PublicKey().Bytes()), port)
+
+	raw, err := importAWGConf(conf)
+	if err != nil {
+		t.Fatalf("importAWGConf: %v", err)
+	}
+	set := defaultSettings()
+	set.Fake = ""
+	w, err := nativeAWGConfig(raw, set, nil)
+	if err != nil {
+		t.Fatalf("nativeAWGConfig: %v", err)
+	}
+	defer w.close()
+
+	c, err := w.dial(netip.MustParseAddrPort("10.9.1.1:443"))
+	if err != nil {
+		t.Fatalf("AWG 3.0 dial: %v", err)
+	}
+	defer c.Close()
+	c.SetDeadline(time.Now().Add(8 * time.Second))
+	msg := []byte("amneziawg 2.0 + 3.0 header protection roundtrip")
+	go c.Write(msg)
+	got := make([]byte, len(msg))
+	if _, err := io.ReadFull(c, got); err != nil || string(got) != string(msg) {
+		t.Fatalf("AWG 3.0 echo mismatch: %v", err)
 	}
 }

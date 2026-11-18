@@ -11,8 +11,8 @@ import (
 	"gioui.org/unit"
 )
 
-// Small country flags drawn as shapes: Windows has no flag emoji, and the program's font none.
-// The countries of Epic's European servers and of Cloudflare's points near Russia.
+// Small country flags drawn as vector shapes: Windows has no flag emoji, and the bundled font has none.
+// Covers Epic's European servers, Cloudflare's points near Russia, and common VPS locations.
 
 type flagSpec struct {
 	stripes  []color.NRGBA // equal stripes
@@ -41,15 +41,21 @@ var flags = map[string]flagSpec{
 	"PL": {stripes: []color.NRGBA{fWhite, rgb(0xdc143c)}},
 	"LU": {stripes: []color.NRGBA{rgb(0xed2939), fWhite, rgb(0x00a1de)}},
 	"AM": {stripes: []color.NRGBA{rgb(0xd90012), rgb(0x0033a0), rgb(0xf2a800)}},
+	"RS": {stripes: []color.NRGBA{rgb(0xc6363c), rgb(0x0c4076), fWhite}},
+	"SK": {stripes: []color.NRGBA{fWhite, rgb(0x0b4ea2), rgb(0xee1c25)}},
+	"SI": {stripes: []color.NRGBA{fWhite, rgb(0x005ce6), rgb(0xed1c24)}},
+	"HR": {stripes: []color.NRGBA{rgb(0xff0000), fWhite, rgb(0x171796)}},
 	"FR": {stripes: []color.NRGBA{rgb(0x0055a4), fWhite, rgb(0xef4135)}, vertical: true},
 	"IT": {stripes: []color.NRGBA{rgb(0x009246), fWhite, rgb(0xce2b37)}, vertical: true},
 	"IE": {stripes: []color.NRGBA{rgb(0x169b62), fWhite, rgb(0xff883e)}, vertical: true},
 	"BE": {stripes: []color.NRGBA{rgb(0x000000), rgb(0xfae042), rgb(0xed2939)}, vertical: true},
 	"RO": {stripes: []color.NRGBA{rgb(0x002b7f), rgb(0xfcd116), rgb(0xce1126)}, vertical: true},
+	"MD": {stripes: []color.NRGBA{rgb(0x0046ae), rgb(0xffd200), rgb(0xcc092f)}, vertical: true},
 	"SE": {cross: []color.NRGBA{rgb(0x006aa7), rgb(0xfecc00)}},
 	"FI": {cross: []color.NRGBA{fWhite, rgb(0x002f6c)}},
 	"DK": {cross: []color.NRGBA{rgb(0xc8102e), fWhite}},
 	"NO": {cross: []color.NRGBA{rgb(0xba0c2f), fWhite, rgb(0x00205b)}},
+	"IS": {cross: []color.NRGBA{rgb(0x02529c), fWhite, rgb(0xdc1e35)}},
 	"CH": {draw: drawSwiss},
 	"GB": {draw: drawUK},
 	"EU": {draw: drawEU},
@@ -60,12 +66,12 @@ var flags = map[string]flagSpec{
 	}},
 	"KZ": {draw: func(gtx C, w, h float32) {
 		rect(gtx, 0, 0, w, h, rgb(0x00afca))
-		disc(gtx, w/2, h/2, h*0.22, rgb(0xfec50c))
+		fillCircle(gtx, w/2, h/2, h*0.22, rgb(0xfec50c))
 	}},
 	"TR": {draw: func(gtx C, w, h float32) {
 		rect(gtx, 0, 0, w, h, rgb(0xe30a17))
-		disc(gtx, w*0.4, h/2, h*0.25, fWhite)
-		disc(gtx, w*0.45, h/2, h*0.2, rgb(0xe30a17))
+		fillCircle(gtx, w*0.41, h/2, h*0.25, fWhite)
+		fillCircle(gtx, w*0.465, h/2, h*0.2, rgb(0xe30a17))
 	}},
 	"CZ": {draw: func(gtx C, w, h float32) {
 		rect(gtx, 0, 0, w, h/2, fWhite)
@@ -78,6 +84,108 @@ var flags = map[string]flagSpec{
 		p.Close()
 		paint.FillShape(gtx.Ops, rgb(0x11457e), clip.Outline{Path: p.End()}.Op())
 	}},
+	"JP": {draw: func(gtx C, w, h float32) {
+		rect(gtx, 0, 0, w, h, fWhite)
+		fillCircle(gtx, w/2, h/2, h*0.28, rgb(0xbc002d))
+	}},
+	"SG": {draw: func(gtx C, w, h float32) {
+		rect(gtx, 0, 0, w, h/2, rgb(0xef3340))
+		rect(gtx, 0, h/2, w, h, fWhite)
+		fillCircle(gtx, w*0.24, h*0.25, h*0.16, fWhite)
+		fillCircle(gtx, w*0.285, h*0.25, h*0.14, rgb(0xef3340))
+	}},
+	"CA": {draw: func(gtx C, w, h float32) {
+		red := rgb(0xd80621)
+		rect(gtx, 0, 0, w, h, fWhite)
+		rect(gtx, 0, 0, w*0.26, h, red)
+		rect(gtx, w*0.74, 0, w, h, red)
+		fillCircle(gtx, w/2, h/2, h*0.18, red)
+	}},
+	"AE": {draw: func(gtx C, w, h float32) {
+		rect(gtx, 0, 0, w, h/3, rgb(0x00732f))
+		rect(gtx, 0, h/3, w, h*2/3, fWhite)
+		rect(gtx, 0, h*2/3, w, h, rgb(0x000000))
+		rect(gtx, 0, 0, w*0.26, h, rgb(0xff0000))
+	}},
+	"GE": {draw: func(gtx C, w, h float32) {
+		red := rgb(0xff0000)
+		rect(gtx, 0, 0, w, h, fWhite)
+		t := h * 0.2
+		rect(gtx, w/2-t/2, 0, w/2+t/2, h, red)
+		rect(gtx, 0, h/2-t/2, w, h/2+t/2, red)
+	}},
+	"BY": {draw: func(gtx C, w, h float32) {
+		rect(gtx, 0, 0, w, h*2/3, rgb(0xc8313e))
+		rect(gtx, 0, h*2/3, w, h, rgb(0x4aa657))
+		rect(gtx, 0, 0, w*0.14, h, fWhite)
+	}},
+	"HK": {draw: func(gtx C, w, h float32) {
+		rect(gtx, 0, 0, w, h, rgb(0xde2910))
+		fillCircle(gtx, w/2, h/2, h*0.22, fWhite)
+		fillCircle(gtx, w/2, h/2, h*0.1, rgb(0xde2910))
+	}},
+	"IL": {draw: func(gtx C, w, h float32) {
+		blue := rgb(0x0038b8)
+		rect(gtx, 0, 0, w, h, fWhite)
+		rect(gtx, 0, h*0.12, w, h*0.26, blue)
+		rect(gtx, 0, h*0.74, w, h*0.88, blue)
+		fillCircle(gtx, w/2, h/2, h*0.16, blue)
+		fillCircle(gtx, w/2, h/2, h*0.09, fWhite)
+	}},
+	"IN": {draw: func(gtx C, w, h float32) {
+		rect(gtx, 0, 0, w, h/3, rgb(0xff9933))
+		rect(gtx, 0, h/3, w, h*2/3, fWhite)
+		rect(gtx, 0, h*2/3, w, h, rgb(0x138808))
+		fillCircle(gtx, w/2, h/2, h*0.12, rgb(0x000080))
+	}},
+	"BR": {draw: func(gtx C, w, h float32) {
+		rect(gtx, 0, 0, w, h, rgb(0x009c3b))
+		var p clip.Path
+		p.Begin(gtx.Ops)
+		p.MoveTo(f32.Pt(w/2, h*0.12))
+		p.LineTo(f32.Pt(w*0.88, h/2))
+		p.LineTo(f32.Pt(w/2, h*0.88))
+		p.LineTo(f32.Pt(w*0.12, h/2))
+		p.Close()
+		paint.FillShape(gtx.Ops, rgb(0xffdf00), clip.Outline{Path: p.End()}.Op())
+		fillCircle(gtx, w/2, h/2, h*0.2, rgb(0x002776))
+	}},
+	"KR": {draw: func(gtx C, w, h float32) {
+		rect(gtx, 0, 0, w, h, fWhite)
+		fillCircle(gtx, w/2, h/2, h*0.24, rgb(0xcd2e3a))
+		var p clip.Path
+		p.Begin(gtx.Ops)
+		p.MoveTo(f32.Pt(w/2-h*0.24, h/2))
+		p.LineTo(f32.Pt(w/2+h*0.24, h/2))
+		p.LineTo(f32.Pt(w/2+h*0.24, h))
+		p.LineTo(f32.Pt(w/2-h*0.24, h))
+		p.Close()
+		defer clip.Outline{Path: p.End()}.Op().Push(gtx.Ops).Pop()
+		fillCircle(gtx, w/2, h/2, h*0.24, rgb(0x0047a0))
+	}},
+	"PT": {draw: func(gtx C, w, h float32) {
+		rect(gtx, 0, 0, w*0.4, h, rgb(0x006600))
+		rect(gtx, w*0.4, 0, w, h, rgb(0xff0000))
+		fillCircle(gtx, w*0.4, h/2, h*0.18, rgb(0xffcc00))
+	}},
+	"GR": {draw: func(gtx C, w, h float32) {
+		blue := rgb(0x0d5eaf)
+		for i := 0; i < 9; i++ {
+			c := blue
+			if i%2 == 1 {
+				c = fWhite
+			}
+			rect(gtx, 0, h*float32(i)/9, w, h*float32(i+1)/9, c)
+		}
+		cw, ch := h*5/9, h*5/9
+		rect(gtx, 0, 0, cw, ch, blue)
+		rect(gtx, cw*2/5, 0, cw*3/5, ch, fWhite)
+		rect(gtx, 0, ch*2/5, cw, ch*3/5, fWhite)
+	}},
+	"CY": {draw: func(gtx C, w, h float32) {
+		rect(gtx, 0, 0, w, h, fWhite)
+		fillCircle(gtx, w/2, h*0.46, h*0.2, rgb(0xd57800))
+	}},
 }
 
 // cityCountry: the country of a city as the program names it
@@ -87,8 +195,20 @@ func rect(gtx C, x0, y0, x1, y1 float32, c color.NRGBA) {
 	paint.FillShape(gtx.Ops, c, clip.Rect{Min: image.Pt(int(x0+0.5), int(y0+0.5)), Max: image.Pt(int(x1+0.5), int(y1+0.5))}.Op())
 }
 
-func disc(gtx C, x, y, r float32, c color.NRGBA) {
-	paint.FillShape(gtx.Ops, c, clip.Ellipse{Min: image.Pt(int(x-r), int(y-r)), Max: image.Pt(int(x+r+0.5), int(y+r+0.5))}.Op(gtx.Ops))
+// fillCircle renders an anti-aliased sub-pixel circle via cubic Bezier curves,
+// avoiding integer pixel snapping at small flag sizes.
+func fillCircle(gtx C, cx, cy, r float32, c color.NRGBA) {
+	const k = 0.55228475
+	kr := k * r
+	var p clip.Path
+	p.Begin(gtx.Ops)
+	p.MoveTo(f32.Pt(cx, cy-r))
+	p.CubeTo(f32.Pt(cx+kr, cy-r), f32.Pt(cx+r, cy-kr), f32.Pt(cx+r, cy))
+	p.CubeTo(f32.Pt(cx+r, cy+kr), f32.Pt(cx+kr, cy+r), f32.Pt(cx, cy+r))
+	p.CubeTo(f32.Pt(cx-kr, cy+r), f32.Pt(cx-r, cy+kr), f32.Pt(cx-r, cy))
+	p.CubeTo(f32.Pt(cx-r, cy-kr), f32.Pt(cx-kr, cy-r), f32.Pt(cx, cy-r))
+	p.Close()
+	paint.FillShape(gtx.Ops, c, clip.Outline{Path: p.End()}.Op())
 }
 
 func strokeLine(gtx C, x0, y0, x1, y1, width float32, c color.NRGBA) {
@@ -119,12 +239,46 @@ func drawUK(gtx C, w, h float32) {
 	rect(gtx, 0, h/2-h*0.1, w, h/2+h*0.1, red)
 }
 
+// drawEU renders the European Union flag with a sub-pixel vector ring of 12 upright 5-pointed stars,
+// staying crisp and symmetric across all DPI scales without integer grid snapping.
 func drawEU(gtx C, w, h float32) {
-	rect(gtx, 0, 0, w, h, rgb(0x003399))
+	var bg clip.Path
+	bg.Begin(gtx.Ops)
+	bg.MoveTo(f32.Pt(0, 0))
+	bg.LineTo(f32.Pt(w, 0))
+	bg.LineTo(f32.Pt(w, h))
+	bg.LineTo(f32.Pt(0, h))
+	bg.Close()
+	paint.FillShape(gtx.Ops, rgb(0x003399), clip.Outline{Path: bg.End()}.Op())
+
+	cx, cy := w*0.5, h*0.5
+	ringR := h * 0.315
+	outerR := h * 0.072
+	innerR := outerR * 0.44
+
+	var stars clip.Path
+	stars.Begin(gtx.Ops)
 	for i := 0; i < 12; i++ {
-		a := float64(i) * math.Pi / 6
-		disc(gtx, w/2+h*0.3*float32(math.Sin(a)), h/2-h*0.3*float32(math.Cos(a)), h*0.055, rgb(0xffcc00))
+		ang := float64(i) * math.Pi / 6
+		sx := cx + ringR*float32(math.Sin(ang))
+		sy := cy - ringR*float32(math.Cos(ang))
+		for j := 0; j < 10; j++ {
+			r := outerR
+			if j%2 == 1 {
+				r = innerR
+			}
+			pa := -math.Pi/2 + float64(j)*math.Pi/5
+			px := sx + r*float32(math.Cos(pa))
+			py := sy + r*float32(math.Sin(pa))
+			if j == 0 {
+				stars.MoveTo(f32.Pt(px, py))
+			} else {
+				stars.LineTo(f32.Pt(px, py))
+			}
+		}
+		stars.Close()
 	}
+	paint.FillShape(gtx.Ops, rgb(0xffcc00), clip.Outline{Path: stars.End()}.Op())
 }
 
 func drawUS(gtx C, w, h float32) {
@@ -180,7 +334,7 @@ func drawFlag(gtx C, code string, height unit.Dp) D {
 
 // Cloudflare's points (airport codes) near Russia and in Europe, and the countries
 var coloCity = map[string]string{
-	"FRA": "Франкфурт", "AMS": "Амстердам", "ARN": "Стокгольм", "HEL": "Хельсинки", "WAW": "Варшава",
+	"FRA": "Франкфурт", "AMS": "Амстердам", "ARN": "Стокгольм", "GOT": "Гетеборг", "HEL": "Хельсинки", "WAW": "Варшава",
 	"LHR": "Лондон", "MAN": "Манчестер", "CDG": "Париж", "MRS": "Марсель", "DME": "Москва", "SVO": "Москва",
 	"LED": "Санкт-Петербург", "KJA": "Красноярск", "SVX": "Екатеринбург", "OVB": "Новосибирск", "KZN": "Казань",
 	"RIX": "Рига", "TLL": "Таллин", "VNO": "Вильнюс", "PRG": "Прага", "VIE": "Вена", "MUC": "Мюнхен",
@@ -195,7 +349,7 @@ var coloCity = map[string]string{
 // coloCountry: where Cloudflare's point is. The trace's own country ("loc") is the WARP
 // address's, and Cloudflare gives those the user's country: always RU here
 var coloCountry = map[string]string{
-	"FRA": "DE", "AMS": "NL", "ARN": "SE", "HEL": "FI", "WAW": "PL", "LHR": "GB", "MAN": "GB", "CDG": "FR",
+	"FRA": "DE", "AMS": "NL", "ARN": "SE", "GOT": "SE", "HEL": "FI", "WAW": "PL", "LHR": "GB", "MAN": "GB", "CDG": "FR",
 	"MRS": "FR", "DME": "RU", "SVO": "RU", "LED": "RU", "KJA": "RU", "SVX": "RU", "OVB": "RU", "KZN": "RU",
 	"RIX": "LV", "TLL": "EE", "VNO": "LT", "PRG": "CZ", "VIE": "AT", "MUC": "DE", "DUS": "DE", "HAM": "DE",
 	"BER": "DE", "TXL": "DE", "STR": "DE", "CPH": "DK", "OSL": "NO", "MAD": "ES", "BCN": "ES", "MXP": "IT",
@@ -210,5 +364,8 @@ var countryRU = map[string]string{
 	"DK": "Дания", "NO": "Норвегия", "ES": "Испания", "IT": "Италия", "CH": "Швейцария", "UA": "Украина",
 	"RO": "Румыния", "BG": "Болгария", "HU": "Венгрия", "TR": "Турция", "KZ": "Казахстан", "GE": "Грузия",
 	"AM": "Армения", "IE": "Ирландия", "BE": "Бельгия", "LU": "Люксембург", "US": "США",
-	"MD": "Молдова", "BY": "Беларусь", "HK": "Гонконг",
+	"MD": "Молдова", "BY": "Беларусь", "HK": "Гонконг", "SG": "Сингапур", "JP": "Япония",
+	"CA": "Канада", "AE": "ОАЭ", "IL": "Израиль", "IN": "Индия", "BR": "Бразилия", "KR": "Южная Корея",
+	"RS": "Сербия", "SK": "Словакия", "SI": "Словения", "HR": "Хорватия", "PT": "Португалия",
+	"GR": "Греция", "CY": "Кипр", "IS": "Исландия",
 }

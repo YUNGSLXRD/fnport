@@ -43,7 +43,7 @@
 - **Фейки** в папке `fakes` — те же файлы, что выше, с лицензией zapret.
 - **Библиотеки Go**, вошедшие в программу: Go (BSD-3-Clause), Gio (`gioui.org`, MIT или Unlicense, со шрифтом
   Go Mono), gVisor (Apache 2.0), библиотеки WireGuard и Wintun для Go (MIT), AmneziaWG для Go
-  (`amneziawg-go`, MIT), uTLS (`refraction-networking/utls`, BSD-3-Clause), `golang.org/x/*` (BSD-3-Clause)
+  (`amneziawg-go/v3`, MIT), uTLS (`refraction-networking/utls`, BSD-3-Clause), `golang.org/x/*` (BSD-3-Clause)
   и другие. Тексты всех лицензий собирает `windows/build.sh` и вшивает в программу.
 - **Регистрация WARP** повторяет запрос и отпечаток TLS приложения 1.1.1.1 так, как это сделано в
   [wgcf](https://github.com/ViRb3/wgcf) (ViRb3, MIT); стек TCP туннеля (`windows/internal/awgnet`) сделан по
