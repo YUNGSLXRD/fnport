@@ -8,7 +8,6 @@ import (
 	"encoding/binary"
 	"net"
 	"net/netip"
-	"sort"
 	"sync"
 	"time"
 
@@ -171,32 +170,36 @@ func Ping(host netip.Addr, packets int) time.Duration {
 	var tag [2]byte
 	rand.Read(tag[:])
 	sent := make([]time.Time, packets)
-	for i := range sent {
-		sent[i] = time.Now()
-		c.WriteToUDPAddrPort(packet(tag, i), dst)
-		time.Sleep(20 * time.Millisecond)
-	}
-	var rtts []time.Duration
+	var best time.Duration
 	buf := make([]byte, 2048)
-	c.SetReadDeadline(time.Now().Add(time.Second))
-	for {
-		n, from, err := c.ReadFromUDPAddrPort(buf)
-		if err != nil {
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+	for i := range sent {
+		payload := packet(tag, i)
+		sent[i] = time.Now()
+		if _, err := c.WriteToUDPAddrPort(payload, dst); err != nil {
+			return best
+		}
+		// Read between sends so an early reply doesn't wait in the socket queue.
+		wait := 20 * time.Millisecond
+		if i == len(sent)-1 {
+			wait = time.Second
+		}
+		c.SetReadDeadline(sent[i].Add(wait))
+		for {
+			n, from, err := c.ReadFromUDPAddrPort(buf)
+			if err != nil {
 				break
 			}
-			continue
-		}
-		if from.Addr().Unmap() != host || n < 4 || buf[0] != tag[0] || buf[1] != tag[1] {
-			continue
-		}
-		if seq := int(binary.BigEndian.Uint16(buf[2:4])); seq < packets {
-			rtts = append(rtts, time.Since(sent[seq]))
+			if from != dst || n < 4 || buf[0] != tag[0] || buf[1] != tag[1] {
+				continue
+			}
+			seq := int(binary.BigEndian.Uint16(buf[2:4]))
+			if seq <= i {
+				rtt := time.Since(sent[seq])
+				if best == 0 || rtt < best {
+					best = rtt
+				}
+			}
 		}
 	}
-	if len(rtts) == 0 {
-		return 0
-	}
-	sort.Slice(rtts, func(i, j int) bool { return rtts[i] < rtts[j] })
-	return rtts[0]
+	return best
 }

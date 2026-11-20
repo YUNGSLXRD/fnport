@@ -117,7 +117,8 @@ func (t *tcpRelay) accept(r *tcp.ForwarderRequest) {
 			return
 		}
 		r.Complete(false)
-		t.dns.serveTCPConn(t.ctx, gonet.NewTCPConn(&wq, ep))
+		src := netip.AddrPortFrom(netip.AddrFrom4(id.RemoteAddress.As4()), id.RemotePort)
+		t.dns.serveTCPConn(t.ctx, gonet.NewTCPConn(&wq, ep), src, dst)
 		return
 	}
 

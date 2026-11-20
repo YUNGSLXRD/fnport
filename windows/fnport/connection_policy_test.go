@@ -53,7 +53,7 @@ func TestConnectionPolicyKeepsFortniteUDPDirect(t *testing.T) {
 	}
 	// An address outside the configured AWS list is not a probed game flow,
 	// but selecting the Fortnite process must not put that match into a VPN.
-	for _, port := range []uint16{9000, 9999, 15000, 15999} {
+	for _, port := range []uint16{9000, 9999, 15000, 15999, 22222} {
 		foreign := netip.AddrPortFrom(netip.MustParseAddr("192.0.2.1"), port)
 		if r.selectedUDP(src, foreign, false) {
 			t.Fatalf("Fortnite game UDP outside the route list entered the tunnel: %s", foreign)

@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/YUNGSLXRD/fnport/windows/internal/qos"
 	"github.com/YUNGSLXRD/fnport/windows/internal/vpn"
 	"github.com/YUNGSLXRD/fnport/windows/internal/wnet"
 )
@@ -288,7 +289,7 @@ func (r *connectionRouter) selectedUDP(src, dst netip.AddrPort, game bool) bool 
 		return false
 	}
 	o := r.owner(17, src, dst)
-	if (game || matchPort) && strings.HasPrefix(strings.ToLower(o.Name), "fortnite") {
+	if (game || matchPort || dst.Port() == qos.EchoPort) && strings.HasPrefix(strings.ToLower(o.Name), "fortnite") {
 		return false
 	}
 	return r.settings.selects(o, "")

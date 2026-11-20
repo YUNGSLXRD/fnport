@@ -103,7 +103,17 @@ func (b *winDNSBroker) installIPs(service string, ips []netip.Addr) int {
 	return installed
 }
 
-func (b *winDNSBroker) answer(parent context.Context, wire []byte) []byte {
+// Match the DNS socket itself. A shared Windows DNS Client socket cannot identify
+// the original caller and keeps the existing domain-based policy.
+func (b *winDNSBroker) selectedDNSProcess(proto uint8, src, dst netip.AddrPort) bool {
+	processes := b.router.settings.Processes
+	if len(processes) == 0 {
+		return false
+	}
+	return selectedProcess(b.router.owner(proto, src, dst).Name, processes)
+}
+
+func (b *winDNSBroker) answer(parent context.Context, wire []byte, selectedProcess bool) []byte {
 	var p dnsmessage.Parser
 	h, err := p.Start(wire)
 	if err != nil || h.Response || h.OpCode != 0 {
@@ -114,7 +124,8 @@ func (b *winDNSBroker) answer(parent context.Context, wire []byte) []byte {
 		return vpn.DNSFailure(wire, dnsmessage.RCodeFormatError)
 	}
 	svc := b.service(q[0].Name.String())
-	if svc != "" && (q[0].Type == dnsmessage.TypeAAAA || q[0].Type == dnsTypeHTTPS) {
+	tunnelDNS := svc != "" || selectedProcess
+	if tunnelDNS && (q[0].Type == dnsmessage.TypeAAAA || q[0].Type == dnsTypeHTTPS) {
 		return vpn.DNSFailure(wire, dnsmessage.RCodeSuccess)
 	}
 
@@ -122,14 +133,14 @@ func (b *winDNSBroker) answer(parent context.Context, wire []byte) []byte {
 	defer cancel()
 
 	var reply []byte
-	if svc != "" {
+	if tunnelDNS {
 		reply, err = b.dohPrimary.Exchange(ctx, wire)
 		if err != nil && ctx.Err() == nil {
 			reply, err = b.dohFallback.Exchange(ctx, wire)
 		}
 		// While Epic is in direct-first mode and the tunnel is still starting up,
 		// fall back to physical DNS and route the learned Epic IP into fnport.
-		if err != nil && svc == "epic" && !b.router.always.Load() && ctx.Err() == nil {
+		if err != nil && !selectedProcess && svc == "epic" && !b.router.always.Load() && ctx.Err() == nil {
 			reply, err = forwardPhysicalDNS(ctx, wire)
 		}
 	} else {
@@ -165,22 +176,23 @@ func (b *winDNSBroker) handleUDPPacket(ctx context.Context, dev wnet.Dev, p wnet
 	src, dst := p.Src, p.Dst
 	go func() {
 		defer func() { <-b.sem }()
-		reply := b.answer(ctx, payload)
+		reply := b.answer(ctx, payload, b.selectedDNSProcess(17, src, dst))
 		if len(reply) > 0 {
 			_ = dev.WritePacket(wnet.BuildUDP4(dst, src, reply, nextIPID()))
 		}
 	}()
 }
 
-func (b *winDNSBroker) serveTCPConn(ctx context.Context, c net.Conn) {
+func (b *winDNSBroker) serveTCPConn(ctx context.Context, c net.Conn, src, dst netip.AddrPort) {
 	defer c.Close()
+	selected := b.selectedDNSProcess(6, src, dst)
 	_ = c.SetDeadline(time.Now().Add(8 * time.Second))
 	for {
 		wire, err := vpn.ReadTCPDNS(c)
 		if err != nil {
 			return
 		}
-		reply := b.answer(ctx, wire)
+		reply := b.answer(ctx, wire, selected)
 		if len(reply) == 0 {
 			return
 		}

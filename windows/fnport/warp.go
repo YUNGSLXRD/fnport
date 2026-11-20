@@ -958,9 +958,33 @@ func (b *physBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 	return nil
 }
 
-// runWarp: Epic's addresses routed into the adapter, then the tunnel. The addresses are looked
-// up again every 10 minutes while fnport is on
+// startRouteRefresh runs DNS work serially, with a pause between completed passes.
+func startRouteRefresh(parent context.Context, refresh func(context.Context)) func() {
+	ctx, cancel := context.WithCancel(parent)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ctx.Err() == nil {
+			refresh(ctx)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(2 * time.Minute):
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
+}
+
 func runWarp(ws warpSettings, dev wnet.Dev, routed []netip.Prefix, t *tcpRelay) {
+	runWarpSession(ws, dev, routed, t, lookupAllContext, startWarp)
+}
+
+func runWarpSession(ws warpSettings, dev wnet.Dev, routed []netip.Prefix, t *tcpRelay,
+	lookup func(context.Context, string) []netip.Addr, connect func(warpSettings) (*warpTunnel, error)) {
 	ws.ctx = t.ctx
 	names := ws.domains()
 	if ws.servicesOff {
@@ -977,14 +1001,21 @@ func runWarp(ws warpSettings, dev wnet.Dev, routed []netip.Prefix, t *tcpRelay) 
 	defer t.warpWait.Store(false)
 	adder, _ := dev.(interface{ AddRoute(netip.Prefix) error })
 	known := map[netip.Addr]bool{}
-	refresh := func() {
+	refresh := func(ctx context.Context) {
 		next := map[netip.Addr]bool{}
 		for a := range known {
 			next[a] = true
 		}
 		added := 0
 		for _, h := range names {
-			for _, a := range lookupAll(h) {
+			if ctx.Err() != nil {
+				return
+			}
+			ips := lookup(ctx, h)
+			if ctx.Err() != nil {
+				return
+			}
+			for _, a := range ips {
 				if next[a] {
 					continue
 				}
@@ -1008,10 +1039,13 @@ func runWarp(ws warpSettings, dev wnet.Dev, routed []netip.Prefix, t *tcpRelay) 
 	if ws.servicesOff {
 		logf("WARP: ищу выход в Латвии, Польше, Эстонии, Финляндии или Швеции; Германия — запасной вариант")
 	} else {
-		logf("WARP: подключаюсь (сервисы Epic пока идут напрямую)")
+		logf("WARP: ищу выход, параллельно обновляю адреса сервисов Epic")
 	}
-	refresh()
-	w, err := startWarp(ws)
+	if len(names) > 0 {
+		stop := startRouteRefresh(t.ctx, refresh)
+		defer stop()
+	}
+	w, err := connect(ws)
 	if t.ctx.Err() != nil {
 		if w != nil {
 			w.close()
@@ -1037,7 +1071,10 @@ func runWarp(ws warpSettings, dev wnet.Dev, routed []netip.Prefix, t *tcpRelay) 
 		return
 	}
 	if t.dns != nil {
-		go t.dns.refreshServiceRoutes(t.ctx, true)
+		stop := startRouteRefresh(t.ctx, func(ctx context.Context) {
+			t.dns.refreshServiceRoutes(ctx, true)
+		})
+		defer stop()
 	}
 	changes.Add(1)
 	if ws.servicesOff {
@@ -1054,7 +1091,7 @@ func runWarp(ws warpSettings, dev wnet.Dev, routed []netip.Prefix, t *tcpRelay) 
 	// fall back to direct, so another one is looked for
 	health := time.NewTicker(time.Minute)
 	defer health.Stop()
-	// every 2 minutes: Epic's addresses move, and a new one is reached directly until it is routed
+	// Report traffic independently of DNS refreshes.
 	tk := time.NewTicker(2 * time.Minute)
 	defer tk.Stop()
 	stallSeen := false // "stood still, the tunnel answers" logged once
@@ -1068,10 +1105,6 @@ func runWarp(ws warpSettings, dev wnet.Dev, routed []netip.Prefix, t *tcpRelay) 
 		case <-tk.C:
 			if s := t.statsSummary(); s != "" {
 				logf("WARP, сайты Epic за 2 минуты: %s", s)
-			}
-			refresh()
-			if t.dns != nil {
-				t.dns.refreshServiceRoutes(t.ctx, true)
 			}
 		case <-health.C:
 			// a second try: one lost check is no reason to cut everything going through it

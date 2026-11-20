@@ -2,12 +2,63 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"testing"
 	"time"
 )
+
+// A blocked Epic DNS request must neither delay the first endpoint attempt nor
+// outlive the WARP session, including when endpoint selection itself fails.
+func TestWarpStartupWithBlockedDNS(t *testing.T) {
+	for _, outcome := range []string{"stop", "no endpoint"} {
+		t.Run(outcome, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			relay := &tcpRelay{ctx: ctx}
+			lookupStarted := make(chan struct{})
+			lookupStopped := make(chan struct{})
+			lookup := func(ctx context.Context, host string) []netip.Addr {
+				close(lookupStarted)
+				<-ctx.Done()
+				close(lookupStopped)
+				return nil
+			}
+			called := false
+			connect := func(ws warpSettings) (*warpTunnel, error) {
+				select {
+				case <-lookupStarted:
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+				called = ctx.Err() == nil
+				if !relay.warpWait.Load() || !relay.warpName("epicgames.com") {
+					t.Error("Epic policy was not installed before endpoint selection")
+				}
+				if outcome == "stop" {
+					cancel()
+					return nil, ws.ctx.Err()
+				}
+				return nil, errors.New("no endpoint")
+			}
+			runWarpSession(warpSettings{Always: true, Domains: []string{"epicgames.com"}}, nil, nil, relay, lookup, connect)
+			if !called {
+				t.Fatal("endpoint selection waited for DNS")
+			}
+			select {
+			case <-lookupStopped:
+			default:
+				t.Fatal("DNS worker survived WARP shutdown")
+			}
+			if relay.warpWait.Load() {
+				t.Fatal("connections still waiting for WARP after shutdown")
+			}
+		})
+	}
+}
 
 func TestWarpAllowedCountriesAndFallback(t *testing.T) {
 	cases := []struct {

@@ -677,7 +677,7 @@ func (v *view) connectionProcessEditor(gtx C, editor *widget.Editor, p *connecti
 	kids := []layout.FlexChild{
 		layout.Rigid(func(gtx C) D {
 			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-				layout.Flexed(1, v.label(12, colMuted, fmt.Sprintf("Выбрано приложений: %d (включает перехват IPv4)", len(selectedNames))).Layout),
+				layout.Flexed(1, v.label(12, colMuted, fmt.Sprintf("Выбрано приложений: %d", len(selectedNames))).Layout),
 				layout.Rigid(func(gtx C) D { return v.smallButton(gtx, &p.refresh, "Обновить", p.done == nil) }),
 				hspace(8),
 				layout.Rigid(func(gtx C) D { return v.smallButton(gtx, &p.button, "Свернуть", true) }))
@@ -1170,10 +1170,10 @@ func (v *view) connectionsBody(gtx C) D {
 			if disabled {
 				gtx = gtx.Disabled()
 			}
-			kids := v.sectionTitle("Свои домены и приложения", "Необязательно. По одному домену в строке (покрывает сам домен и его поддомены).")
+			kids := v.sectionTitle("Свои домены и приложения", "По одному домену в строке. Поддомены включаются автоматически.")
 			kids = append(kids,
 				layout.Rigid(func(gtx C) D {
-					return v.field(gtx, &cv.domains, "youtube.com\ngooglevideo.com", 3)
+					return v.field(gtx, &cv.domains, "Например, example.org", 3)
 				}),
 				vspace(12),
 				layout.Rigid(v.divider),
